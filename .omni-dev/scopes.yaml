@@ -1,0 +1,13 @@
+scopes:
+  - name: "action"
+    description: "GitHub Action definition and composite steps"
+    examples: ["action: add fail-under-patch input", "action: fix merge-base computation"]
+    file_patterns: ["action.yml"]
+  - name: "docs"
+    description: "Documentation, README, and examples"
+    examples: ["docs: add thin-mode usage example", "docs: update input descriptions"]
+    file_patterns: ["README.md", "*.md", "docs/**"]
+  - name: "ci"
+    description: "GitHub workflows and automation"
+    examples: ["ci: add release workflow", "ci: update commit-check workflow"]
+    file_patterns: [".github/workflows/**", ".github/*.yml"]

@@ -1,0 +1,525 @@
+name: 'Omni-Dev Coverage Check'
+description: 'Run code-coverage analysis and post a diff/patch-coverage PR comment using omni-dev'
+author: 'rust-works'
+
+branding:
+  icon: 'umbrella'
+  color: 'blue'
+
+inputs:
+  # ---------------------------------------------------------------------------
+  # omni-dev install + cache (mirrors action-works/omni-dev-commit-check)
+  # ---------------------------------------------------------------------------
+  version:
+    description: 'omni-dev version to install (e.g., 0.15.0, latest)'
+    required: false
+    default: 'latest'
+  use-prebuilt-binary:
+    description: 'Download pre-built binary from GitHub releases instead of building from source via cargo install'
+    required: false
+    default: 'true'
+  cache-prefix:
+    description: 'Prefix to prepend to the cache key for the omni-dev binary'
+    required: false
+    default: ''
+
+  # ---------------------------------------------------------------------------
+  # Coverage run (fat mode). Set run-coverage: false to supply your own lcov.
+  # ---------------------------------------------------------------------------
+  run-coverage:
+    description: 'Run cargo-llvm-cov to produce the head report. Set false (thin mode) to supply a pre-built report via the `report` input'
+    required: false
+    default: 'true'
+  report:
+    description: 'Path to the per-line head coverage report (lcov). Produced by the action in fat mode; must already exist in thin mode'
+    required: false
+    default: 'coverage-head.lcov'
+  test-args:
+    description: 'Arguments passed to `cargo test`/`cargo llvm-cov` under instrumentation (fat mode)'
+    required: false
+    default: '--all-features --workspace'
+  fail-under-lines:
+    description: 'Overall line-coverage gate via `cargo llvm-cov report --fail-under-lines` (fat mode). Empty disables the gate'
+    required: false
+    default: '30'
+
+  # ---------------------------------------------------------------------------
+  # Diff / patch-coverage comment (omni-dev coverage diff)
+  # ---------------------------------------------------------------------------
+  base-ref:
+    description: 'Base revision to diff against. Empty computes `git merge-base origin/main HEAD`'
+    required: false
+    default: ''
+  fail-under-patch:
+    description: 'Patch-coverage gate via `omni-dev coverage diff --fail-under-patch`. Empty disables the gate. Enforced after the comment is posted'
+    required: false
+    default: ''
+  collapse-ranges:
+    description: 'Collapse consecutive uncovered new lines into ranges (e.g. 9-11) in the comment'
+    required: false
+    default: 'true'
+  all-files:
+    description: 'Report deltas/indirect changes for ALL files, not just the ones the diff touches'
+    required: false
+    default: 'false'
+  strip-prefix:
+    description: 'Override the path prefix stripped from report file paths to make them repo-relative'
+    required: false
+    default: ''
+  report-format:
+    description: 'Format of the head report: auto, lcov, llvm-cov-json, or cobertura (auto-detected by default)'
+    required: false
+    default: ''
+  comment:
+    description: 'Post the rendered diff as a sticky pull-request comment'
+    required: false
+    default: 'true'
+  comment-header:
+    description: 'Sticky comment header (key that lets the comment update in place each run)'
+    required: false
+    default: 'coverage'
+
+  # ---------------------------------------------------------------------------
+  # Merge-base baseline (download + worktree recompute fallback)
+  # ---------------------------------------------------------------------------
+  baseline-artifact-name:
+    description: 'Name of the artifact holding the per-line baseline report'
+    required: false
+    default: 'coverage-baseline'
+  baseline-workflow:
+    description: 'Workflow file the baseline artifact is published from (for the merge-base download)'
+    required: false
+    default: 'ci.yml'
+  recompute-baseline:
+    description: 'On a baseline-download miss, recompute coverage at the merge-base in a git worktree (fat mode only)'
+    required: false
+    default: 'true'
+  worktree-system-deps:
+    description: 'Space-separated apt packages to install before the worktree recompute (e.g. libasound2-dev). Empty installs nothing'
+    required: false
+    default: ''
+  publish-baseline:
+    description: 'On a push to main, publish this run''s report as the baseline artifact for future PRs'
+    required: false
+    default: 'true'
+
+  # ---------------------------------------------------------------------------
+  # Artifacts
+  # ---------------------------------------------------------------------------
+  upload-artifacts:
+    description: 'Upload the coverage summary / report / codecov.json as a build artifact'
+    required: false
+    default: 'true'
+  artifact-name:
+    description: 'Name of the uploaded coverage-summary artifact'
+    required: false
+    default: 'coverage-summary'
+
+  # ---------------------------------------------------------------------------
+  # codecov.io upload (optional, off by default)
+  # ---------------------------------------------------------------------------
+  codecov:
+    description: 'Upload codecov.json to codecov.io'
+    required: false
+    default: 'false'
+  codecov-token:
+    description: 'codecov.io upload token (pass your CODECOV_TOKEN secret)'
+    required: false
+    default: ''
+
+outputs:
+  version:
+    description: 'Resolved omni-dev version that was installed'
+    value: ${{ steps.resolve-version.outputs.version }}
+  release-tag:
+    description: 'Resolved omni-dev release tag (v-prefixed)'
+    value: ${{ steps.resolve-version.outputs.release-tag }}
+  patch-percent:
+    description: 'Patch (diff) coverage percentage for this PR'
+    value: ${{ steps.diff.outputs.patch-percent }}
+  line-percent:
+    description: 'Overall line coverage percentage (requires a baseline)'
+    value: ${{ steps.diff.outputs.line-percent }}
+  comment-path:
+    description: 'Path to the rendered markdown comment'
+    value: ${{ steps.diff.outputs.comment-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    # -------------------------------------------------------------------------
+    # Install + cache omni-dev (carried over from omni-dev-commit-check)
+    # -------------------------------------------------------------------------
+    - name: Resolve omni-dev version
+      id: resolve-version
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        if [ "$VERSION" = "latest" ]; then
+          RELEASE_TAG=$(curl -s https://api.github.com/repos/rust-works/omni-dev/releases/latest | jq -r '.tag_name')
+          if [ -z "$RELEASE_TAG" ] || [ "$RELEASE_TAG" = "null" ]; then
+            echo "::error::Could not determine latest omni-dev version from GitHub releases"
+            exit 1
+          fi
+          VERSION="${RELEASE_TAG#v}"
+          echo "Resolved latest omni-dev version: $VERSION"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "release-tag=v$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Cache omni-dev binary
+      id: cache-omni-dev
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/bin/omni-dev
+        key: ${{ inputs.cache-prefix }}omni-dev-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve-version.outputs.version }}-${{ inputs.use-prebuilt-binary == 'true' && 'binary' || 'cargo' }}
+
+    - name: Add cargo bin to PATH
+      shell: bash
+      run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+    - name: Determine platform and download URL
+      id: platform
+      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true'
+      shell: bash
+      run: |
+        RELEASE_TAG="${{ steps.resolve-version.outputs.release-tag }}"
+
+        # Determine platform-specific binary name
+        OS="${{ runner.os }}"
+        ARCH="${{ runner.arch }}"
+
+        case "$OS" in
+          Linux)
+            BINARY_NAME="omni-dev-linux.tar.gz"
+            ;;
+          macOS)
+            if [ "$ARCH" = "ARM64" ]; then
+              BINARY_NAME="omni-dev-macos-arm64.tar.gz"
+            else
+              # x64 macOS binary not available yet
+              echo "binary-available=false" >> $GITHUB_OUTPUT
+              echo "available-platforms=Linux, macOS-ARM64, Windows" >> $GITHUB_OUTPUT
+              echo "::warning::Pre-built binary not available for macOS x64. Available platforms: Linux, macOS-ARM64, Windows. Set 'use-prebuilt-binary: false' to build from source."
+              exit 0
+            fi
+            ;;
+          Windows)
+            BINARY_NAME="omni-dev-windows.zip"
+            ;;
+          *)
+            echo "binary-available=false" >> $GITHUB_OUTPUT
+            echo "available-platforms=Linux, macOS-ARM64, Windows" >> $GITHUB_OUTPUT
+            echo "::warning::Pre-built binary not available for $OS. Available platforms: Linux, macOS-ARM64, Windows. Set 'use-prebuilt-binary: false' to build from source."
+            exit 0
+            ;;
+        esac
+
+        DOWNLOAD_URL="https://github.com/rust-works/omni-dev/releases/download/${RELEASE_TAG}/${BINARY_NAME}"
+
+        # Verify the binary exists
+        HTTP_STATUS=$(curl -sL -o /dev/null -w "%{http_code}" "$DOWNLOAD_URL")
+        if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "302" ]; then
+          echo "binary-available=false" >> $GITHUB_OUTPUT
+          echo "available-platforms=Linux, macOS-ARM64, Windows" >> $GITHUB_OUTPUT
+          echo "::warning::Pre-built binary not found at $DOWNLOAD_URL (HTTP $HTTP_STATUS). The version '$VERSION' may not have pre-built binaries. Set 'use-prebuilt-binary: false' to build from source, or use a version with available binaries."
+          exit 0
+        fi
+
+        echo "binary-available=true" >> $GITHUB_OUTPUT
+        echo "download-url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
+        echo "binary-name=$BINARY_NAME" >> $GITHUB_OUTPUT
+
+    - name: Download pre-built binary
+      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'true'
+      shell: bash
+      run: |
+        mkdir -p ~/.cargo/bin
+        DOWNLOAD_URL="${{ steps.platform.outputs.download-url }}"
+        BINARY_NAME="${{ steps.platform.outputs.binary-name }}"
+
+        echo "Downloading omni-dev from $DOWNLOAD_URL"
+        curl -sL "$DOWNLOAD_URL" -o "/tmp/$BINARY_NAME"
+
+        # Extract based on file type
+        if [[ "$BINARY_NAME" == *.zip ]]; then
+          unzip -q "/tmp/$BINARY_NAME" -d /tmp/omni-dev-extract
+          # Find the binary (could be omni-dev.exe on Windows)
+          find /tmp/omni-dev-extract -name "omni-dev*" -type f | head -1 | xargs -I {} mv {} ~/.cargo/bin/omni-dev
+        else
+          tar -xzf "/tmp/$BINARY_NAME" -C /tmp
+          mv /tmp/omni-dev ~/.cargo/bin/omni-dev
+        fi
+
+        chmod +x ~/.cargo/bin/omni-dev
+        echo "Successfully installed omni-dev from pre-built binary"
+        ~/.cargo/bin/omni-dev --version
+
+    - name: Fail if binary not available
+      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'false'
+      shell: bash
+      run: |
+        echo "::error::Pre-built binary not available for this platform/version. Set 'use-prebuilt-binary: false' to build from source."
+        exit 1
+
+    - name: Install system dependencies for source build
+      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true' && runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+    - name: Setup Rust toolchain (source install)
+      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true'
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install omni-dev from source
+      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true'
+      shell: bash
+      run: |
+        VERSION="${{ steps.resolve-version.outputs.version }}"
+        echo "Installing omni-dev $VERSION via cargo install..."
+        cargo install omni-dev --version "$VERSION"
+
+    - name: Print omni-dev version
+      shell: bash
+      run: omni-dev --version
+
+    # -------------------------------------------------------------------------
+    # Coverage run (fat mode). Every cargo step below sources cargo-llvm-cov's
+    # instrumentation env so they share ONE set of dependency artifacts.
+    # -------------------------------------------------------------------------
+    - name: Setup Rust toolchain (coverage)
+      if: inputs.run-coverage == 'true'
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+
+    - name: Rust cache
+      if: inputs.run-coverage == 'true'
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install cargo-llvm-cov
+      if: inputs.run-coverage == 'true'
+      uses: taiki-e/install-action@cargo-llvm-cov
+
+    - name: Run tests with coverage
+      if: inputs.run-coverage == 'true'
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        source <(cargo llvm-cov show-env --sh)
+        cargo llvm-cov clean --workspace
+        cargo test ${{ inputs.test-args }}
+
+    - name: Generate codecov.json
+      # Kept ready so the optional codecov.io upload below works when enabled.
+      if: inputs.run-coverage == 'true'
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        source <(cargo llvm-cov show-env --sh)
+        cargo llvm-cov report --codecov --output-path codecov.json
+
+    - name: Generate head coverage report (lcov)
+      # Per-line lcov for the head commit: the input to `omni-dev coverage diff`.
+      if: inputs.run-coverage == 'true'
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        source <(cargo llvm-cov show-env --sh)
+        cargo llvm-cov report --lcov --output-path "${{ inputs.report }}"
+
+    - name: Build coverage summary
+      # Full per-file summary: appended to the run's Summary tab and published as
+      # a build artifact. Intentionally NOT inlined into the PR comment.
+      if: inputs.run-coverage == 'true'
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        source <(cargo llvm-cov show-env --sh)
+        cargo llvm-cov report --summary-only | tee coverage-summary.txt
+        {
+          echo '## Coverage'
+          echo '```'
+          cat coverage-summary.txt
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload coverage artifacts
+      # The full summary lives here (not in the PR comment); codecov.json kept for
+      # when the upload is enabled. Runs before the comment so the comment can
+      # link to this artifact via the step's `artifact-url` output.
+      id: upload
+      if: inputs.upload-artifacts == 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        if-no-files-found: ignore
+        path: |
+          coverage-summary.txt
+          codecov.json
+          ${{ inputs.report }}
+
+    # -------------------------------------------------------------------------
+    # Merge-base baseline + diff/patch-coverage comment (pull requests only)
+    # -------------------------------------------------------------------------
+    - name: Determine merge-base
+      # The PR's fork point on main. Pinning the baseline to this immutable commit
+      # makes per-file deltas attributable to THIS PR alone.
+      id: mb
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.base-ref }}" ]; then
+          SHA="${{ inputs.base-ref }}"
+        else
+          SHA="$(git merge-base origin/main HEAD)"
+        fi
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+    - name: Download baseline coverage for merge-base
+      # Pulls the per-line report published by the main run for the exact
+      # merge-base commit. A miss is a warning, not a failure.
+      id: baseline
+      if: github.event_name == 'pull_request'
+      uses: dawidd6/action-download-artifact@v21
+      with:
+        name: ${{ inputs.baseline-artifact-name }}
+        commit: ${{ steps.mb.outputs.sha }}
+        workflow: ${{ inputs.baseline-workflow }}
+        path: baseline
+        if_no_artifact_found: warn
+
+    - name: Compute baseline from merge-base (fallback)
+      # Runs whenever the merge-base has no usable baseline (cold start, expired
+      # artifact). Builds coverage at that exact commit in a worktree so the
+      # comparison stays correct. A no-op when the baseline was downloaded.
+      if: github.event_name == 'pull_request' && inputs.run-coverage == 'true' && inputs.recompute-baseline == 'true'
+      shell: bash
+      run: |
+        REPORT_BASENAME="$(basename "${{ inputs.report }}")"
+        if [ -f "baseline/$REPORT_BASENAME" ]; then
+          echo "baseline already present for the merge-base; skipping recompute"
+          exit 0
+        fi
+        # Optional system deps for building historical commits (e.g. a merge-base
+        # that predates a native-dependency removal). No-op when unset.
+        if [ -n "${{ inputs.worktree-system-deps }}" ]; then
+          sudo apt-get update && sudo apt-get install -y ${{ inputs.worktree-system-deps }}
+        fi
+        git worktree add ../base "${{ steps.mb.outputs.sha }}"
+        ( cd ../base && cargo llvm-cov ${{ inputs.test-args }} --no-report \
+            && cargo llvm-cov report --lcov --output-path "$REPORT_BASENAME" )
+        mkdir -p baseline
+        # Rewrite the worktree's absolute SF paths to the main workspace prefix so
+        # `omni-dev coverage diff` strips one prefix for both head and baseline.
+        sed "s#$(cd ../base && pwd)/#$GITHUB_WORKSPACE/#g" \
+          "../base/$REPORT_BASENAME" > "baseline/$REPORT_BASENAME"
+
+    - name: Build coverage diff
+      # Single comprehensive comment: total + delta vs main, per-file before/after,
+      # patch coverage (added lines, with the uncovered file:line list), and
+      # indirect coverage flips. The baseline is optional. The patch gate is NOT
+      # applied here so the comment still posts when the gate fails.
+      id: diff
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        BASE_SHA: ${{ steps.mb.outputs.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit
+      run: |
+        REPORT_BASENAME="$(basename "${{ inputs.report }}")"
+        args=(coverage diff
+          --report "${{ inputs.report }}"
+          --base-ref "$BASE_SHA"
+          --artifact-url "$ARTIFACT_URL"
+          --run-url "$RUN_URL"
+          --base-sha "$BASE_SHA"
+          --head-sha "$HEAD_SHA"
+          --commit-url "$COMMIT_URL")
+        if [ "${{ inputs.collapse-ranges }}" = "true" ]; then
+          args+=(--collapse-ranges)
+        fi
+        if [ "${{ inputs.all-files }}" = "true" ]; then
+          args+=(--all-files)
+        fi
+        if [ -n "${{ inputs.strip-prefix }}" ]; then
+          args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        fi
+        if [ -n "${{ inputs.report-format }}" ]; then
+          args+=(--report-format "${{ inputs.report-format }}")
+        fi
+        # Diff is computed merge-base..HEAD, attributing patch coverage to this PR.
+        if [ -f "baseline/$REPORT_BASENAME" ]; then
+          args+=(--baseline-report "baseline/$REPORT_BASENAME")
+        fi
+        omni-dev "${args[@]}" --format markdown > coverage.md
+        echo "comment-path=coverage.md" >> "$GITHUB_OUTPUT"
+
+        # Machine-readable percentages (best-effort; never fail the build).
+        if omni-dev "${args[@]}" --format json > coverage.json 2>/dev/null; then
+          PATCH=$(jq -r '.patch_coverage.percent // empty' coverage.json 2>/dev/null || echo "")
+          LINE=$(jq -r '.project_delta.total_after // empty' coverage.json 2>/dev/null || echo "")
+          echo "patch-percent=$PATCH" >> "$GITHUB_OUTPUT"
+          echo "line-percent=$LINE" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Comment coverage on PR
+      if: github.event_name == 'pull_request' && inputs.comment == 'true'
+      uses: marocchino/sticky-pull-request-comment@v3
+      with:
+        header: ${{ inputs.comment-header }}
+        path: coverage.md
+
+    - name: Publish coverage baseline
+      # On main only: this run's per-line report becomes the baseline that
+      # subsequent PRs download to compute deltas and indirect changes.
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push' && inputs.publish-baseline == 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.baseline-artifact-name }}
+        path: ${{ inputs.report }}
+
+    - name: Upload to codecov.io
+      if: inputs.codecov == 'true'
+      uses: codecov/codecov-action@v7
+      with:
+        token: ${{ inputs.codecov-token }}
+        files: codecov.json
+        fail_ci_if_error: true
+
+    # -------------------------------------------------------------------------
+    # Gates run last so the summary and PR comment post even when a gate fails.
+    # -------------------------------------------------------------------------
+    - name: Enforce patch-coverage gate
+      if: github.event_name == 'pull_request' && inputs.fail-under-patch != ''
+      shell: bash
+      run: |
+        REPORT_BASENAME="$(basename "${{ inputs.report }}")"
+        args=(coverage diff
+          --report "${{ inputs.report }}"
+          --base-ref "${{ steps.mb.outputs.sha }}"
+          --fail-under-patch "${{ inputs.fail-under-patch }}"
+          --format json)
+        # Mirror the parse-affecting flags from the comment diff so the gated
+        # percentage matches what the comment reported.
+        if [ -n "${{ inputs.strip-prefix }}" ]; then
+          args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        fi
+        if [ -n "${{ inputs.report-format }}" ]; then
+          args+=(--report-format "${{ inputs.report-format }}")
+        fi
+        if [ -f "baseline/$REPORT_BASENAME" ]; then
+          args+=(--baseline-report "baseline/$REPORT_BASENAME")
+        fi
+        omni-dev "${args[@]}" > /dev/null
+
+    - name: Enforce line-coverage gate
+      if: inputs.run-coverage == 'true' && inputs.fail-under-lines != ''
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        source <(cargo llvm-cov show-env --sh)
+        cargo llvm-cov report --summary-only --fail-under-lines "${{ inputs.fail-under-lines }}"

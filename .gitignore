@@ -1,0 +1,7 @@
+# Coverage artifacts produced when dogfooding the action
+coverage-head.lcov
+coverage-summary.txt
+codecov.json
+coverage.md
+coverage.json
+baseline/
