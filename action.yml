@@ -314,7 +314,7 @@ runs:
       shell: bash
       run: |
         # shellcheck disable=SC1090
-        source <(cargo llvm-cov show-env --sh)
+        eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov clean --workspace
 
     - name: Coverage setup commands
@@ -326,7 +326,7 @@ runs:
       shell: bash
       run: |
         # shellcheck disable=SC1090
-        source <(cargo llvm-cov show-env --sh)
+        eval "$(cargo llvm-cov show-env --sh)"
         export LLVM_PROFILE_FILE=/dev/null
         ${{ inputs.setup-commands }}
 
@@ -335,7 +335,7 @@ runs:
       shell: bash
       run: |
         # shellcheck disable=SC1090
-        source <(cargo llvm-cov show-env --sh)
+        eval "$(cargo llvm-cov show-env --sh)"
         cargo test ${{ inputs.test-args }}
 
     - name: Run extra (gated) tests with coverage
@@ -347,7 +347,7 @@ runs:
       shell: bash
       run: |
         # shellcheck disable=SC1090
-        source <(cargo llvm-cov show-env --sh)
+        eval "$(cargo llvm-cov show-env --sh)"
         ${{ inputs.extra-test-commands }}
 
     - name: Generate codecov.json
@@ -356,7 +356,7 @@ runs:
       shell: bash
       run: |
         # shellcheck disable=SC1090
-        source <(cargo llvm-cov show-env --sh)
+        eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov report --codecov --output-path codecov.json
 
     - name: Generate head coverage report (lcov)
@@ -365,7 +365,7 @@ runs:
       shell: bash
       run: |
         # shellcheck disable=SC1090
-        source <(cargo llvm-cov show-env --sh)
+        eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov report --lcov --output-path "${{ inputs.report }}"
 
     - name: Build coverage summary
@@ -375,7 +375,7 @@ runs:
       shell: bash
       run: |
         # shellcheck disable=SC1090
-        source <(cargo llvm-cov show-env --sh)
+        eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov report --summary-only | tee coverage-summary.txt
         {
           echo '## Coverage'
@@ -564,5 +564,5 @@ runs:
       shell: bash
       run: |
         # shellcheck disable=SC1090
-        source <(cargo llvm-cov show-env --sh)
+        eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov report --summary-only --fail-under-lines "${{ inputs.fail-under-lines }}"
