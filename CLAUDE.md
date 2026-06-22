@@ -52,6 +52,13 @@ The action is a composite action with two phases:
 - **`worktree-system-deps`** generalizes the one omni-dev-specific wrinkle from
   the original inline job (installing `libasound2-dev` before building old
   history); it installs nothing unless set.
+- **`setup-commands` / `extra-test-commands`** let a caller whose coverage corpus
+  isn't a single `cargo test` run still use fat mode (e.g. omni-voice: download a
+  Whisper model, then run `--ignored` model-gated suites). `setup-commands` runs
+  pre-test with `LLVM_PROFILE_FILE=/dev/null` (reuses the instrumented build,
+  contributes no coverage); `extra-test-commands` runs post-test and DOES
+  contribute. Both are skipped in the worktree recompute, so the merge-base stays
+  buildable at old fork points and only `test-args` defines that baseline.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.

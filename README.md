@@ -73,6 +73,33 @@ are skipped in this mode.
     fail-under-patch: 80
 ```
 
+### Fat mode with fixture setup + model-gated tests
+
+When part of your coverage comes from suites the default `test-args` run can't
+reach — `--ignored` tests that need an ML model on disk, say — keep fat mode and
+add two hooks. `setup-commands` runs first under the same instrumentation env but
+with profiling disabled (so a model download reuses the instrumented build yet
+adds no coverage); `extra-test-commands` runs the gated suites after the main
+run, and their coverage lands in the head report and the line gate:
+
+```yaml
+- uses: actions/cache@v4
+  with:
+    path: ~/.cache/my-model            # model is cached across runs
+    key: my-model-v1
+
+- uses: action-works/omni-dev-coverage-check@v1
+  with:
+    setup-commands: cargo run --bin my-tool -- install-model
+    extra-test-commands: |
+      cargo test --all-features --test gated_inference_test -- --ignored
+      cargo test --all-features --lib backends:: -- --ignored
+```
+
+The merge-base worktree recompute runs only `test-args`, not these hooks (the
+gated suites/fixtures may not exist at an old fork point), and the normal path
+downloads a baseline that already includes their coverage.
+
 ## Inputs
 
 ### omni-dev install + cache
@@ -87,10 +114,12 @@ are skipped in this mode.
 
 | Input              | Description                                                                                   | Default               |
 |--------------------|-----------------------------------------------------------------------------------------------|-----------------------|
-| `run-coverage`     | Run `cargo-llvm-cov` to produce the head report. Set `false` for thin mode                    | `true`                |
-| `report`           | Path to the per-line head lcov (produced in fat mode, supplied in thin mode)                  | `coverage-head.lcov`  |
-| `test-args`        | Arguments passed to `cargo test` / `cargo llvm-cov` under instrumentation                     | `--all-features --workspace` |
-| `fail-under-lines` | Overall line-coverage gate (`cargo llvm-cov report --fail-under-lines`). Empty disables it    | `30`                  |
+| `run-coverage`        | Run `cargo-llvm-cov` to produce the head report. Set `false` for thin mode                 | `true`                |
+| `report`              | Path to the per-line head lcov (produced in fat mode, supplied in thin mode)               | `coverage-head.lcov`  |
+| `test-args`           | Arguments passed to `cargo test` / `cargo llvm-cov` under instrumentation                  | `--all-features --workspace` |
+| `setup-commands`      | Commands run under instrumentation BEFORE the test run, with profiling disabled (no coverage). Fetch fixtures the tests need (e.g. an ML model). One per line | `''` |
+| `extra-test-commands` | Extra instrumented `cargo test` invocations run AFTER the main run, contributing coverage. For `--ignored`/model-gated suites `test-args` can't reach. One per line | `''` |
+| `fail-under-lines`    | Overall line-coverage gate (`cargo llvm-cov report --fail-under-lines`). Empty disables it | `30`                  |
 
 ### Diff / patch-coverage comment
 

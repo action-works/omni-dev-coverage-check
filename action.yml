@@ -38,6 +38,14 @@ inputs:
     description: 'Arguments passed to `cargo test`/`cargo llvm-cov` under instrumentation (fat mode)'
     required: false
     default: '--all-features --workspace'
+  setup-commands:
+    description: 'Shell commands run under the coverage instrumentation env BEFORE the main test run, with profiling disabled (LLVM_PROFILE_FILE=/dev/null) so they reuse the instrumented dependency build without contributing coverage. Use to fetch fixtures the tests need (e.g. an ML model file). One command per line. Empty runs nothing'
+    required: false
+    default: ''
+  extra-test-commands:
+    description: 'Additional `cargo test`/`cargo llvm-cov` invocations run under the instrumentation env AFTER the main test run, contributing to the head coverage corpus. Use for model-gated/`--ignored` suites that the single `test-args` run cannot reach. One command per line. Empty runs nothing. NOT applied to the merge-base worktree recompute'
+    required: false
+    default: ''
   fail-under-lines:
     description: 'Overall line-coverage gate via `cargo llvm-cov report --fail-under-lines` (fat mode). Empty disables the gate'
     required: false
@@ -301,14 +309,46 @@ runs:
       if: inputs.run-coverage == 'true'
       uses: taiki-e/install-action@cargo-llvm-cov
 
-    - name: Run tests with coverage
+    - name: Clean coverage profile data
       if: inputs.run-coverage == 'true'
       shell: bash
       run: |
         # shellcheck disable=SC1090
         source <(cargo llvm-cov show-env --sh)
         cargo llvm-cov clean --workspace
+
+    - name: Coverage setup commands
+      # Runs under the instrumentation env so it reuses the instrumented
+      # dependency build, but with profiling sent to /dev/null so it contributes
+      # NO coverage — e.g. an ML-model download the gated tests below need. Must
+      # run after `clean` (so it isn't wiped) and before the test runs.
+      if: inputs.run-coverage == 'true' && inputs.setup-commands != ''
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        source <(cargo llvm-cov show-env --sh)
+        export LLVM_PROFILE_FILE=/dev/null
+        ${{ inputs.setup-commands }}
+
+    - name: Run tests with coverage
+      if: inputs.run-coverage == 'true'
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        source <(cargo llvm-cov show-env --sh)
         cargo test ${{ inputs.test-args }}
+
+    - name: Run extra (gated) tests with coverage
+      # Additional instrumented suites the single `test-args` run cannot reach
+      # (e.g. `--ignored` model-gated tests). They share the same profile corpus,
+      # so their coverage lands in the head report and counts toward the line
+      # gate. Deliberately NOT run in the worktree recompute below.
+      if: inputs.run-coverage == 'true' && inputs.extra-test-commands != ''
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        source <(cargo llvm-cov show-env --sh)
+        ${{ inputs.extra-test-commands }}
 
     - name: Generate codecov.json
       # Kept ready so the optional codecov.io upload below works when enabled.
@@ -393,6 +433,9 @@ runs:
       # Runs whenever the merge-base has no usable baseline (cold start, expired
       # artifact). Builds coverage at that exact commit in a worktree so the
       # comparison stays correct. A no-op when the baseline was downloaded.
+      # Uses only `test-args` — `setup-commands`/`extra-test-commands` are NOT
+      # replayed here: gated suites/fixtures may not exist at an old merge-base,
+      # and the normal path downloads a baseline that already includes them.
       if: github.event_name == 'pull_request' && inputs.run-coverage == 'true' && inputs.recompute-baseline == 'true'
       shell: bash
       run: |
