@@ -104,11 +104,12 @@ downloads a baseline that already includes their coverage.
 
 ### omni-dev install + cache
 
-| Input                 | Description                                                                     | Default  |
-|-----------------------|---------------------------------------------------------------------------------|----------|
-| `version`             | omni-dev version to install (e.g. `0.15.0`, `latest`)                           | `latest` |
-| `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source      | `true`   |
-| `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                               | `''`     |
+| Input                 | Description                                                                                             | Default               |
+|-----------------------|--------------------------------------------------------------------------------------------------------|-----------------------|
+| `version`             | omni-dev version to install (e.g. `0.15.0`, `latest`)                                                   | `latest`              |
+| `github-token`        | Token authenticating the GitHub API call that resolves `version: latest` (1000/hr vs 60/hr unauthed)   | `${{ github.token }}` |
+| `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source                             | `true`                |
+| `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
 
 ### Coverage run (fat mode)
 

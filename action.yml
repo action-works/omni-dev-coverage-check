@@ -14,6 +14,10 @@ inputs:
     description: 'omni-dev version to install (e.g., 0.15.0, latest)'
     required: false
     default: 'latest'
+  github-token:
+    description: 'Token used to authenticate GitHub API calls when resolving `version: latest`. Authenticated requests use the 1000/hr rate limit instead of the 60/hr unauthenticated, shared-runner-IP limit that intermittently fails resolution. Defaults to the workflow token'
+    required: false
+    default: ${{ github.token }}
   use-prebuilt-binary:
     description: 'Download pre-built binary from GitHub releases instead of building from source via cargo install'
     required: false
@@ -161,19 +165,41 @@ runs:
     - name: Resolve omni-dev version
       id: resolve-version
       shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
       run: |
         VERSION="${{ inputs.version }}"
         if [ "$VERSION" = "latest" ]; then
-          RELEASE_TAG=$(curl -s https://api.github.com/repos/rust-works/omni-dev/releases/latest | jq -r '.tag_name')
-          if [ -z "$RELEASE_TAG" ] || [ "$RELEASE_TAG" = "null" ]; then
-            echo "::error::Could not determine latest omni-dev version from GitHub releases"
+          # Authenticate the API call so it draws on the 1000/hr authenticated
+          # rate limit rather than the 60/hr unauthenticated, shared-runner-IP
+          # limit that intermittently fails this step. The token is passed via
+          # the environment, so it never appears in the command line.
+          auth=()
+          if [ -n "$GH_TOKEN" ]; then
+            auth=(-H "Authorization: Bearer $GH_TOKEN")
+          fi
+          RELEASE_TAG=""
+          for attempt in 1 2 3; do
+            response=$(curl -sS \
+              "${auth[@]}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/rust-works/omni-dev/releases/latest || true)
+            RELEASE_TAG=$(printf '%s' "$response" | jq -r '.tag_name // empty' 2>/dev/null || true)
+            [ -n "$RELEASE_TAG" ] && break
+            api_message=$(printf '%s' "$response" | jq -r '.message // "no tag_name in response"' 2>/dev/null || true)
+            echo "::warning::Attempt ${attempt}/3: could not resolve latest omni-dev version (API: ${api_message:-unknown error})"
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 3)); fi
+          done
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts. If this is a rate limit, ensure a github-token is available (it defaults to \${{ github.token }})."
             exit 1
           fi
           VERSION="${RELEASE_TAG#v}"
           echo "Resolved latest omni-dev version: $VERSION"
         fi
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "release-tag=v$VERSION" >> $GITHUB_OUTPUT
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "release-tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
     - name: Cache omni-dev binary
       id: cache-omni-dev
