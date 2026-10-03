@@ -1,9 +1,11 @@
 name: Integration
 
-# Runs the action itself (`uses: ./`) in thin mode against fixture lcov files, so
-# the thin-mode line gate and `shard-reports` are exercised on a real runner on
-# every change. Each scenario's outcome is asserted at the end of its job; the
-# scenarios are `continue-on-error` so one regression does not hide the rest.
+# Runs the action itself (`uses: ./`) on a real runner on every change: in thin
+# mode against fixture lcov files (the thin-mode line gate and `shard-reports`),
+# and in fat mode against a fixture crate (the instrumented test run, the three
+# report outputs, the fat-mode line gate, `setup-commands`/`extra-test-commands`).
+# Each scenario's outcome is asserted at the end of its job; the scenarios are
+# `continue-on-error` so one regression does not hide the rest.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -12,6 +14,10 @@ name: Integration
 #   - Every scenario expected to fail has a control that differs in exactly one
 #     input and must succeed, plus a file check showing where the action stopped.
 #     `outcome == failure` alone also holds when the install breaks.
+#   - Fat-mode scenarios share the workspace, and the action writes some outputs
+#     to fixed names, so each scenario's outputs are moved to out/<id>/ before the
+#     next one runs. Otherwise a later scenario's checks could pass on an earlier
+#     one's leftovers.
 
 on:
   push:
@@ -234,6 +240,224 @@ jobs:
 
           if ! omni-dev --version | grep -qF "$OLD_OMNI_DEV"; then
             echo "::error::omni-dev on PATH is not $OLD_OMNI_DEV ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
+
+  fat-mode:
+    name: Fat mode (fixture crate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The action runs cargo at the workspace root, and a caller cannot give a
+      # composite action's steps a working directory, so the committed fixture
+      # crate is copied there. Only this job's checkout gets a root Cargo.toml.
+      # The crate has no dependencies, so there is no lockfile to commit.
+      - name: Copy the fixture crate to the workspace root
+        run: |
+          if [ -e Cargo.toml ] || [ -e src ]; then
+            echo "::error::Cargo.toml or src/ already exists at the repository root; the fixture would overwrite it"
+            exit 1
+          fi
+          cp -R tests/fixtures/fat-crate/. .
+          mkdir out
+
+      # The full configuration. The fixture covers 13 of 23 lines (56.5%) with
+      # everything, and 7 of 23 (30.4%) without the extra command, so the gates of
+      # 40 and 80 sit well either side of it. `setup-ran.txt` is what the main
+      # test needs, so it fails unless setup ran first. The setup test runs with
+      # profiling off, so `setup_only` must stay uncovered; the extra test is
+      # profiled, so `extra_only` must be covered. `recompute-baseline` is off
+      # because the fixture is not in git history, so the merge-base worktree
+      # that a pull request would build has no Cargo.toml.
+      - name: 'F1. Full configuration, gate below the fixture coverage'
+        id: f1
+        uses: ./
+        continue-on-error: true
+        with:
+          report: out/f1.lcov
+          fail-under-lines: 40
+          setup-commands: |
+            echo ready > setup-ran.txt
+            cargo test -- --ignored --exact tests::setup_only_works
+          extra-test-commands: cargo test -- --ignored --exact tests::extra_only_works
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          recompute-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Move F1 outputs aside
+        if: always()
+        run: |
+          mkdir out/f1
+          for f in codecov.json coverage-summary.txt coverage.md setup-ran.txt setup-test-ran.txt; do
+            if [ -e "$f" ]; then mv "$f" out/f1/; fi
+          done
+
+      # Control for F1: only the gate differs.
+      - name: 'F2. Same, gate above the fixture coverage'
+        id: f2
+        uses: ./
+        continue-on-error: true
+        with:
+          report: out/f2.lcov
+          fail-under-lines: 80
+          setup-commands: |
+            echo ready > setup-ran.txt
+            cargo test -- --ignored --exact tests::setup_only_works
+          extra-test-commands: cargo test -- --ignored --exact tests::extra_only_works
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          recompute-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Move F2 outputs aside
+        if: always()
+        run: |
+          mkdir out/f2
+          for f in codecov.json coverage-summary.txt coverage.md setup-ran.txt setup-test-ran.txt; do
+            if [ -e "$f" ]; then mv "$f" out/f2/; fi
+          done
+
+      # Control for F1: no extra command, so `extra_only` must now be uncovered.
+      # The gate is off because 30.4% is under 40.
+      - name: 'F3. Without extra-test-commands'
+        id: f3
+        uses: ./
+        continue-on-error: true
+        with:
+          report: out/f3.lcov
+          fail-under-lines: ''
+          setup-commands: |
+            echo ready > setup-ran.txt
+            cargo test -- --ignored --exact tests::setup_only_works
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          recompute-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Move F3 outputs aside
+        if: always()
+        run: |
+          mkdir out/f3
+          for f in codecov.json coverage-summary.txt coverage.md setup-ran.txt setup-test-ran.txt; do
+            if [ -e "$f" ]; then mv "$f" out/f3/; fi
+          done
+
+      # Control for F1: no setup command, so the main test fails and the action
+      # stops before it writes any report.
+      - name: 'F4. Without setup-commands'
+        id: f4
+        uses: ./
+        continue-on-error: true
+        with:
+          report: out/f4.lcov
+          fail-under-lines: 40
+          extra-test-commands: cargo test -- --ignored --exact tests::extra_only_works
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          recompute-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Move F4 outputs aside
+        if: always()
+        run: |
+          mkdir out/f4
+          for f in codecov.json coverage-summary.txt coverage.md setup-ran.txt setup-test-ran.txt; do
+            if [ -e "$f" ]; then mv "$f" out/f4/; fi
+          done
+
+      - name: Assert every outcome
+        env:
+          F1: ${{ steps.f1.outcome }}
+          F2: ${{ steps.f2.outcome }}
+          F3: ${{ steps.f3.outcome }}
+          F4: ${{ steps.f4.outcome }}
+          VERSION: ${{ steps.f1.outputs.version }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          assert() { # <label> <command...>
+            local label="$1"
+            shift
+            if "$@" > /dev/null 2>&1; then
+              echo "ok   - $label"
+            else
+              echo "::error::$label"
+              status=1
+            fi
+          }
+          # Whether a function's declaration line is covered in an lcov report:
+          # covered, uncovered, or missing (no record for it). The line comes from
+          # the fixture because the FN records carry hash-suffixed mangled names.
+          state() { # <lcov> <function>
+            local line
+            line="$(grep -n "pub fn $2(" src/lib.rs | head -1 | cut -d: -f1)"
+            awk -F'[:,]' -v line="$line" '
+              $1 == "DA" && $2 == line { print ($3 > 0 ? "covered" : "uncovered"); found = 1 }
+              END { if (!found) print "missing" }' "$1"
+          }
+
+          check "F1. full configuration, gate below the coverage" success "$F1"
+          check "F2. same, gate above the coverage" failure "$F2"
+          check "F3. without extra-test-commands" success "$F3"
+          check "F4. without setup-commands" failure "$F4"
+
+          # F1: the three outputs exist and are well formed.
+          assert "F1: codecov.json names src/lib.rs" \
+            jq -e '.coverage | keys | any(endswith("/src/lib.rs"))' out/f1/codecov.json
+          assert "F1: the lcov report has a record for src/lib.rs" \
+            grep -q '^SF:.*/src/lib\.rs$' out/f1.lcov
+          assert "F1: the summary has a TOTAL row" \
+            grep -q '^TOTAL' out/f1/coverage-summary.txt
+
+          # F1: which part of the run reached which function.
+          check "F1: main_run, from the main test run" covered "$(state out/f1.lcov main_run)"
+          check "F1: extra_only, from extra-test-commands" covered "$(state out/f1.lcov extra_only)"
+          check "F1: setup_only, run with profiling off" uncovered "$(state out/f1.lcov setup_only)"
+          check "F1: never, reached by nothing" uncovered "$(state out/f1.lcov never)"
+          # Without this, setup_only could be uncovered only because its test
+          # never ran.
+          assert "F1: the setup test ran" test -e out/f1/setup-test-ran.txt
+
+          # F2 must fail at the gate, after every output was written.
+          assert "F2: stopped at the gate: codecov.json written" test -s out/f2/codecov.json
+          assert "F2: stopped at the gate: lcov written" test -s out/f2.lcov
+          assert "F2: stopped at the gate: summary written" test -s out/f2/coverage-summary.txt
+
+          # F3 differs from F1 only in the extra command.
+          check "F3: main_run still covered" covered "$(state out/f3.lcov main_run)"
+          check "F3: extra_only uncovered without the extra command" uncovered "$(state out/f3.lcov extra_only)"
+
+          # F4 must fail in the main test run, before any report.
+          assert "F4: stopped at the tests: no lcov" test ! -e out/f4.lcov
+          assert "F4: stopped at the tests: no codecov.json" test ! -e out/f4/codecov.json
+
+          # The comment is built on pull requests only.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            assert "F1: the pull-request diff was rendered" test -s out/f1/coverage.md
+          else
+            assert "F1: no diff rendered outside a pull request" test ! -e out/f1/coverage.md
+          fi
+
+          # The binary on PATH is the version that was resolved. A cache entry
+          # holding another version's binary fails here.
+          if ! omni-dev --version | grep -qF "$VERSION"; then
+            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
             status=1
           fi
           exit "$status"
