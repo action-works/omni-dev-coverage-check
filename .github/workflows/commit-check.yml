@@ -17,5 +17,5 @@ jobs:
 
       - uses: action-works/omni-dev-commit-check@v1
         with:
-          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          command: lint
           verbose: true
