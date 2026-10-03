@@ -14,6 +14,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov
 - `.github/pull_request_template.md` - PR template
 
 ## How It Works
@@ -71,6 +72,14 @@ The action is a composite action with two phases:
   without `coverage diff --fail-under-lines`, so a guard step feature-detects it and
   fails with the fix. Do not tag a release of this action until an omni-dev release
   with the flag exists, or every thin-mode caller on the default gate would fail.
+- **Integration workflow**: `integration.yml` asserts each scenario's step `outcome`
+  (not `conclusion`, which is `success` under `continue-on-error`). Three rules keep it
+  honest. Run one omni-dev version per job: `actions/cache` saves in a post step, so a
+  second version installed over `~/.cargo/bin/omni-dev` poisons the first version's
+  key. Give every expected failure a control that differs in one input and must
+  succeed, plus a file check showing where the action stopped. `OLD_OMNI_DEV` is the
+  newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
+  floor rises; change it only if the guard starts detecting a newer flag.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.
