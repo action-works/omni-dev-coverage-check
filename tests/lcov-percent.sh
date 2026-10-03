@@ -2,6 +2,7 @@
 # Prints the line coverage of an lcov report as a percentage with two decimals.
 #
 # Usage: lcov-percent.sh <lcov>
+# Exit status: 0 with the percentage on stdout, 2 for a wrong number of arguments.
 #
 # A file's repeated records (one per shard, in a combined report) are unioned the
 # way `omni-dev coverage diff` does: a line is covered if any record hit it. The
