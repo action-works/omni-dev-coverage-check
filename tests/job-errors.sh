@@ -24,8 +24,11 @@
 # say, because `gh` uses some of the small numbers for its own errors.
 #
 # `filter=latest` is the newest attempt of each job, so a re-run does not read a
-# stale one. The log is read from a job that has already finished, but whether the
-# API serves it at that moment is not guaranteed, hence the retries.
+# stale one. The log is read from a job that has already finished. The API has
+# served it at once on every run so far, a couple of seconds after that job ended;
+# the retries are insurance against that not holding, not a known need. A
+# permanent failure (a missing permission, say) is retried too, and the last
+# attempt's own error is what the final message carries.
 set -euo pipefail
 
 name="${1:?usage: job-errors.sh <job name>}"
@@ -44,9 +47,9 @@ fi
 id="$(jq -r '.[0]' <<<"$ids")"
 
 # gh 2.97 and later refuse to print a response that holds terminal escape
-# sequences unless told to, and a runner log is full of colour codes (the same
-# bytes this script's sed leaves alone). The log is captured and filtered here and
-# never reaches a terminal. An older gh has neither the refusal nor the flag.
+# sequences unless told to, and a runner log is full of colour codes. The log is
+# captured and filtered here and never reaches a terminal. An older gh has neither
+# the refusal nor the flag.
 # The help is captured first, not piped: `grep -q` can exit before gh has finished
 # writing, and with pipefail the pipeline then fails and the flag is skipped.
 log_flags=()

@@ -97,6 +97,11 @@ The action is a composite action with two phases:
     holds the same message text whether or not the step ran it, so grepping the whole
     log passes for the wrong reason.
   - Each check needs all its fragments in ONE message, so two errors cannot add up.
+  - `gh` 2.97 and later refuse to print an API response that holds terminal escape
+    sequences, and a runner log is full of ANSI colour. `job-errors.sh` passes
+    `--allow-escape-sequences` when `gh api --help` lists it (an older `gh` has
+    neither). Detect it from captured help, not a `| grep -q` pipe: `grep -q` can
+    exit first and `pipefail` then fails the pipeline.
   - It is the only job with `actions: read` (job-level `permissions` drops the rest,
     so it also lists `contents: read` for the checkout). Keep it that way.
   - It names the jobs it reads, including the thin-mode matrix versions. Renaming a
