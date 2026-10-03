@@ -1,0 +1,11 @@
+[package]
+name = "delta-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+# The job copies this crate to the repository root, so cargo would otherwise
+# also discover this repository's own tests/, examples/ and benches/ directories
+# as targets of the fixture and add them to the measured coverage.
+autotests = false
+autoexamples = false
+autobenches = false
