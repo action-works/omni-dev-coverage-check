@@ -10,6 +10,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 
 - `action.yml` - The composite GitHub Action definition (the core of this project)
 - `README.md` - User documentation with examples and input/output reference
+- `scripts/combine-shards.sh` - Checks and joins per-shard lcov files for the `shard-reports` input
+- `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
 - `.github/pull_request_template.md` - PR template
@@ -29,7 +31,9 @@ The action is a composite action with two phases:
      of instrumented dependency artifacts), then emit `codecov.json`, the
      per-line `report` lcov, and a `--summary-only` summary.
    - **Thin mode (`run-coverage: false`)**: skip cargo-llvm-cov entirely; the
-     caller supplies the per-line lcov via the `report` input.
+     caller supplies the per-line lcov via the `report` input — or, for a run
+     sharded across jobs, via `shard-reports`, which `scripts/combine-shards.sh`
+     checks and joins into `report` so every later step still reads one file.
    - On pull requests: compute the `origin/main`..`HEAD` merge-base, download the
      `coverage-baseline` artifact for that exact commit, and on a miss recompute
      it in a git worktree (fat mode). Render the comment with
@@ -38,8 +42,9 @@ The action is a composite action with two phases:
    - On pushes to `main`: publish this run's lcov as the `coverage-baseline`
      artifact.
    - **Gates run last** so the summary and PR comment still post when a gate
-     fails: `--fail-under-patch` (patch coverage) then
-     `cargo llvm-cov report --fail-under-lines` (overall line coverage).
+     fails: `--fail-under-patch` (patch coverage) then the overall line gate —
+     `cargo llvm-cov report --fail-under-lines` in fat mode, `omni-dev coverage
+     diff --fail-under-lines` in thin mode (which has no profile data).
 
 ## Key Technical Details
 
@@ -59,6 +64,13 @@ The action is a composite action with two phases:
   contributes no coverage); `extra-test-commands` runs post-test and DOES
   contribute. Both are skipped in the worktree recompute, so the merge-base stays
   buildable at old fork points and only `test-args` defines that baseline.
+- **Shard join**: `cargo llvm-cov` writes no newline after its final `end_of_record`,
+  so a bare `cat` of shards glues records and a consumer can silently drop a file.
+  `combine-shards.sh` always puts a newline between shards; keep that if you touch it.
+- **Thin-mode line gate needs a new omni-dev**: `latest` can resolve to a release
+  without `coverage diff --fail-under-lines`, so a guard step feature-detects it and
+  fails with the fix. Do not tag a release of this action until an omni-dev release
+  with the flag exists, or every thin-mode caller on the default gate would fail.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.

@@ -9,6 +9,8 @@ It is the coverage counterpart to [omni-dev-commit-check](https://github.com/act
 - Cached, version-pinnable `omni-dev` binary (same key scheme as commit-check)
 - **Fat mode (default)**: runs `cargo-llvm-cov` for you and produces the report
 - **Thin mode**: bring your own lcov; the action only diffs, comments, and gates
+- **Sharded runs**: split the instrumented run across concurrent jobs, then combine the
+  shard reports in one aggregation job and keep the comment, baseline, and gates
 - Merge-base baseline with a download + git-worktree-recompute fallback
 - Sticky pull-request comment with patch coverage, per-file deltas, and the
   uncovered `file:line` list (via `omni-dev coverage diff`)
@@ -56,10 +58,18 @@ install, instrumented test run, report generation, baseline, comment, and gates.
 ### Thin mode
 
 `run-coverage: false` skips `cargo-llvm-cov` entirely. Produce the per-line lcov
-yourself (any tool, any language) and point `report` at it; the action only runs
-`omni-dev coverage diff`, posts the comment, and applies `--fail-under-patch`.
-The line gate and the worktree baseline fallback (both `cargo-llvm-cov`-specific)
-are skipped in this mode.
+yourself (any tool, any language) and point `report` at it; the action runs
+`omni-dev coverage diff`, posts the comment, and applies `--fail-under-patch` and
+`--fail-under-lines`. The worktree baseline fallback is `cargo-llvm-cov`-specific
+and is skipped in this mode, so a baseline-download miss means a comment without
+deltas.
+
+The thin-mode line gate reads the lcov itself (`omni-dev coverage diff
+--fail-under-lines`) rather than `cargo llvm-cov report`, so its figure can differ
+slightly from llvm-cov's own summary: on omni-dev's own suite (about 97% covered)
+it ran 0.16 percentage points higher. It also needs an omni-dev release that has
+the flag; the action stops with that message if the installed one does not. Set
+`fail-under-lines: ''` to run thin mode without a line gate.
 
 ```yaml
 - run: |
@@ -72,6 +82,91 @@ are skipped in this mode.
     report: coverage-head.lcov
     fail-under-patch: 80
 ```
+
+### Sharded runs (thin mode)
+
+When the instrumented test run is too slow for one job, split it across a matrix of
+shard jobs and combine their lcov reports in one aggregation job. The aggregation
+job keeps everything a single job gave you: the PR comment, the baseline publish on
+`main`, the patch gate, and the overall line gate.
+
+```yaml
+jobs:
+  shard:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false              # a failed shard must still fail the aggregation job, not hide it
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      # `cargo test` cannot partition; nextest can.
+      - run: >-
+          cargo llvm-cov nextest --all-features --workspace
+          --partition count:${{ matrix.shard }}/3
+          --lcov --output-path shard-${{ matrix.shard }}.lcov
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.lcov
+
+  coverage:
+    needs: shard                    # not `if: always()`: a failed shard fails this job
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true      # every shard file lands in one directory
+          path: shards
+      - uses: action-works/omni-dev-coverage-check@v1
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          fail-under-lines: 70
+          fail-under-patch: 80
+```
+
+`shard-reports` takes paths or globs, one per line. The action checks each shard,
+joins them into `report` (default `coverage-head.lcov`), and every later step reads
+that one file, exactly as if a single job had produced it. A shard that is missing
+(a glob that matches nothing, or a path that does not exist), empty, or without any
+line records fails the run **by name**, so a failed shard cannot quietly lower
+coverage. A shard whose absolute paths all fall outside the workspace root draws a
+warning.
+
+Things to know:
+
+- **Partitioning needs nextest**, and nextest does not run doctests, so coverage
+  that comes only from doctests is lost when moving off `cargo test`.
+- **`setup-commands` and `extra-test-commands` are fat-mode inputs.** In a sharded
+  run, do that work in the shard jobs yourself.
+- **Every shard must run under the same workspace root** (the same runner image
+  does), because the report paths are made repo-relative by stripping one prefix.
+  Use `strip-prefix` if the root is not the checkout directory.
+- **The shards are merged as lcov.** The merge is a union: a line any shard covered is
+  covered. It does not sum hit counts, which nothing in the line output reads.
+- **A sharded total is not bit-identical to an unsharded one** when tests depend on
+  timing or process-global state; on omni-dev's suite 38 of 324,274 lines differed.
+- **`strip-prefix`, `report-format`, and the baseline are as in thin mode.**
+  `report-format`, if set, must be `lcov`. The baseline published on `main` is the
+  combined file.
+- With `codecov: true` in thin mode, the action uploads the shard files themselves
+  (codecov merges several uploads natively) and, outside sharded runs, the lcov at
+  `report`, since there is no `codecov.json`.
 
 ### Fat mode with fixture setup + model-gated tests
 
@@ -116,11 +211,12 @@ downloads a baseline that already includes their coverage.
 | Input              | Description                                                                                   | Default               |
 |--------------------|-----------------------------------------------------------------------------------------------|-----------------------|
 | `run-coverage`        | Run `cargo-llvm-cov` to produce the head report. Set `false` for thin mode                 | `true`                |
-| `report`              | Path to the per-line head lcov (produced in fat mode, supplied in thin mode)               | `coverage-head.lcov`  |
+| `report`              | Path to the per-line head lcov (produced in fat mode, supplied in thin mode; with `shard-reports`, where the combined report is written) | `coverage-head.lcov`  |
+| `shard-reports`       | Thin mode: the per-shard lcov reports (paths or globs, one per line) to check and combine into `report`. Requires `run-coverage: false` | `''` |
 | `test-args`           | Arguments passed to `cargo test` / `cargo llvm-cov` under instrumentation                  | `--all-features --workspace` |
 | `setup-commands`      | Commands run under instrumentation BEFORE the test run, with profiling disabled (no coverage). Fetch fixtures the tests need (e.g. an ML model). One per line | `''` |
 | `extra-test-commands` | Extra instrumented `cargo test` invocations run AFTER the main run, contributing coverage. For `--ignored`/model-gated suites `test-args` can't reach. One per line | `''` |
-| `fail-under-lines`    | Overall line-coverage gate (`cargo llvm-cov report --fail-under-lines`). Empty disables it | `30`                  |
+| `fail-under-lines`    | Overall line-coverage gate: `cargo llvm-cov report --fail-under-lines` in fat mode, `omni-dev coverage diff --fail-under-lines` in thin mode (needs an omni-dev release with the flag). Empty disables it | `30`                  |
 
 ### Diff / patch-coverage comment
 
@@ -156,7 +252,7 @@ downloads a baseline that already includes their coverage.
 
 | Input           | Description                                          | Default |
 |-----------------|------------------------------------------------------|---------|
-| `codecov`       | Upload `codecov.json` to codecov.io                  | `false` |
+| `codecov`       | Upload to codecov.io: `codecov.json` in fat mode, the lcov (the shard files when sharded) in thin mode | `false` |
 | `codecov-token` | codecov.io upload token (pass `${{ secrets.* }}`)    | `''`    |
 
 ## Outputs
@@ -185,7 +281,7 @@ while the PR was open:
    `worktree-system-deps` if building that historical commit needs system
    packages (omni-dev passes `libasound2-dev`).
 3. **Publish** on `main` pushes: this run's lcov becomes the baseline future PRs
-   download.
+   download. In a sharded run that is the combined report.
 
 Without a baseline the comment still renders patch coverage and the uncovered-line
 list; only the deltas and indirect-change sections are omitted.
@@ -197,14 +293,21 @@ posts when a gate fails:
 
 - **Patch coverage** — set `fail-under-patch` to fail the build when the lines
   this PR added fall below the threshold.
-- **Overall line coverage** — `fail-under-lines` (default `30`, fat mode) fails
-  the build via `cargo llvm-cov report --fail-under-lines`.
+- **Overall line coverage** — `fail-under-lines` (default `30`) fails the build.
+  Fat mode uses `cargo llvm-cov report --fail-under-lines`; thin mode uses
+  `omni-dev coverage diff --fail-under-lines`, which counts from the lcov and can
+  differ slightly from llvm-cov's figure. Thin mode gates on every event, a push
+  included. **If you used thin mode before this input applied to it, the default
+  now gates you at 30%;** set `fail-under-lines: ''` to keep the old behaviour.
 
 ## Requirements
 
 - Check out with `fetch-depth: 0` so `git merge-base` can resolve the PR's fork point.
 - `permissions: pull-requests: write` on the job, so the comment can be posted.
 - Fat mode builds Rust under `cargo-llvm-cov`; thin mode needs only a per-line lcov.
+- Thin mode's line gate and `shard-reports` need an omni-dev release that has
+  `coverage diff --fail-under-lines` (the first after v0.44.0). With `version: latest`
+  that is automatic once it is released; if you pin `version`, pin one that has it.
 
 ## Example: pinned version, codecov upload, and a patch gate
 

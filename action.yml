@@ -35,9 +35,13 @@ inputs:
     required: false
     default: 'true'
   report:
-    description: 'Path to the per-line head coverage report (lcov). Produced by the action in fat mode; must already exist in thin mode'
+    description: 'Path to the per-line head coverage report (lcov). Produced by the action in fat mode; must already exist in thin mode. With `shard-reports` it is instead where the combined report is written'
     required: false
     default: 'coverage-head.lcov'
+  shard-reports:
+    description: 'Thin mode only. Per-shard lcov reports (paths or globs, one per line) from a coverage run split across jobs. They are combined into `report` after each is checked: a missing, empty, or wrongly-rooted shard is named, so a failed shard cannot silently lower coverage. Everything downstream (comment, baseline, line gate) then reads that one file. Requires `run-coverage: false`'
+    required: false
+    default: ''
   test-args:
     description: 'Arguments passed to `cargo test`/`cargo llvm-cov` under instrumentation (fat mode)'
     required: false
@@ -51,7 +55,7 @@ inputs:
     required: false
     default: ''
   fail-under-lines:
-    description: 'Overall line-coverage gate via `cargo llvm-cov report --fail-under-lines` (fat mode). Empty disables the gate'
+    description: 'Overall line-coverage gate. Fat mode uses `cargo llvm-cov report --fail-under-lines`; thin mode uses `omni-dev coverage diff --fail-under-lines`, which reads the lcov itself, so its figure can differ slightly from llvm-cov''s and needs an omni-dev release that has the flag. Empty disables the gate'
     required: false
     default: '30'
 
@@ -317,6 +321,35 @@ runs:
       shell: bash
       run: omni-dev --version
 
+    - name: Check omni-dev supports the thin-mode line gate
+      # `latest` can resolve to a release that predates the flag. Fail with the
+      # fix rather than letting clap report an unknown argument at gate time.
+      if: inputs.run-coverage != 'true' && inputs.fail-under-lines != ''
+      shell: bash
+      run: |
+        # Capture first: `grep -q` closing the pipe early would SIGPIPE omni-dev,
+        # and under `pipefail` that fails the step even when grep matched.
+        help="$(omni-dev coverage diff --help)"
+        if ! grep -q -- '--fail-under-lines' <<<"$help"; then
+          echo "::error::$(omni-dev --version) has no 'coverage diff --fail-under-lines', which thin mode uses for the line gate. Set 'version' to a release that includes it, or set 'fail-under-lines' to an empty string to run thin mode without a line gate."
+          exit 1
+        fi
+
+    - name: Combine shard reports
+      # Thin mode with a sharded run: check each shard and join them into
+      # `report`, so every later step reads one ordinary lcov. A bare `cat` would
+      # glue records (llvm-cov writes no trailing newline), hence the script.
+      id: shards
+      if: inputs.shard-reports != ''
+      shell: bash
+      env:
+        SHARD_REPORTS: ${{ inputs.shard-reports }}
+        REPORT: ${{ inputs.report }}
+        REPORT_FORMAT: ${{ inputs.report-format }}
+        RUN_COVERAGE: ${{ inputs.run-coverage }}
+        STRIP_PREFIX: ${{ inputs.strip-prefix }}
+      run: bash "${{ github.action_path }}/scripts/combine-shards.sh"
+
     # -------------------------------------------------------------------------
     # Coverage run (fat mode). Every cargo step below sources cargo-llvm-cov's
     # instrumentation env so they share ONE set of dependency artifacts.
@@ -552,11 +585,15 @@ runs:
         path: ${{ inputs.report }}
 
     - name: Upload to codecov.io
+      # Fat mode has `codecov.json`. In thin mode there is none, so upload the
+      # lcov instead — the shard files themselves when sharded, since codecov
+      # merges several uploaded reports natively and a joined file would repeat
+      # every file's record once per shard.
       if: inputs.codecov == 'true'
       uses: codecov/codecov-action@v7
       with:
         token: ${{ inputs.codecov-token }}
-        files: codecov.json
+        files: ${{ inputs.run-coverage == 'true' && 'codecov.json' || steps.shards.outputs.files || inputs.report }}
         fail_ci_if_error: true
 
     # -------------------------------------------------------------------------
@@ -592,3 +629,28 @@ runs:
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov report --summary-only --fail-under-lines "${{ inputs.fail-under-lines }}"
+
+    - name: Enforce line-coverage gate (thin mode)
+      # No profile data here for `cargo llvm-cov report`, so the gate reads the
+      # lcov itself. It looks only at the head report, so no baseline is needed.
+      if: inputs.run-coverage != 'true' && inputs.fail-under-lines != ''
+      shell: bash
+      env:
+        BASE_REF: ${{ steps.mb.outputs.sha }}
+      run: |
+        # On a push there is no merge-base (the step is skipped): HEAD..HEAD is an
+        # empty diff, which is all a head-only gate needs.
+        args=(coverage diff
+          --report "${{ inputs.report }}"
+          --base-ref "${BASE_REF:-HEAD}"
+          --fail-under-lines "${{ inputs.fail-under-lines }}"
+          -o json)
+        # Mirror the parse-affecting flags from the comment diff so the gated
+        # percentage is the one the comment reported.
+        if [ -n "${{ inputs.strip-prefix }}" ]; then
+          args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        fi
+        if [ -n "${{ inputs.report-format }}" ]; then
+          args+=(--report-format "${{ inputs.report-format }}")
+        fi
+        omni-dev "${args[@]}" > /dev/null
