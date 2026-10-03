@@ -29,6 +29,9 @@ mod tests {
 
     #[test]
     fn main_run_after_setup() {
+        // Proof that this test executed, so a failure below is known to come
+        // from here and not from an earlier step.
+        std::fs::write("main-test-ran.txt", "").unwrap();
         // `setup-commands` must have run first.
         assert!(std::path::Path::new("setup-ran.txt").exists());
         assert_eq!(main_run(), 2);

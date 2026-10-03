@@ -265,8 +265,8 @@ jobs:
           cp -R tests/fixtures/fat-crate/. .
           mkdir out
 
-      # The full configuration. The fixture covers 13 of 23 lines (56.5%) with
-      # everything, and 7 of 23 (30.4%) without the extra command, so the gates of
+      # The full configuration. The fixture covers 14 of 24 lines (58.3%) with
+      # everything, and 8 of 24 (33.3%) without the extra command, so the gates of
       # 40 and 80 sit well either side of it. `setup-ran.txt` is what the main
       # test needs, so it fails unless setup ran first. The setup test runs with
       # profiling off, so `setup_only` must stay uncovered; the extra test is
@@ -292,11 +292,7 @@ jobs:
 
       - name: Move F1 outputs aside
         if: always()
-        run: |
-          mkdir out/f1
-          for f in codecov.json coverage-summary.txt coverage.md setup-ran.txt setup-test-ran.txt; do
-            if [ -e "$f" ]; then mv "$f" out/f1/; fi
-          done
+        run: bash tests/move-fat-outputs.sh f1
 
       # Control for F1: only the gate differs.
       - name: 'F2. Same, gate above the fixture coverage'
@@ -318,14 +314,10 @@ jobs:
 
       - name: Move F2 outputs aside
         if: always()
-        run: |
-          mkdir out/f2
-          for f in codecov.json coverage-summary.txt coverage.md setup-ran.txt setup-test-ran.txt; do
-            if [ -e "$f" ]; then mv "$f" out/f2/; fi
-          done
+        run: bash tests/move-fat-outputs.sh f2
 
       # Control for F1: no extra command, so `extra_only` must now be uncovered.
-      # The gate is off because 30.4% is under 40.
+      # The gate is off because 33.3% is under 40.
       - name: 'F3. Without extra-test-commands'
         id: f3
         uses: ./
@@ -344,11 +336,7 @@ jobs:
 
       - name: Move F3 outputs aside
         if: always()
-        run: |
-          mkdir out/f3
-          for f in codecov.json coverage-summary.txt coverage.md setup-ran.txt setup-test-ran.txt; do
-            if [ -e "$f" ]; then mv "$f" out/f3/; fi
-          done
+        run: bash tests/move-fat-outputs.sh f3
 
       # Control for F1: no setup command, so the main test fails and the action
       # stops before it writes any report.
@@ -368,11 +356,7 @@ jobs:
 
       - name: Move F4 outputs aside
         if: always()
-        run: |
-          mkdir out/f4
-          for f in codecov.json coverage-summary.txt coverage.md setup-ran.txt setup-test-ran.txt; do
-            if [ -e "$f" ]; then mv "$f" out/f4/; fi
-          done
+        run: bash tests/move-fat-outputs.sh f4
 
       - name: Assert every outcome
         env:
@@ -433,6 +417,7 @@ jobs:
           # Without this, setup_only could be uncovered only because its test
           # never ran.
           assert "F1: the setup test ran" test -e out/f1/setup-test-ran.txt
+          assert "F1: the main test ran" test -e out/f1/main-test-ran.txt
 
           # F2 must fail at the gate, after every output was written.
           assert "F2: stopped at the gate: codecov.json written" test -s out/f2/codecov.json
@@ -443,13 +428,19 @@ jobs:
           check "F3: main_run still covered" covered "$(state out/f3.lcov main_run)"
           check "F3: extra_only uncovered without the extra command" uncovered "$(state out/f3.lcov extra_only)"
 
-          # F4 must fail in the main test run, before any report.
-          assert "F4: stopped at the tests: no lcov" test ! -e out/f4.lcov
-          assert "F4: stopped at the tests: no codecov.json" test ! -e out/f4/codecov.json
+          # F4 must fail in the main test run, before any report. The test leaves
+          # a marker before it checks for the setup's file, so the marker shows
+          # the failure came from the test and not from an earlier step.
+          assert "F4: stopped in the main test: it ran" test -e out/f4/main-test-ran.txt
+          assert "F4: stopped in the main test: no lcov" test ! -e out/f4.lcov
+          assert "F4: stopped in the main test: no codecov.json" test ! -e out/f4/codecov.json
 
-          # The comment is built on pull requests only.
+          # The comment is built on pull requests only. Its total is the report's
+          # own total, so it shows the diff was rendered from F1's report.
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            assert "F1: the pull-request diff was rendered" test -s out/f1/coverage.md
+            total="$(awk '/^TOTAL/ { print $10 }' out/f1/coverage-summary.txt)"
+            assert "F1: the pull-request comment reports the run's total ($total)" \
+              grep -qF "Total: **$total**" out/f1/coverage.md
           else
             assert "F1: no diff rendered outside a pull request" test ! -e out/f1/coverage.md
           fi
