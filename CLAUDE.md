@@ -23,7 +23,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
 - `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit
 - `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
-- `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally
+- `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally (`tests/prepare-shard-crate.test.sh` tests it; `test.yml` runs that)
+- `tests/assert-lib.sh` - Assertion helpers the `e2e-sharded.yml` checking steps source (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `.github/pull_request_template.md` - PR template
 
@@ -191,6 +192,17 @@ The action is a composite action with two phases:
     most 43.75%); re-measure if the fixture's lines change. 21/32 is exactly 65.625,
     which omni-dev and `lcov-percent.sh` round to different neighbours, so compare
     their figures with a tolerance of 0.02, not 0.01.
+  - The checking steps source `tests/assert-lib.sh` rather than inlining `check` and
+    `assert` as the other workflows do: three steps need the same helpers, and what the
+    numeric ones do with a missing value decides whether a gate's assertion can pass
+    vacuously. `lt` and `ge` succeed only for two numbers: awk compares `null` (what
+    `jq -r` prints for a missing field) as text, which made `ge` pass quietly. `assert`
+    prints what a failed command printed, and the steps print the measured figures, so a
+    first red run on a runner can be read without a re-run.
+  - `prepare-shard-crate.sh --commit` fails if a file it copied was not committed
+    (`git add` skips an ignored file silently), so a `.gitignore` rule cannot shorten the
+    patch unnoticed.
+  - E1's sticky comment is left on the pull request on purpose, as the evidence.
   - Each failing scenario differs from E1 in one input, and the gate it failed is
     attributed from its own numbers (E2's patch is under its gate while its line total
     clears the other; E3 the reverse), since a composite action exposes no output for

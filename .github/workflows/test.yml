@@ -21,3 +21,9 @@ jobs:
 
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
+
+      - name: Test assert-lib.sh
+        run: bash tests/assert-lib.test.sh
+
+      - name: Test prepare-shard-crate.sh
+        run: bash tests/prepare-shard-crate.test.sh

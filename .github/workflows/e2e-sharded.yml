@@ -43,6 +43,10 @@ name: E2E sharded
 #   - E2 and E1 share a comment header and render the same comment on a miss, so
 #     E2's is read back and deleted before E1 runs. Otherwise an E1 that stopped
 #     posting would pass on E2's comment. E3-E5 post nothing.
+#   - E1's comment is left on the pull request on purpose: it is what a reader
+#     sees, and the evidence that the comment posted. A qualifying pull request
+#     therefore carries two coverage comments, this one and pr-paths.yml's, each
+#     under its own header and describing its own fixture, not the pull request.
 
 on:
   push:
@@ -109,8 +113,11 @@ jobs:
 
       # `cargo llvm-cov` writes no `TN:` line. Inserting one (in place, so the
       # report still ends without a newline, as llvm-cov writes it) lets a baseline
-      # downloaded later say which commit it was published for.
+      # downloaded later say which commit it was published for. Only a push makes
+      # a baseline; on a pull request `GITHUB_SHA` is the synthetic merge commit,
+      # and nothing reads the tag there.
       - name: Tag the report with the commit
+        if: github.event_name == 'push'
         env:
           SHARD: ${{ matrix.shard }}
         run: perl -pi -e 's/^SF:/TN:$ENV{GITHUB_SHA}\nSF:/' "shard-${SHARD}.lcov"
@@ -171,38 +178,13 @@ jobs:
           VERSION: ${{ steps.b1.outputs.version }}
         run: |
           status=0
-          check() { # <label> <expected> <actual>
-            if [ "$2" = "$3" ]; then
-              echo "ok   - $1"
-            else
-              echo "::error::$1: expected $2, got $3"
-              status=1
-            fi
-          }
-          assert() { # <label> <command...>
-            local label="$1"
-            shift
-            if "$@" > /dev/null 2>&1; then
-              echo "ok   - $label"
-            else
-              echo "::error::$label"
-              status=1
-            fi
-          }
-          fixture=tests/fixtures/shard-crate/src/lib.rs
-          line_of() { # <function>: the declaration line in the fixture
-            grep -n "pub fn $1(" "$fixture" | head -1 | cut -d: -f1
-          }
-          covers() { # <lcov> <function>: succeeds if any record hit the declaration line
-            awk -F'[:,]' -v line="$(line_of "$2")" '$1 == "DA" && $2 == line && $3 > 0 { f = 1 } END { exit !f }' "$1"
-          }
-          shards_covering() { # <function>: how many shard reports cover it
-            local shard n=0
-            for shard in shards/shard-*.lcov; do
-              if covers "$shard" "$1"; then n=$((n + 1)); fi
-            done
-            echo "$n"
-          }
+          source tests/assert-lib.sh
+
+          # What was measured, for whoever reads a red run.
+          for shard in shards/shard-*.lcov; do
+            echo "note - $shard covers $(bash tests/lcov-percent.sh "$shard")%"
+          done
+          echo "note - the combined report covers $(bash tests/lcov-percent.sh out/b1/coverage-head.lcov 2>/dev/null)%"
 
           check "B1. aggregation that publishes" success "$B1"
           check "B1. the published artifact exists and downloads" success "$PUBLISHED"
@@ -435,52 +417,27 @@ jobs:
           VERSION: ${{ steps.e1.outputs.version }}
         run: |
           status=0
-          check() { # <label> <expected> <actual>
-            if [ "$2" = "$3" ]; then
-              echo "ok   - $1"
-            else
-              echo "::error::$1: expected $2, got $3"
-              status=1
-            fi
-          }
-          assert() { # <label> <command...>
-            local label="$1"
-            shift
-            if "$@" > /dev/null 2>&1; then
-              echo "ok   - $label"
-            else
-              echo "::error::$label"
-              status=1
-            fi
-          }
-          # They are called through `assert`. Command substitution ignores trailing
+          source tests/assert-lib.sh
+          # Both are called through `assert`. Command substitution ignores trailing
           # newlines, which the comment may or may not keep.
           # shellcheck disable=SC2329
           same() { [ "$(cat "$1")" = "$(cat "$2")" ]; }
           # shellcheck disable=SC2329
           differ() { ! same "$@"; }
-          # shellcheck disable=SC2329
-          lt() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a < b) }'; }
-          # shellcheck disable=SC2329
-          ge() { ! lt "$@"; }
-          fixture=tests/fixtures/shard-crate/src/lib.rs
-          line_of() { # <function>: the declaration line in the fixture
-            grep -n "pub fn $1(" "$fixture" | head -1 | cut -d: -f1
-          }
-          covers() { # <lcov> <function>: succeeds if any record hit the declaration line
-            awk -F'[:,]' -v line="$(line_of "$2")" '$1 == "DA" && $2 == line && $3 > 0 { f = 1 } END { exit !f }' "$1"
-          }
-          shards_covering() { # <function>: how many shard reports cover it
-            local shard n=0
-            for shard in shards/shard-*.lcov; do
-              if covers "$shard" "$1"; then n=$((n + 1)); fi
-            done
-            echo "$n"
-          }
 
           MB="$(git merge-base origin/main HEAD)"
           head=out/e1/coverage-head.lcov
-          head_total="$(bash tests/lcov-percent.sh "$head")"
+          # Empty if E1 wrote no report: the assertions below then fail by name,
+          # where a failed assignment would end the step under `-e` unreported.
+          head_total="$(bash tests/lcov-percent.sh "$head" 2>/dev/null || true)"
+
+          # What was measured, for whoever reads a red run: every figure the gates
+          # and the comparisons below rest on.
+          for shard in shards/shard-*.lcov; do
+            echo "note - $shard covers $(bash tests/lcov-percent.sh "$shard")%"
+          done
+          echo "note - the head (both shards) covers ${head_total}%"
+          echo "note - E1's patch: $(jq -c '{percent: .patch_coverage.percent, covered: .patch_coverage.covered, total: .patch_coverage.total, files: [.patch_coverage.files[].path]}' out/e1/coverage.json 2>&1)"
 
           check "E1. everything on" success "$E1"
           check "E2. patch gate above the patch coverage" failure "$E2"
@@ -585,7 +542,7 @@ jobs:
             # checked by line here: a pull request that edits the fixture would
             # shift the lines the baseline was measured at.
             assert "delta: the total fell, which is the way round the comparison must read" \
-              jq -e '.project_delta.total_after < .project_delta.total_before' out/e1/coverage.json
+              jq -e '(.project_delta.total_after | type) == "number" and .project_delta.total_after < .project_delta.total_before' out/e1/coverage.json
             assert "E1: the comment differs from the one without a baseline" differ out/comment-e1.md out/e5/coverage.md
           else
             echo "note - E1 found no baseline: the miss path ran"
@@ -609,14 +566,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           status=0
-          check() { # <label> <expected> <actual>
-            if [ "$2" = "$3" ]; then
-              echo "ok   - $1"
-            else
-              echo "::error::$1: expected $2, got $3"
-              status=1
-            fi
-          }
+          source tests/assert-lib.sh
 
           # `publish-baseline: true` ran on a pull request, in every scenario.
           published="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \

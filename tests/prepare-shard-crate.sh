@@ -47,6 +47,14 @@ cp -R "$src" "$dest"
 
 if [ "$commit" = true ]; then
   git add "$dest"
+  # `git add` skips an ignored file without a word. The patch would then lack lines
+  # the shards measured, and the assertions would fail without saying why.
+  unstaged="$(comm -23 <(find "$dest" -type f | LC_ALL=C sort) <(git diff --cached --name-only | LC_ALL=C sort))"
+  if [ -n "$unstaged" ]; then
+    echo "::error::these fixture files were not committed, probably because a .gitignore rule matches them:"
+    echo "$unstaged"
+    exit 1
+  fi
   git -c user.name=integration-test -c user.email=integration-test@invalid \
     commit -q -m 'test: add the shard fixture crate'
 fi
