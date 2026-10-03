@@ -16,7 +16,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
 - `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
-- `tests/move-fat-outputs.sh` - Moves one fat-mode scenario's outputs aside between scenarios
+- `tests/move-outputs.sh` - Moves one fat-mode scenario's outputs aside between scenarios
 - `.github/pull_request_template.md` - PR template
 
 ## How It Works
@@ -88,7 +88,7 @@ The action is a composite action with two phases:
   exists). It sets `recompute-baseline: false`: the fixture is not in git history,
   so the merge-base worktree a pull request builds would have no `Cargo.toml`. The
   action writes `codecov.json`, `coverage-summary.txt` and `coverage.md` to fixed
-  names, so `tests/move-fat-outputs.sh` moves each scenario's outputs to `out/<id>/`
+  names, so `tests/move-outputs.sh` moves each scenario's outputs to `out/<id>/`
   before the next runs; add any new fixed-name output to its list. The fixture's
   functions are each reached by a different part of the run (`main_run`,
   `extra_only`, `setup_only`, `never`), and its tests leave marker files so an
