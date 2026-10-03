@@ -14,7 +14,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; a last job asserts the failure messages the scenarios logged
+- `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged, read through the Actions API (`tests/job-errors.test.sh` tests it against a fake `gh`; `test.yml` runs that)
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
 - `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, and the merge-base worktree recompute
@@ -86,6 +87,24 @@ The action is a composite action with two phases:
   succeed, plus a file check showing where the action stopped. `OLD_OMNI_DEV` is the
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
+- **Failure-message assertions**: a step cannot read its own job's log and a composite
+  action exposes no output for a failing step, so the outcome and file checks pin
+  the step order, not the text a user reads. The `failure-messages` job (`needs`
+  both thin-mode jobs, so it is skipped while one is red) reads their finished logs
+  with `tests/job-errors.sh` and asserts the shard-pattern error names the pattern
+  and the guard's message names the omni-dev it found and both ways out. Rules:
+  - Read only the `##[error]` lines. The log also echoes every step's script, which
+    holds the same message text whether or not the step ran it, so grepping the whole
+    log passes for the wrong reason.
+  - Each check needs all its fragments in ONE message, so two errors cannot add up.
+  - It is the only job with `actions: read` (job-level `permissions` drops the rest,
+    so it also lists `contents: read` for the checkout). Keep it that way.
+  - It names the jobs it reads, including the thin-mode matrix versions. Renaming a
+    job or changing the matrix fails it loudly (no job of that name); a new matrix
+    leg is not checked until it is added to the list.
+  - A scenario that exists for its message gets an assertion here; edit a message
+    in `scripts/combine-shards.sh` or the guard in `action.yml` and this job
+    names the fragment that went missing.
 - **Fat-mode integration job**: the action runs cargo at the workspace root and a
   caller cannot give a composite action's steps a working directory, so the job
   copies the fixture crate there (it refuses to run if a root `Cargo.toml` or `src/`
