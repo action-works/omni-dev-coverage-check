@@ -312,13 +312,17 @@ posts when a gate fails:
 - Thin mode's line gate and `shard-reports` need an omni-dev release that has
   `coverage diff --fail-under-lines` (the first after v0.44.0). With `version: latest`
   that is automatic once it is released; if you pin `version`, pin one that has it.
+- The pull-request comment and the patch gate pass `-o/--output` to `omni-dev coverage
+  diff`, which needs omni-dev 0.32.0 or later (its predecessor `--format` is deprecated
+  and due to be removed in a future major). With `version: latest` that is automatic; if
+  you pin `version`, pin 0.32.0 or later.
 
 ## Example: pinned version, codecov upload, and a patch gate
 
 ```yaml
 - uses: action-works/omni-dev-coverage-check@v1
   with:
-    version: 0.15.0
+    version: 0.45.0
     fail-under-lines: 60
     fail-under-patch: 80
     worktree-system-deps: libasound2-dev
