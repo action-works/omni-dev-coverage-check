@@ -52,10 +52,34 @@ fresh() {
 #!/usr/bin/env bash
 # Fake `gh api`: serves $FAKE_DIR/jobs.json and $FAKE_DIR/logs/<job id>, and fails
 # the first $FAKE_FAIL_FIRST log reads the way a log that is not there yet does.
+# It behaves like gh 2.97 and later, which refuse to print a response holding
+# terminal escape sequences unless given --allow-escape-sequences. With
+# FAKE_GH_OLD set it behaves like an older gh, which has no such flag.
 [ "$1" = api ] || { echo "fake gh: unexpected: $*" >&2; exit 2; }
 shift
-# The real gh joins the pages of a paginated list; one page is all this serves.
-[ "$1" != --paginate ] || shift
+allow_escapes=false
+while [[ ${1:-} == --* ]]; do
+  case "$1" in
+    --paginate) ;; # the real gh joins the pages; one page is all this serves
+    --allow-escape-sequences)
+      if [ -n "${FAKE_GH_OLD:-}" ]; then
+        echo "unknown flag: --allow-escape-sequences" >&2
+        exit 1
+      fi
+      allow_escapes=true
+      ;;
+    --help)
+      echo "Flags:"
+      [ -n "${FAKE_GH_OLD:-}" ] || echo "      --allow-escape-sequences   Allow printing content containing terminal escape sequences"
+      exit 0
+      ;;
+    *)
+      echo "fake gh: unexpected flag: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
 case "$1" in
   "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100")
     if [ -n "${FAKE_JOBS_FAIL:-}" ]; then
@@ -72,6 +96,10 @@ case "$1" in
     echo "$n" >"$FAKE_DIR/log-reads"
     if [ "$n" -le "${FAKE_FAIL_FIRST:-0}" ]; then
       echo "gh: Not Found (HTTP 404)" >&2
+      exit 1
+    fi
+    if [ -z "${FAKE_GH_OLD:-}" ] && [ "$allow_escapes" != true ] && grep -q $'\033' "$FAKE_DIR/logs/$id"; then
+      echo "the response contains terminal escape sequences; pass --allow-escape-sequences to output it anyway" >&2
       exit 1
     fi
     cat "$FAKE_DIR/logs/$id"
@@ -130,6 +158,17 @@ check "does not return the echoed script, which holds the same message text" \
   bash -c '! grep -qF "has no" <<<"$1"' _ "$OUT"
 check "fixture: the log does echo the message text outside an error line" \
   grep -qF "has no 'coverage diff" "$d/logs/101"
+
+# A gh that refuses escape sequences, like the one on a current runner, must be
+# given the flag; an older one has no such flag and must not be.
+run_errors "$d" 'Thin mode (omni-dev latest)' FAKE_GH_OLD=1
+check "reads the log with a gh that has no --allow-escape-sequences" test "$STATUS" -eq 0
+equals "and prints the same messages" \
+  "shard-reports pattern 'shards/missing-*.lcov' matched no files; a shard that never uploaded would silently lower coverage
+Process completed with exit code 1." "$OUT"
+check "fixture: a current gh does refuse this log without the flag" \
+  bash -c '! env -i PATH="$1/bin:$PATH" FAKE_DIR="$1" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=42 \
+    gh api "repos/o/r/actions/jobs/101/logs" >/dev/null 2>&1' _ "$d"
 
 printf '%s\r\n' "2026-10-03T15:44:33.5179483Z ##[error]a message" >"$d/logs/101"
 run_errors "$d" 'Thin mode (omni-dev latest)'
@@ -191,6 +230,7 @@ run_errors "$d" 'Job' FAKE_FAIL_FIRST=99 JOB_LOG_ATTEMPTS=3
 check "gives up on a log that never becomes readable" test "$STATUS" -ne 0
 equals "after exactly the attempts it was given" 3 "$(cat "$d/log-reads")"
 check "and says which job" grep -q "could not read the log of job 'Job' (302) after 3 attempts" <<<"$ERR"
+check "and why, in gh's own words" grep -q "after 3 attempts: gh: Not Found (HTTP 404)" <<<"$ERR"
 equals "and prints no messages" "" "$OUT"
 
 echo

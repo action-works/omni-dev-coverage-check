@@ -43,17 +43,30 @@ if [ "$count" != 1 ]; then
 fi
 id="$(jq -r '.[0]' <<<"$ids")"
 
+# gh 2.97 and later refuse to print a response that holds terminal escape
+# sequences unless told to, and a runner log is full of colour codes (the same
+# bytes this script's sed leaves alone). The log is captured and filtered here and
+# never reaches a terminal. An older gh has neither the refusal nor the flag.
+log_flags=()
+if gh api --help 2>&1 | grep -q -- '--allow-escape-sequences'; then
+  log_flags+=(--allow-escape-sequences)
+fi
+
+err="$(mktemp)"
+trap 'rm -f -- "$err"' EXIT
 fetched=false
+last_error=""
 for ((attempt = 1; attempt <= attempts; attempt++)); do
-  if log="$(gh api "repos/${GITHUB_REPOSITORY}/actions/jobs/${id}/logs")"; then
+  if log="$(gh api ${log_flags[@]+"${log_flags[@]}"} "repos/${GITHUB_REPOSITORY}/actions/jobs/${id}/logs" 2>"$err")"; then
     fetched=true
     break
   fi
-  echo "the log of job ${id} is not readable yet (attempt ${attempt} of ${attempts})" >&2
+  last_error="$(<"$err")"
+  echo "the log of job ${id} is not readable yet (attempt ${attempt} of ${attempts}): ${last_error}" >&2
   [ "$attempt" -eq "$attempts" ] || sleep "$delay"
 done
 if [ "$fetched" != true ]; then
-  echo "::error::could not read the log of job '${name}' (${id}) after ${attempts} attempts" >&2
+  echo "::error::could not read the log of job '${name}' (${id}) after ${attempts} attempts: ${last_error}" >&2
   exit 1
 fi
 
