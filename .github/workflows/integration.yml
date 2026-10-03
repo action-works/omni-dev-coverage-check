@@ -5,7 +5,9 @@ name: Integration
 # and in fat mode against a fixture crate (the instrumented test run, the three
 # report outputs, the fat-mode line gate, `setup-commands`/`extra-test-commands`).
 # Each scenario's outcome is asserted at the end of its job; the scenarios are
-# `continue-on-error` so one regression does not hide the rest.
+# `continue-on-error` so one regression does not hide the rest. What the two
+# scenarios that exist for their message said is asserted by the last job, which
+# reads the finished jobs' logs through the API.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -18,6 +20,10 @@ name: Integration
 #     to fixed names, so each scenario's outputs are moved to out/<id>/ before the
 #     next one runs. Otherwise a later scenario's checks could pass on an earlier
 #     one's leftovers.
+#   - A message is read from the job's `##[error]` lines and nowhere else in the
+#     log. The log also echoes every step's script, which holds the same message
+#     text whether or not the step ran it, so a grep of the whole log would pass
+#     for the wrong reason. tests/job-errors.sh does the reading.
 
 on:
   push:
@@ -34,6 +40,13 @@ permissions:
 concurrency:
   group: integration-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The newest release WITHOUT `coverage diff --fail-under-lines`, which the
+  # action's guard step detects. It stays put when the floor in the thin-mode
+  # matrix is raised. Shared by the job that runs it and the job that checks what
+  # the guard said about it.
+  OLD_OMNI_DEV: '0.44.0'
 
 jobs:
   thin-mode:
@@ -163,10 +176,6 @@ jobs:
   thin-mode-old-omni-dev:
     name: Thin mode (omni-dev without --fail-under-lines)
     runs-on: ubuntu-latest
-    env:
-      # The newest release WITHOUT `coverage diff --fail-under-lines`, which the
-      # action's guard step detects. It stays put when the floor above is raised.
-      OLD_OMNI_DEV: '0.44.0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -449,6 +458,84 @@ jobs:
           # holding another version's binary fails here.
           if ! omni-dev --version | grep -qF "$VERSION"; then
             echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
+
+  # Two of the scenarios above exist mainly for their message, which is what a
+  # user reads: a shard pattern that matches nothing must name the pattern, and a
+  # guard that finds no `--fail-under-lines` must say how to fix it. A step cannot
+  # read its own job's log and a composite action's failing step exposes no output,
+  # so the outcome and file checks above pin the step order, not the text. This job
+  # reads the finished jobs' logs instead.
+  failure-messages:
+    name: Failure messages
+    # Skipped when a scenario job is red: the run is red already, and a scenario
+    # that did not run as intended would only add "message missing" errors that
+    # bury the cause.
+    needs: [thin-mode, thin-mode-old-omni-dev]
+    runs-on: ubuntu-latest
+    # The only job here with `actions: read`, which reading a job's log needs.
+    # `contents: read` is the checkout: a job-level `permissions` drops the rest.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert the failure messages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=0
+          # expect <label> <error messages> <fragment>...: passes when ONE message
+          # holds every fragment (each fragment narrows the lines to those that
+          # contain it), so two different errors cannot add up to a pass. Fragments
+          # are fixed strings.
+          expect() {
+            local label=$1 errors=$2 matching=$2 line fragment
+            shift 2
+            for fragment in "$@"; do
+              matching="$(grep -F -- "$fragment" <<<"$matching" || true)"
+            done
+            if [ -n "$matching" ]; then
+              echo "ok   - $label"
+              return 0
+            fi
+            echo "::error::$label: no single error message holds all of:$(printf " '%s'" "$@")"
+            echo "the job logged:"
+            if [ -n "$errors" ]; then
+              while IFS= read -r line; do echo "  $line"; done <<<"$errors"
+            else
+              echo "  (no error lines)"
+            fi
+            status=1
+          }
+
+          # 4: a shard pattern that matches nothing names the pattern. Both legs of
+          # the thin-mode matrix run it; keep the versions in step with that matrix.
+          # The pattern is the one in scenario 4's `shard-reports`.
+          for version in 0.45.0 latest; do
+            if errors="$(bash tests/job-errors.sh "Thin mode (omni-dev $version)")"; then
+              expect "4 (omni-dev $version): the pattern that matched nothing is named" "$errors" \
+                "shard-reports pattern 'shards/missing-*.lcov' matched no files"
+            else
+              status=1
+            fi
+          done
+
+          # 5a: the guard names the omni-dev it found and both ways out. The job
+          # name is the one `thin-mode-old-omni-dev` sets above. Every check holds
+          # the guard's own first words, so each is about its message and no other.
+          guard="has no 'coverage diff --fail-under-lines'"
+          if errors="$(bash tests/job-errors.sh 'Thin mode (omni-dev without --fail-under-lines)')"; then
+            expect "5a: the guard names the omni-dev it found" "$errors" \
+              "omni-dev $OLD_OMNI_DEV" "$guard"
+            expect "5a: the guard says to set 'version' to a release with the flag" "$errors" \
+              "$guard" "Set 'version' to a release that includes it"
+            expect "5a: the guard says to set 'fail-under-lines' to an empty string" "$errors" \
+              "$guard" "set 'fail-under-lines' to an empty string"
+          else
             status=1
           fi
           exit "$status"

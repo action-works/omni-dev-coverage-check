@@ -17,9 +17,10 @@ name: PR paths
 #   - `pull_request` is filtered to the paths below, so a pull request that cannot
 #     change the action gets no comment. `push` has NO filter: every main commit
 #     must publish a baseline, or a later pull request merge-based on it misses.
-#   - integration.yml stays at `contents: read`, so its evidence that the miss path
-#     needs no `actions: read` stays valid, and `pull-requests: write` is granted
-#     only to the job that posts the comment.
+#   - integration.yml's jobs that run the action stay at `contents: read` (its one
+#     job with `actions: read` only reads logs), so their evidence that the miss
+#     path needs no `actions: read` stays valid, and `pull-requests: write` is
+#     granted only to the job that posts the comment.
 #   - Two `coverage-baseline` uploads in one run conflict, and integration.yml's
 #     thin matrix has two legs.
 #
