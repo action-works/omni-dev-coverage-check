@@ -1,0 +1,680 @@
+name: PR paths
+
+# Runs the action itself (`uses: ./`) down the paths that only a pull request or a
+# push to main takes, which integration.yml cannot reach: the sticky comment, the
+# baseline publish and the baseline hit, and the merge-base worktree recompute.
+# Each scenario's outcome is asserted at the end of its job; the scenarios are
+# `continue-on-error` so one regression does not hide the rest.
+#
+#   publish       push to main: publishes the combined sharded report as the
+#                 `coverage-baseline` artifact.
+#   pull-request  a pull request: the sticky comment, the baseline lookup (a hit or
+#                 a miss, both are legitimate), the patch gate and its ordering.
+#   recompute     a pull request, fat mode: the baseline rebuilt at the merge-base
+#                 in a git worktree.
+#
+# Why this is its own workflow and not more jobs in integration.yml:
+#   - `pull_request` is filtered to the paths below, so a pull request that cannot
+#     change the action gets no comment. `push` has NO filter: every main commit
+#     must publish a baseline, or a later pull request merge-based on it misses.
+#   - integration.yml stays at `contents: read`, so its evidence that the miss path
+#     needs no `actions: read` stays valid, and `pull-requests: write` is granted
+#     only to the job that posts the comment.
+#   - Two `coverage-baseline` uploads in one run conflict, and integration.yml's
+#     thin matrix has two legs.
+#
+# Rules that keep these tests honest (integration.yml has the others):
+#   - Every scenario uses the same report basename, in its own directory. The
+#     action looks for `baseline/<basename of report>`, so a different basename
+#     would silently never find the baseline that was published.
+#   - Scenarios share the workspace and the action writes some outputs to fixed
+#     names, so each scenario's outputs are moved to out/<id>/ before the next.
+#   - Whether a baseline is found is NOT assumed. A hit needs a published baseline
+#     for the pull request's merge-base, which the first pull request after this
+#     workflow lands cannot have, and a recent merge-base may still be running. The
+#     lookup is asserted against what the Actions API says should be found.
+#   - Anything that changes the baseline lookup (#5: nearest-ancestor fallback)
+#     must change the expectations marked `#5` below, and nothing else.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - action.yml
+      - scripts/**
+      - tests/**
+      - .github/workflows/pr-paths.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  # A push gets a group of its own. Sharing one `refs/heads/main` group would let
+  # a burst of merges cancel a pending run, and a main commit without a finished
+  # run has no baseline for a later pull request to download.
+  group: pr-paths-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  publish:
+    name: Publish the baseline (push to main)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write fixtures
+        run: bash tests/write-pr-fixtures.sh baseline
+
+      # Sharded on purpose: what is published is the combined report, so this is
+      # the publish half of the sharded loop (a later pull request is the other).
+      - name: 'B1. Sharded run that publishes the baseline'
+        id: b1
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/b1/coverage-head.lcov
+          fail-under-lines: 40
+          comment: false
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-workflow: pr-paths.yml
+
+      # An artifact of this run is downloaded with the runtime token, so this
+      # needs no permission beyond the workflow's.
+      - name: Download what was published
+        id: published
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-baseline
+          path: out/published
+
+      - name: Assert the baseline was published
+        env:
+          B1: ${{ steps.b1.outcome }}
+          PUBLISHED: ${{ steps.published.outcome }}
+          VERSION: ${{ steps.b1.outputs.version }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          assert() { # <label> <command...>
+            local label="$1"
+            shift
+            if "$@" > /dev/null 2>&1; then
+              echo "ok   - $label"
+            else
+              echo "::error::$label"
+              status=1
+            fi
+          }
+
+          check "B1. sharded run that publishes" success "$B1"
+          check "B1. the published artifact exists and downloads" success "$PUBLISHED"
+
+          published=out/published/coverage-head.lcov
+          assert "the artifact holds the combined report, byte for byte" \
+            cmp "$published" out/b1/coverage-head.lcov
+
+          # 2 shards x 2 files. A bare `cat` of the shards would glue a record's
+          # `end_of_record` onto the next shard's first line.
+          check "the combined report has a record per shard and file" 4 "$(grep -c '^SF:' "$published")"
+          check "every record is closed on a line of its own" 4 "$(grep -c '^end_of_record$' "$published")"
+          # What a later pull request checks to know the baseline is the one for
+          # its merge-base.
+          check "every record names the commit it was published for" 4 "$(grep -cx "TN:$GITHUB_SHA" "$published")"
+
+          if ! omni-dev --version | grep -qF "$VERSION"; then
+            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
+
+  pull-request:
+    name: Sticky comment, baseline lookup and patch gate (pull request)
+    # A fork's token cannot write the comment, and neither can Dependabot's: it
+    # gets a read-only token whatever `permissions` asks for. `recompute` below
+    # writes nothing, so it still runs for Dependabot, which is the likeliest
+    # author of a change to the actions this workflow uses.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # Exactly what the README tells a caller to grant, so a permission the action
+    # needs and the README does not mention fails here. `actions: read` is NOT
+    # granted: this repository is public, so it only shows that public callers
+    # do not need it, not that a private one does not.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The head fixtures cover 80% of the lines this pull request "adds" (the
+      # union of the shards; each alone covers under 60%), so a patch gate of 70
+      # passes and one of 90 fails. A baseline from main, if one is found, was
+      # written by `write-pr-fixtures.sh baseline` and differs from this.
+      - name: Write fixtures
+        run: bash tests/write-pr-fixtures.sh head
+
+      # A comment left by an earlier run (a push, or a re-run) must not be able to
+      # stand in for one this run is meant to post.
+      - name: Clear the comment from an earlier run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          rc=0
+          bash tests/read-sticky-comment.sh --delete integration-test out/comment-before.md || rc=$?
+          # 3: there was none. 4: more than one, now all deleted.
+          case "$rc" in 0 | 3 | 4) ;; *) exit "$rc" ;; esac
+
+      # P1 and P2 differ only in `fail-under-patch`. P1, P2 and P3 share one comment
+      # header, and on a miss all three render the same comment, so P2's and P3's
+      # are read back and deleted before the next scenario: a P1 that stopped
+      # posting could not hide behind them. P1 runs last, so the comment left on
+      # the pull request is the passing one. The report differs only in directory,
+      # which is bookkeeping: the basename must stay equal.
+      - name: 'P2. Patch gate above the patch coverage'
+        id: p2
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p2/coverage-head.lcov
+          fail-under-lines: 40
+          fail-under-patch: 90
+          all-files: true
+          comment-header: integration-test
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-workflow: pr-paths.yml
+
+      # The gate runs after the comment, so the comment is there although P2 fails.
+      - name: Read back and clear the comment after P2
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash tests/read-sticky-comment.sh --delete integration-test out/comment-p2.md
+
+      - name: Move P2 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p2
+
+      # Control for the baseline lookup: only the artifact's name differs, so
+      # nothing can be found. A miss is a warning, not a failure, and the comment
+      # then has no deltas.
+      - name: 'P3. A baseline artifact name that does not exist'
+        id: p3
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p3/coverage-head.lcov
+          fail-under-lines: 40
+          fail-under-patch: 70
+          all-files: true
+          comment-header: integration-test
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-artifact-name: coverage-baseline-absent
+          baseline-workflow: pr-paths.yml
+
+      - name: Read back and clear the comment after P3
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash tests/read-sticky-comment.sh --delete integration-test out/comment-p3.md
+
+      - name: Move P3 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p3
+
+      # Control for the comment: `comment: false`, under a header of its own. The
+      # header differs only so that a comment it posted anyway could not be
+      # mistaken for P1's.
+      - name: 'P4. Comment off'
+        id: p4
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p4/coverage-head.lcov
+          fail-under-lines: 40
+          fail-under-patch: 70
+          all-files: true
+          comment: false
+          comment-header: integration-test-off
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-workflow: pr-paths.yml
+
+      - name: Move P4 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p4
+
+      # Everything on: the sharded report, both gates, the comment, the baseline
+      # lookup, and `publish-baseline: true`, which on a pull request must publish
+      # nothing.
+      - name: 'P1. Everything on'
+        id: p1
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p1/coverage-head.lcov
+          fail-under-lines: 40
+          fail-under-patch: 70
+          all-files: true
+          comment-header: integration-test
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-workflow: pr-paths.yml
+
+      - name: Read back the comment after P1
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash tests/read-sticky-comment.sh integration-test out/comment-p1.md
+
+      - name: Move P1 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p1
+
+      - name: Assert every outcome
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          P1: ${{ steps.p1.outcome }}
+          P2: ${{ steps.p2.outcome }}
+          P3: ${{ steps.p3.outcome }}
+          P4: ${{ steps.p4.outcome }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PATCH_PERCENT: ${{ steps.p1.outputs.patch-percent }}
+          LINE_PERCENT: ${{ steps.p1.outputs.line-percent }}
+          COMMENT_PATH: ${{ steps.p1.outputs.comment-path }}
+          VERSION: ${{ steps.p1.outputs.version }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          assert() { # <label> <command...>
+            local label="$1"
+            shift
+            if "$@" > /dev/null 2>&1; then
+              echo "ok   - $label"
+            else
+              echo "::error::$label"
+              status=1
+            fi
+          }
+          # Both are called through `assert`. Command substitution ignores trailing
+          # newlines, which the comment may or may not keep.
+          # shellcheck disable=SC2329
+          same() { [ "$(cat "$1")" = "$(cat "$2")" ]; }
+          # shellcheck disable=SC2329
+          differ() { ! same "$@"; }
+          # Lines of <file> whose covered state differs between two reports.
+          flipped() { # <before> <after> <file>
+            awk -F'[:,]' -v want="$3" '
+              FNR == 1 { n++ }
+              /^SF:/ { in_file = (substr($0, 4) ~ ("/" want "$")) }
+              $1 == "DA" && in_file {
+                k = n SUBSEP $2
+                if (!(k in h) || $3 + 0 > h[k]) h[k] = $3 + 0
+                seen[$2] = 1
+              }
+              END {
+                for (l in seen)
+                  if (((1 SUBSEP l) in h) && ((2 SUBSEP l) in h) && ((h[1 SUBSEP l] > 0) != (h[2 SUBSEP l] > 0))) c++
+                print c + 0
+              }' "$1" "$2"
+          }
+
+          MB="$(git merge-base origin/main HEAD)"
+
+          check "P1. everything on" success "$P1"
+          check "P2. patch gate above the patch coverage" failure "$P2"
+          check "P3. a baseline artifact name that does not exist" success "$P3"
+          check "P4. comment off" success "$P4"
+
+          # The patch is the 10 lines of patch-fixture.txt, 8 of them covered by
+          # the union of the shards. Each shard alone is under the gate P1 passes.
+          for s in p1 p2 p3 p4; do
+            assert "${s^^}: patch coverage is the shards' union (80%)" \
+              jq -e '.patch_coverage.percent == 80 and .patch_coverage.total == 10' "out/$s/coverage.json"
+          done
+          # jq keeps a literal such as 80.0, so compare as numbers.
+          check "P1: the patch-percent output is 80" true "$(jq -n --arg p "$PATCH_PERCENT" '($p | tonumber) == 80')"
+          check "P1: the comment-path output" coverage.md "$COMMENT_PATH"
+
+          # P2 stopped at the patch gate: the diff was built and the comment posted.
+          # The line gate comes after the patch gate and P1 passes it.
+          assert "P2: stopped at the gate: coverage.md written" test -s out/p2/coverage.md
+          assert "P2: stopped at the gate: the comment was already posted" test -s out/comment-p2.md
+          assert "P2: the comment is the rendered diff" same out/comment-p2.md out/p2/coverage.md
+
+          # The sticky comment: posted by P1 (the only one there, as the others were
+          # cleared) and equal to what it rendered.
+          assert "P1: the sticky comment is the rendered diff" same out/comment-p1.md out/p1/coverage.md
+          # An earlier push's comment names another commit, so it cannot pass this.
+          assert "P1: the comment is for this commit" grep -qF "${HEAD_SHA:0:7}" out/comment-p1.md
+          assert "P1: the comment names the merge-base" grep -qF "${MB:0:7}" out/comment-p1.md
+
+          # P3 is the miss control.
+          assert "P3: no baseline was found" test ! -e out/p3/baseline/coverage-head.lcov
+          assert "P3: the comment is the rendered diff" same out/comment-p3.md out/p3/coverage.md
+          assert "P3: without a baseline there is no project_delta" \
+            jq -e '.project_delta == null' out/p3/coverage.json
+          assert "P3: the comment says there is no baseline" grep -q 'No baseline available' out/p3/coverage.md
+
+          # P4: nothing under its header, though it ran exactly as P1 did.
+          rc=0
+          bash tests/read-sticky-comment.sh --delete integration-test-off out/comment-p4.md || rc=$?
+          check "P4: no comment under its header (read-sticky-comment exit status)" 3 "$rc"
+
+          # P1's baseline, if the lookup found one. Hit or miss is checked against
+          # the Actions API in the next step; here a hit must be internally sound.
+          base=out/p1/baseline/coverage-head.lcov
+          head=out/p1/coverage-head.lcov
+          # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
+          if [ -s "$base" ]; then
+            echo "note - P1 found a baseline: the hit path ran"
+            # #5: with an ancestor fallback this becomes "an ancestor of the merge-base".
+            assert "P1: the baseline was published for the merge-base" grep -qx "TN:$MB" "$base"
+            before="$(bash tests/lcov-percent.sh "$base")"
+            after="$(bash tests/lcov-percent.sh "$head")"
+            assert "P1: total_before is the baseline's own coverage" \
+              jq -e --argjson v "$before" '((.project_delta.total_before - $v) | fabs) < 0.01' out/p1/coverage.json
+            assert "P1: total_after is the head report's coverage" \
+              jq -e --argjson v "$after" '((.project_delta.total_after - $v) | fabs) < 0.01' out/p1/coverage.json
+            check "P1: the line-percent output is total_after" \
+              "$(jq -r '.project_delta.total_after' out/p1/coverage.json)" "$LINE_PERCENT"
+            # LICENSE is in no diff, so only all-files shows its flipped lines.
+            check "P1: indirect changes are the flipped lines of LICENSE" \
+              "$(flipped "$base" "$head" LICENSE)" \
+              "$(jq -r '.indirect_changes.newly_covered + .indirect_changes.newly_uncovered' out/p1/coverage.json)"
+            assert "P1: the comment differs from the one without a baseline" differ out/comment-p1.md out/comment-p3.md
+          else
+            echo "note - P1 found no baseline: the miss path ran"
+            assert "P1: without a baseline there is no project_delta" \
+              jq -e '.project_delta == null' out/p1/coverage.json
+            check "P1: the line-percent output is empty without a baseline" "" "$LINE_PERCENT"
+            assert "P1: the comment says there is no baseline" grep -q 'No baseline available' out/p1/coverage.md
+          fi
+
+          if ! omni-dev --version | grep -qF "$VERSION"; then
+            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
+
+      # What only the Actions API knows. The token is the job's own, without
+      # `actions: read`; reading a public repository's runs needs none.
+      - name: Check the baseline lookup and the publish against the Actions API
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+
+          # `publish-baseline: true` ran on a pull request, in every scenario.
+          published="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '[.artifacts[] | select(.name == "coverage-baseline")] | length')"
+          check "a pull-request run publishes no baseline" 0 "$published"
+
+          # What the lookup should have found: the newest successful run of this
+          # workflow for the merge-base, and a live baseline artifact in that run
+          # (dawidd6/action-download-artifact looks in that one run only). There is
+          # deliberately no `event` or `branch` filter, because the action passes
+          # none: a filter here would make this disagree with the lookup in exactly
+          # the case where a run without the artifact shadows the one with it (#5).
+          MB="$(git merge-base origin/main HEAD)"
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-paths.yml/runs?head_sha=$MB&per_page=100" \
+            --jq '[.workflow_runs[] | {id, status, conclusion}]')"
+          newest_ok="$(jq -r '[.[] | select(.conclusion == "success")][0].id // empty' <<<"$runs")"
+          expected=miss
+          if [ -n "$newest_ok" ]; then
+            live="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$newest_ok/artifacts" \
+              --jq '[.artifacts[] | select(.name == "coverage-baseline" and (.expired | not))] | length')"
+            if [ "$live" -gt 0 ]; then expected=hit; fi
+          fi
+          # A run for the merge-base that has not finished may publish between the
+          # API call and the lookup, in either order. #5: with an ancestor
+          # fallback a `miss` here means "no baseline within reach", not "none".
+          if [ "$expected" = miss ] && [ "$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")" -gt 0 ]; then
+            expected=either
+          fi
+
+          observed=miss
+          if [ -s out/p1/baseline/coverage-head.lcov ]; then observed=hit; fi
+
+          echo "::notice::baseline lookup for merge-base ${MB:0:7}: expected $expected, observed $observed"
+          case "$expected:$observed" in
+            hit:hit | miss:miss | either:*) echo "ok   - the lookup found what the API says it should" ;;
+            *)
+              echo "::error::the lookup found a baseline: $observed; the API says: $expected"
+              status=1
+              ;;
+          esac
+          exit "$status"
+
+  recompute:
+    name: Merge-base recompute (fat mode)
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The merge-base worktree is checked out from git, so the base must be a
+      # commit that holds a crate. The pull request's own history has none, so the
+      # job commits one (never pushed) and then the head over it, and passes the
+      # first as `base-ref`. The numbers are then the job's own and do not depend
+      # on what main happens to hold.
+      - name: Commit a base and a head around the delta crate
+        id: history
+        run: |
+          if [ -e Cargo.toml ] || [ -e src ]; then
+            echo "::error::Cargo.toml or src/ already exists at the repository root; the fixture would overwrite it"
+            exit 1
+          fi
+          mkdir -p src out/r1 out/r2
+          cp tests/fixtures/delta-crate/Cargo.toml Cargo.toml
+          cp tests/fixtures/delta-crate/lib.base.rs src/lib.rs
+          git add Cargo.toml src/lib.rs
+          git -c user.name=integration-test -c user.email=integration-test@invalid \
+            commit -q -m 'test: add the delta crate (base)'
+          echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          cp tests/fixtures/delta-crate/lib.head.rs src/lib.rs
+          git -c user.name=integration-test -c user.email=integration-test@invalid \
+            commit -q -am 'test: change the delta crate (head)'
+
+      # No baseline artifact exists for the synthetic base, so the download warns
+      # and the worktree recompute has to produce the baseline.
+      - name: 'R1. Baseline recomputed at the merge-base'
+        id: r1
+        uses: ./
+        continue-on-error: true
+        with:
+          base-ref: ${{ steps.history.outputs.base }}
+          report: out/r1/coverage-head.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: pr-paths.yml
+
+      - name: Move R1 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh r1
+
+      # Control for R1: only the recompute is off.
+      - name: 'R2. Same, without the recompute'
+        id: r2
+        uses: ./
+        continue-on-error: true
+        with:
+          base-ref: ${{ steps.history.outputs.base }}
+          report: out/r2/coverage-head.lcov
+          fail-under-lines: ''
+          recompute-baseline: false
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: pr-paths.yml
+
+      - name: Move R2 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh r2
+
+      - name: Assert every outcome
+        if: ${{ !cancelled() }}
+        env:
+          R1: ${{ steps.r1.outcome }}
+          R2: ${{ steps.r2.outcome }}
+          R1_LINE_PERCENT: ${{ steps.r1.outputs.line-percent }}
+          R2_LINE_PERCENT: ${{ steps.r2.outputs.line-percent }}
+          VERSION: ${{ steps.r1.outputs.version }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          assert() { # <label> <command...>
+            local label="$1"
+            shift
+            if "$@" > /dev/null 2>&1; then
+              echo "ok   - $label"
+            else
+              echo "::error::$label"
+              status=1
+            fi
+          }
+          maxline() { # <lcov>: the last line with a record
+            awk -F'[:,]' '$1 == "DA" && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$1"
+          }
+          line_of() { # <source> <function>: the declaration line
+            grep -n "pub fn $2(" "$1" | head -1 | cut -d: -f1
+          }
+          # Whether a function's declaration line is covered in an lcov report:
+          # covered, uncovered, or missing (no record for it).
+          state() { # <lcov> <source> <function>
+            awk -F'[:,]' -v line="$(line_of "$2" "$3")" '
+              $1 == "DA" && $2 == line { print ($3 > 0 ? "covered" : "uncovered"); found = 1 }
+              END { if (!found) print "missing" }' "$1"
+          }
+
+          base_src=tests/fixtures/delta-crate/lib.base.rs
+          head_src=tests/fixtures/delta-crate/lib.head.rs
+          base=out/r1/baseline/coverage-head.lcov
+          head=out/r1/coverage-head.lcov
+
+          check "R1. baseline recomputed at the merge-base" success "$R1"
+          check "R2. same, without the recompute" success "$R2"
+
+          # The recompute wrote the baseline, and wrote it for the base.
+          assert "R1: the recompute wrote a baseline" test -s "$base"
+          assert "R1: its paths are rewritten to the workspace" \
+            grep -qxF "SF:$GITHUB_WORKSPACE/src/lib.rs" "$base"
+          assert "R1: none is left under the worktree" \
+            test "$(grep -cF "SF:$(dirname "$GITHUB_WORKSPACE")/base/" "$base")" = 0
+          # The head has lines the base does not, so only a base build stops short.
+          base_lines="$(wc -l < "$base_src")"
+          assert "R1: the baseline stops where the base source does" test "$(maxline "$base")" -le "$base_lines"
+          assert "R1: the head report goes past it" test "$(maxline "$head")" -gt "$base_lines"
+          check "R1: baseline: kept" covered "$(state "$base" "$base_src" kept)"
+          check "R1: baseline: flips" uncovered "$(state "$base" "$base_src" flips)"
+          check "R1: head: kept" covered "$(state "$head" "$head_src" kept)"
+          check "R1: head: flips" covered "$(state "$head" "$head_src" flips)"
+          check "R1: head: added_covered" covered "$(state "$head" "$head_src" added_covered)"
+          check "R1: head: added_uncovered" uncovered "$(state "$head" "$head_src" added_uncovered)"
+
+          # The diff was rendered from it.
+          before="$(bash tests/lcov-percent.sh "$base")"
+          after="$(bash tests/lcov-percent.sh "$head")"
+          # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
+          assert "R1: total_before is the baseline's own coverage" \
+            jq -e --argjson v "$before" '((.project_delta.total_before - $v) | fabs) < 0.01' out/r1/coverage.json
+          # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
+          assert "R1: total_after is the head report's coverage" \
+            jq -e --argjson v "$after" '((.project_delta.total_after - $v) | fabs) < 0.01' out/r1/coverage.json
+          assert "R1: the coverage changed" \
+            jq -e '.project_delta.total_before != .project_delta.total_after' out/r1/coverage.json
+          check "R1: the line-percent output is total_after" \
+            "$(jq -r '.project_delta.total_after' out/r1/coverage.json)" "$R1_LINE_PERCENT"
+          flips_line="$(line_of "$head_src" flips)"
+          uncovered_new="src/lib.rs:$(line_of "$head_src" added_uncovered)"
+          covered_new="src/lib.rs:$(line_of "$head_src" added_covered)"
+          # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
+          assert "R1: the unchanged line that flipped is an indirect change" \
+            jq -e --arg l "$flips_line" \
+              '.indirect_changes.newly_covered >= 1 and ([.indirect_changes.lines[] | select(.path == "src/lib.rs" and (.head_line | tostring) == $l)] | length) == 1' \
+              out/r1/coverage.json
+          # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
+          assert "R1: the uncovered new function is listed" \
+            jq -e --arg l "$uncovered_new" '.uncovered_new_lines | index($l) != null' out/r1/coverage.json
+          # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
+          assert "R1: the covered new function is not" \
+            jq -e --arg l "$covered_new" '.uncovered_new_lines | index($l) == null' out/r1/coverage.json
+
+          # R2 differs from R1 only in the recompute.
+          assert "R2: no baseline was found or built" test ! -e out/r2/baseline/coverage-head.lcov
+          assert "R2: without a baseline there is no project_delta" \
+            jq -e '.project_delta == null' out/r2/coverage.json
+          check "R2: the line-percent output is empty without a baseline" "" "$R2_LINE_PERCENT"
+          assert "R2: the patch is the same as R1's" \
+            test "$(jq -c '.patch_coverage, .uncovered_new_lines' out/r2/coverage.json)" = "$(jq -c '.patch_coverage, .uncovered_new_lines' out/r1/coverage.json)"
+
+          if ! omni-dev --version | grep -qF "$VERSION"; then
+            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"

@@ -292,7 +292,7 @@ jobs:
 
       - name: Move F1 outputs aside
         if: always()
-        run: bash tests/move-fat-outputs.sh f1
+        run: bash tests/move-outputs.sh f1
 
       # Control for F1: only the gate differs.
       - name: 'F2. Same, gate above the fixture coverage'
@@ -314,7 +314,7 @@ jobs:
 
       - name: Move F2 outputs aside
         if: always()
-        run: bash tests/move-fat-outputs.sh f2
+        run: bash tests/move-outputs.sh f2
 
       # Control for F1: no extra command, so `extra_only` must now be uncovered.
       # The gate is off because 33.3% is under 40.
@@ -336,7 +336,7 @@ jobs:
 
       - name: Move F3 outputs aside
         if: always()
-        run: bash tests/move-fat-outputs.sh f3
+        run: bash tests/move-outputs.sh f3
 
       # Control for F1: no setup command, so the main test fails and the action
       # stops before it writes any report.
@@ -356,7 +356,7 @@ jobs:
 
       - name: Move F4 outputs aside
         if: always()
-        run: bash tests/move-fat-outputs.sh f4
+        run: bash tests/move-outputs.sh f4
 
       - name: Assert every outcome
         env:
