@@ -16,7 +16,11 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
 - `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
-- `tests/move-outputs.sh` - Moves one fat-mode scenario's outputs aside between scenarios
+- `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
+- `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, and the merge-base worktree recompute
+- `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on
+- `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
+- `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit
 - `.github/pull_request_template.md` - PR template
 
 ## How It Works
@@ -86,7 +90,8 @@ The action is a composite action with two phases:
   caller cannot give a composite action's steps a working directory, so the job
   copies the fixture crate there (it refuses to run if a root `Cargo.toml` or `src/`
   exists). It sets `recompute-baseline: false`: the fixture is not in git history,
-  so the merge-base worktree a pull request builds would have no `Cargo.toml`. The
+  so the merge-base worktree a pull request builds would have no `Cargo.toml`
+  (`pr-paths.yml` covers the recompute with a crate it commits itself). The
   action writes `codecov.json`, `coverage-summary.txt` and `coverage.md` to fixed
   names, so `tests/move-outputs.sh` moves each scenario's outputs to `out/<id>/`
   before the next runs; add any new fixed-name output to its list. The fixture's
@@ -95,6 +100,42 @@ The action is a composite action with two phases:
   expected failure can show where it stopped. The gates of 40 and 80 are set around
   its measured 58.3% (33.3% without the extra command), so re-measure if the
   fixture's lines change or a toolchain attributes them differently.
+- **PR-paths workflow** (`pr-paths.yml`): a separate workflow so `pull_request` can be
+  path-filtered (no coverage comment on a pull request that cannot change the action)
+  while `push` is NOT, because every main commit must publish a baseline or a later
+  pull request based on it misses. Pushes get a per-SHA concurrency group so a burst
+  of merges cannot cancel the run that would have published. It is path-filtered, so
+  it must never be a required check. Rules:
+  - Every scenario uses the same report basename (in its own directory). The action
+    reads `baseline/<basename of report>`, so a different basename never finds the
+    baseline that was published.
+  - The `pull-request` job runs with exactly the permissions the README lists
+    (`contents: read`, `pull-requests: write`), not `actions: read`. The repository
+    is public, so a pass shows public callers need no more, not that a private
+    caller does not.
+  - A baseline hit is not assumed: it needs a published baseline for the merge-base,
+    which the first pull request cannot have and a recent merge-base may still be
+    producing. The last step asks the Actions API what the lookup should find (`hit`,
+    `miss`, or `either` while a run is in progress) and the observed result must
+    match, so both paths are tested whichever one a run takes. On a hit the baseline's
+    `TN:` must be the merge-base SHA and the totals are recomputed from the downloaded
+    file, so the assertions survive edits to the fixture. Expectations marked `#5`
+    are the ones the nearest-ancestor fallback will change.
+  - The diff is `merge-base..HEAD`, so a pull request's own changes would decide the
+    patch gate. `write-pr-fixtures.sh` commits a 10-line `patch-fixture.txt` locally
+    (never pushed) so the patch always has known added lines, and instruments
+    `LICENSE` as the file whose coverage flips with no change to its lines (an indirect
+    change, shown only with `all-files: true`). It must not be edited by a pull request.
+  - Scenarios P1, P2 and P3 post under one header and render the same comment on a
+    miss, so each is read back and deleted before the next. Otherwise a scenario that
+    stopped posting would pass on the previous one's comment.
+  - The recompute needs a commit that holds a crate, which the pull request's history
+    does not, so the job commits `delta-crate`'s base and head itself and passes the
+    first as `base-ref`. Its numbers are then the job's own. Unlike the fat-mode crate
+    its tests need only `cargo test`, because the recompute replays only `test-args`.
+  - The hit path cannot be shown before a baseline exists on `main`: the pull request
+    that adds this workflow shows the miss path, the `push` run after it shows the
+    publish, and the first later qualifying pull request shows the hit.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.
