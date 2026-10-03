@@ -557,11 +557,11 @@ runs:
         if [ -f "baseline/$REPORT_BASENAME" ]; then
           args+=(--baseline-report "baseline/$REPORT_BASENAME")
         fi
-        omni-dev "${args[@]}" --format markdown > coverage.md
+        omni-dev "${args[@]}" -o markdown > coverage.md
         echo "comment-path=coverage.md" >> "$GITHUB_OUTPUT"
 
         # Machine-readable percentages (best-effort; never fail the build).
-        if omni-dev "${args[@]}" --format json > coverage.json 2>/dev/null; then
+        if omni-dev "${args[@]}" -o json > coverage.json 2>/dev/null; then
           PATCH=$(jq -r '.patch_coverage.percent // empty' coverage.json 2>/dev/null || echo "")
           LINE=$(jq -r '.project_delta.total_after // empty' coverage.json 2>/dev/null || echo "")
           echo "patch-percent=$PATCH" >> "$GITHUB_OUTPUT"
@@ -608,7 +608,7 @@ runs:
           --report "${{ inputs.report }}"
           --base-ref "${{ steps.mb.outputs.sha }}"
           --fail-under-patch "${{ inputs.fail-under-patch }}"
-          --format json)
+          -o json)
         # Mirror the parse-affecting flags from the comment diff so the gated
         # percentage matches what the comment reported.
         if [ -n "${{ inputs.strip-prefix }}" ]; then
