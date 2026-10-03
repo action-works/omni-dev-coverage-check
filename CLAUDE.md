@@ -14,7 +14,9 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`
+- `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
+- `tests/move-fat-outputs.sh` - Moves one fat-mode scenario's outputs aside between scenarios
 - `.github/pull_request_template.md` - PR template
 
 ## How It Works
@@ -80,6 +82,19 @@ The action is a composite action with two phases:
   succeed, plus a file check showing where the action stopped. `OLD_OMNI_DEV` is the
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
+- **Fat-mode integration job**: the action runs cargo at the workspace root and a
+  caller cannot give a composite action's steps a working directory, so the job
+  copies the fixture crate there (it refuses to run if a root `Cargo.toml` or `src/`
+  exists). It sets `recompute-baseline: false`: the fixture is not in git history,
+  so the merge-base worktree a pull request builds would have no `Cargo.toml`. The
+  action writes `codecov.json`, `coverage-summary.txt` and `coverage.md` to fixed
+  names, so `tests/move-fat-outputs.sh` moves each scenario's outputs to `out/<id>/`
+  before the next runs; add any new fixed-name output to its list. The fixture's
+  functions are each reached by a different part of the run (`main_run`,
+  `extra_only`, `setup_only`, `never`), and its tests leave marker files so an
+  expected failure can show where it stopped. The gates of 40 and 80 are set around
+  its measured 58.3% (33.3% without the extra command), so re-measure if the
+  fixture's lines change or a toolchain attributes them differently.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.
