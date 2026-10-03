@@ -1,0 +1,239 @@
+name: Integration
+
+# Runs the action itself (`uses: ./`) in thin mode against fixture lcov files, so
+# the thin-mode line gate and `shard-reports` are exercised on a real runner on
+# every change. Each scenario's outcome is asserted at the end of its job; the
+# scenarios are `continue-on-error` so one regression does not hide the rest.
+#
+# Rules that keep these tests honest:
+#   - One omni-dev version per job. `actions/cache` saves in a post step, after
+#     every scenario has run, and saves whatever is at ~/.cargo/bin/omni-dev
+#     then; a second version installed over it poisons the first version's key.
+#   - Every scenario expected to fail has a control that differs in exactly one
+#     input and must succeed, plus a file check showing where the action stopped.
+#     `outcome == failure` alone also holds when the install breaks.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * 1' # weekly: notice a bad omni-dev release without waiting for a PR
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  thin-mode:
+    name: Thin mode (omni-dev ${{ matrix.omni-dev }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 0.45.0 is the first release with `coverage diff --fail-under-lines`: the
+        # floor the README documents. `latest` catches a bad future release.
+        omni-dev: ['0.45.0', 'latest']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Real llvm-cov shape: no newline after the final end_of_record. Each shard
+      # alone covers 2 of 4 lines (50%); their union covers 3 of 4 (75%), so a gate
+      # of 70 passes only if the shards were merged.
+      - name: Write fixtures
+        run: |
+          mkdir shards out
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
+          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nend_of_record' "$GITHUB_WORKSPACE" > single.lcov
+
+      - name: '1. Sharded, gate below the 75% union'
+        id: s1
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/s1.lcov
+          fail-under-lines: 70
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: '2. Sharded, gate above the 75% union'
+        id: s2
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/s2.lcov
+          fail-under-lines: 90
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: '3. Single report with the gate'
+        id: s3
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          report: single.lcov
+          fail-under-lines: 90
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: '4. A shard pattern that matches nothing'
+        id: s4
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/missing-*.lcov
+          report: out/s4.lcov
+          fail-under-lines: 70
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Assert every outcome
+        env:
+          S1: ${{ steps.s1.outcome }}
+          S2: ${{ steps.s2.outcome }}
+          S3: ${{ steps.s3.outcome }}
+          S4: ${{ steps.s4.outcome }}
+          VERSION: ${{ steps.s1.outputs.version }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          check "1. sharded, gate below the union" success "$S1"
+          check "2. sharded, gate above the union" failure "$S2"
+          check "3. single report with the gate" success "$S3"
+          check "4. shard pattern matches nothing" failure "$S4"
+
+          # Where the action stopped. 2 must fail at the gate, after the shards
+          # were combined; 4 must fail before any report is written.
+          if [ ! -s out/s2.lcov ]; then
+            echo "::error::2 failed before the shards were combined, not at the gate"
+            status=1
+          fi
+          if [ -e out/s4.lcov ]; then
+            echo "::error::4 wrote a report although its pattern matches no shard"
+            status=1
+          fi
+
+          # The binary on PATH is the version that was resolved. A cache entry
+          # holding another version's binary fails here.
+          if ! omni-dev --version | grep -qF "$VERSION"; then
+            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
+
+  thin-mode-old-omni-dev:
+    name: Thin mode (omni-dev without --fail-under-lines)
+    runs-on: ubuntu-latest
+    env:
+      # The newest release WITHOUT `coverage diff --fail-under-lines`, which the
+      # action's guard step detects. It stays put when the floor above is raised.
+      OLD_OMNI_DEV: '0.44.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write fixtures
+        run: |
+          mkdir shards out
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
+          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
+
+      # Sharded on purpose: the guard runs before "Combine shard reports", so a
+      # missing combined report shows the guard stopped the action, not clap's
+      # unknown-argument error at gate time (which comes after the combine).
+      - name: '5a. Gate with an omni-dev that predates the flag'
+        id: gate
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ env.OLD_OMNI_DEV }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/gate.lcov
+          fail-under-lines: 70
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      # The escape hatch the guard's own message recommends.
+      - name: '5b. Same omni-dev, line gate disabled'
+        id: nogate
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ env.OLD_OMNI_DEV }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/nogate.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Assert every outcome
+        env:
+          GATE: ${{ steps.gate.outcome }}
+          NOGATE: ${{ steps.nogate.outcome }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          check "5a. gate with an omni-dev that predates the flag" failure "$GATE"
+          check "5b. same omni-dev, line gate disabled" success "$NOGATE"
+
+          if [ -e out/gate.lcov ]; then
+            echo "::error::5a got past the guard: the shards were combined"
+            status=1
+          fi
+          if [ ! -s out/nogate.lcov ]; then
+            echo "::error::5b did not combine the shards"
+            status=1
+          fi
+
+          if ! omni-dev --version | grep -qF "$OLD_OMNI_DEV"; then
+            echo "::error::omni-dev on PATH is not $OLD_OMNI_DEV ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
