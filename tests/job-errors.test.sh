@@ -71,6 +71,10 @@ while [[ ${1:-} == --* ]]; do
     --help)
       echo "Flags:"
       [ -n "${FAKE_GH_OLD:-}" ] || echo "      --allow-escape-sequences   Allow printing content containing terminal escape sequences"
+      # A help longer than a pipe buffer, written by this process itself, so a
+      # reader that stops at the first match (grep -q in a pipe) leaves it to die
+      # of SIGPIPE, as a real gh can.
+      for ((i = 0; i < 20000; i++)); do echo "more of the help text"; done
       exit 0
       ;;
     *)

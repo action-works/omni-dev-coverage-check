@@ -47,8 +47,11 @@ id="$(jq -r '.[0]' <<<"$ids")"
 # sequences unless told to, and a runner log is full of colour codes (the same
 # bytes this script's sed leaves alone). The log is captured and filtered here and
 # never reaches a terminal. An older gh has neither the refusal nor the flag.
+# The help is captured first, not piped: `grep -q` can exit before gh has finished
+# writing, and with pipefail the pipeline then fails and the flag is skipped.
 log_flags=()
-if gh api --help 2>&1 | grep -q -- '--allow-escape-sequences'; then
+help="$(gh api --help 2>&1)"
+if grep -q -- '--allow-escape-sequences' <<<"$help"; then
   log_flags+=(--allow-escape-sequences)
 fi
 
