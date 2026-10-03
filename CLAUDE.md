@@ -22,6 +22,9 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on
 - `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
 - `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit
+- `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
+- `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally
+- `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `.github/pull_request_template.md` - PR template
 
 ## How It Works
@@ -162,6 +165,39 @@ The action is a composite action with two phases:
   - The hit path cannot be shown before a baseline exists on `main`: the pull request
     that adds this workflow shows the miss path, the `push` run after it shows the
     publish, and the first later qualifying pull request shows the hit.
+- **E2E sharded workflow** (`e2e-sharded.yml`): the real topology the README describes
+  (shard jobs → `coverage-shard-N` artifacts → an aggregation job with `pattern` +
+  `merge-multiple` → the action); `pr-paths.yml` covers the same loop on hand-written
+  lcov. It follows `pr-paths.yml`'s rules (push unfiltered, pull request path-filtered,
+  never a required check, per-SHA concurrency on pushes, the baseline lookup asserted
+  against the Actions API, the `#5` marks). What is particular to it:
+  - It publishes `coverage-baseline-e2e-sharded` and comments under `e2e-sharded`,
+    apart from `pr-paths.yml`: the baseline lookup is per workflow, and two uploads
+    of one name in a run conflict.
+  - The patch is the whole fixture crate, committed locally by the aggregation job
+    (`prepare-shard-crate.sh --commit`, never pushed), so the patch gate cannot pass
+    vacuously whatever a pull request changes. `base-ref` would also fix the diff, but
+    it keys the baseline lookup and would force a miss on every run. Every job copies
+    the crate to the same path under the same workspace root, which is what lines the
+    shards' report paths up with the diff.
+  - A push runs every test; a pull request skips `t4_delta`, so a baseline hit shows
+    the total falling (87.5% to 65.6%) and the comparison is shown the right way round.
+    A change to which tests run must change the expectations marked `delta`.
+  - Real `cargo llvm-cov` lcov has no `TN:` line and no newline after its last
+    `end_of_record`. The shard job inserts `TN:<sha>` with `perl -pi`, which keeps the
+    missing newline, so the join's glue case runs for real and a downloaded baseline
+    says which commit it was published for.
+  - The gates of 55 and 80 sit around the head's measured 65.6% (one shard alone is at
+    most 43.75%); re-measure if the fixture's lines change. 21/32 is exactly 65.625,
+    which omni-dev and `lcov-percent.sh` round to different neighbours, so compare
+    their figures with a tolerance of 0.02, not 0.01.
+  - Each failing scenario differs from E1 in one input, and the gate it failed is
+    attributed from its own numbers (E2's patch is under its gate while its line total
+    clears the other; E3 the reverse), since a composite action exposes no output for
+    a failing step.
+  - The hit path needs two merges, as `pr-paths.yml`'s: the pull request that adds
+    the workflow shows the miss path, the `push` run after it publishes, and the first
+    later qualifying pull request shows the hit.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.

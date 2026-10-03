@@ -140,6 +140,10 @@ jobs:
           fail-under-patch: 80
 ```
 
+The same topology (a shard matrix, `merge-multiple`, one aggregation job) runs end to
+end on real runners in this repository: see
+[`.github/workflows/e2e-sharded.yml`](.github/workflows/e2e-sharded.yml).
+
 `shard-reports` takes paths or globs, one per line. The action checks each shard,
 joins them into `report` (default `coverage-head.lcov`), and every later step reads
 that one file, exactly as if a single job had produced it. A shard that is missing
