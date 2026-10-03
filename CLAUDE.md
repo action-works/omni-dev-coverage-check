@@ -125,7 +125,9 @@ The action is a composite action with two phases:
     patch gate. `write-pr-fixtures.sh` commits a 10-line `patch-fixture.txt` locally
     (never pushed) so the patch always has known added lines, and instruments
     `LICENSE` as the file whose coverage flips with no change to its lines (an indirect
-    change, shown only with `all-files: true`). It must not be edited by a pull request.
+    change, shown only with `all-files: true`); the head fixtures fail fast if a pull
+    request edits it. The job is skipped for forks and Dependabot, whose tokens cannot
+    write the comment.
   - Scenarios P1, P2 and P3 post under one header and render the same comment on a
     miss, so each is read back and deleted before the next. Otherwise a scenario that
     stopped posting would pass on the previous one's comment.

@@ -10,9 +10,10 @@
 #                      merge-base always adds exactly its 10 lines, whatever the
 #                      pull request itself changes. Without it the patch gate
 #                      would pass vacuously on a diff that touches no measured line.
-#   LICENSE            an existing file no pull request is expected to touch. It
-#                      is the "indirect change": its coverage flips between
-#                      baseline and head while its content does not.
+#   LICENSE            an existing file no pull request is expected to touch (the
+#                      head fixtures refuse to run if it does). It is the
+#                      "indirect change": its coverage flips between baseline and
+#                      head while its content does not.
 #
 # Union of the two shards (a line is covered if any shard covered it), which is
 # what the combined report holds:
@@ -73,6 +74,16 @@ record() { # <file> <hits>...
   done
   printf 'end_of_record\n'
 }
+
+# A pull request that edits LICENSE would add its lines to the patch and stop it
+# being an indirect change, and the assertions would fail without saying why.
+if [ "$kind" = head ]; then
+  merge_base="$(git merge-base origin/main HEAD)"
+  if ! git diff --quiet "$merge_base" HEAD -- LICENSE; then
+    echo "::error::this pull request changes LICENSE, which the head fixtures instrument as a file no diff touches. Pick another untouched file in tests/write-pr-fixtures.sh."
+    exit 1
+  fi
+fi
 
 mkdir shards out
 # Command substitution drops the trailing newline, which is the point.

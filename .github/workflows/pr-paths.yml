@@ -145,8 +145,14 @@ jobs:
 
   pull-request:
     name: Sticky comment, baseline lookup and patch gate (pull request)
-    # A fork's token cannot write the comment.
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    # A fork's token cannot write the comment, and neither can Dependabot's: it
+    # gets a read-only token whatever `permissions` asks for. `recompute` below
+    # writes nothing, so it still runs for Dependabot, which is the likeliest
+    # author of a change to the actions this workflow uses.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     # Exactly what the README tells a caller to grant, so a permission the action
     # needs and the README does not mention fails here. `actions: read` is NOT
@@ -341,14 +347,6 @@ jobs:
           same() { [ "$(cat "$1")" = "$(cat "$2")" ]; }
           # shellcheck disable=SC2329
           differ() { ! same "$@"; }
-          # Percentage of executable lines covered, with a file's repeated records
-          # (one per shard) unioned as the diff does: covered if any record hit it.
-          pct() { # <lcov>
-            awk -F'[:,]' '
-              /^SF:/ { sf = substr($0, 4) }
-              $1 == "DA" { k = sf SUBSEP $2; if (!(k in h) || $3 + 0 > h[k]) h[k] = $3 + 0 }
-              END { for (k in h) { t++; if (h[k] > 0) c++ } printf "%.2f", t ? 100 * c / t : 0 }' "$1"
-          }
           # Lines of <file> whose covered state differs between two reports.
           flipped() { # <before> <after> <file>
             awk -F'[:,]' -v want="$3" '
@@ -417,8 +415,8 @@ jobs:
             echo "note - P1 found a baseline: the hit path ran"
             # #5: with an ancestor fallback this becomes "an ancestor of the merge-base".
             assert "P1: the baseline was published for the merge-base" grep -qx "TN:$MB" "$base"
-            before="$(pct "$base")"
-            after="$(pct "$head")"
+            before="$(bash tests/lcov-percent.sh "$base")"
+            after="$(bash tests/lcov-percent.sh "$head")"
             assert "P1: total_before is the baseline's own coverage" \
               jq -e --argjson v "$before" '((.project_delta.total_before - $v) | fabs) < 0.01' out/p1/coverage.json
             assert "P1: total_after is the head report's coverage" \
@@ -468,7 +466,10 @@ jobs:
 
           # What the lookup should have found: the newest successful run of this
           # workflow for the merge-base, and a live baseline artifact in that run
-          # (dawidd6/action-download-artifact looks in that one run only).
+          # (dawidd6/action-download-artifact looks in that one run only). There is
+          # deliberately no `event` or `branch` filter, because the action passes
+          # none: a filter here would make this disagree with the lookup in exactly
+          # the case where a run without the artifact shadows the one with it (#5).
           MB="$(git merge-base origin/main HEAD)"
           runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-paths.yml/runs?head_sha=$MB&per_page=100" \
             --jq '[.workflow_runs[] | {id, status, conclusion}]')"
@@ -597,12 +598,6 @@ jobs:
               status=1
             fi
           }
-          pct() { # <lcov>: executable lines covered, a line covered if any record hit it
-            awk -F'[:,]' '
-              /^SF:/ { sf = substr($0, 4) }
-              $1 == "DA" { k = sf SUBSEP $2; if (!(k in h) || $3 + 0 > h[k]) h[k] = $3 + 0 }
-              END { for (k in h) { t++; if (h[k] > 0) c++ } printf "%.2f", t ? 100 * c / t : 0 }' "$1"
-          }
           maxline() { # <lcov>: the last line with a record
             awk -F'[:,]' '$1 == "DA" && $2 + 0 > m { m = $2 + 0 } END { print m + 0 }' "$1"
           }
@@ -643,8 +638,8 @@ jobs:
           check "R1: head: added_uncovered" uncovered "$(state "$head" "$head_src" added_uncovered)"
 
           # The diff was rendered from it.
-          before="$(pct "$base")"
-          after="$(pct "$head")"
+          before="$(bash tests/lcov-percent.sh "$base")"
+          after="$(bash tests/lcov-percent.sh "$head")"
           # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
           assert "R1: total_before is the baseline's own coverage" \
             jq -e --argjson v "$before" '((.project_delta.total_before - $v) | fabs) < 0.01' out/r1/coverage.json
