@@ -1,0 +1,10 @@
+[package]
+name = "shard-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# The e2e-sharded workflow copies this crate to `sharded-crate/` in the checkout
+# and runs cargo there. An empty workspace table makes it its own root, so a
+# `Cargo.toml` added to the repository root later cannot capture it.
+[workspace]
