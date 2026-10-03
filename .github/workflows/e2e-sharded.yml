@@ -1,0 +1,610 @@
+name: E2E sharded
+
+# A real sharded coverage run, end to end, on real runners: a matrix of shard jobs
+# running `cargo llvm-cov nextest --partition`, the per-shard artifact upload, an
+# aggregation job that downloads them with `merge-multiple` and runs the action
+# (`uses: ./`), and the pull-request / `main` loop on top (sticky comment, both
+# gates, baseline publish, a later pull request consuming that baseline). It is
+# the topology the README's sharded example describes; pr-paths.yml covers the
+# same loop on hand-written lcov, integration.yml the thin-mode scenarios.
+#
+#   shard         both events: one job per shard, measuring the fixture crate.
+#   publish       push to main: publishes the combined report as the baseline.
+#   pull-request  a pull request: the sticky comment, both gates (a pass and a
+#                 failure of each, with a control), the baseline lookup.
+#
+# Why this is its own workflow: `pull_request` is filtered to the paths below, so
+# a pull request that cannot change the action gets no comment, while `push` is
+# NOT filtered, because every main commit must publish a baseline or a later pull
+# request based on it misses. It is path-filtered, so it must never be a required
+# check. It publishes under its own artifact name and comment header: pr-paths.yml
+# already publishes `coverage-baseline`, and the baseline lookup is per workflow.
+#
+# Rules that keep these tests honest (integration.yml and pr-paths.yml have more):
+#   - The patch gate passes when a diff adds no instrumented lines. The aggregation
+#     job therefore commits the fixture crate locally (tests/prepare-shard-crate.sh,
+#     never pushed), so `merge-base..HEAD` adds every line of it whatever the pull
+#     request changes. `base-ref` is NOT used for this: it keys the baseline lookup
+#     too and would force a miss.
+#   - The baseline (a push) runs every test; a pull request skips `t4_delta`. The
+#     head then covers less than the baseline, so a hit shows a real change and
+#     proves the comparison is the right way round, not just that a baseline was
+#     read. Changing which tests run must change the expectations marked `delta`.
+#   - Every scenario uses the same report basename (in its own directory). The
+#     action reads `baseline/<basename of report>`, so a different basename never
+#     finds the baseline that was published.
+#   - Whether a baseline is found is NOT assumed. A hit needs a published baseline
+#     for the merge-base, which the first pull request after this workflow lands
+#     cannot have, and a recent merge-base may still be running. The lookup is
+#     asserted against what the Actions API says should be found, so both the hit
+#     and the miss path are tested whichever one a run takes.
+#   - Anything that changes the baseline lookup (#5: nearest-ancestor fallback)
+#     must change the expectations marked `#5` below, and nothing else.
+#   - E2 and E1 share a comment header and render the same comment on a miss, so
+#     E2's is read back and deleted before E1 runs. Otherwise an E1 that stopped
+#     posting would pass on E2's comment. E3-E5 post nothing.
+#   - E1's comment is left on the pull request on purpose: it is what a reader
+#     sees, and the evidence that the comment posted. A qualifying pull request
+#     therefore carries two coverage comments, this one and pr-paths.yml's, each
+#     under its own header and describing its own fixture, not the pull request.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - action.yml
+      - scripts/**
+      - tests/**
+      - .github/workflows/e2e-sharded.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  # A push gets a group of its own. Sharing one `refs/heads/main` group would let
+  # a burst of merges cancel a pending run, and a main commit without a finished
+  # run has no baseline for a later pull request to download.
+  group: e2e-sharded-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  shard:
+    name: Shard ${{ matrix.shard }} of 2
+    runs-on: ubuntu-latest
+    strategy:
+      # A failed shard must fail the aggregation job (`needs`), not hide it.
+      fail-fast: false
+      matrix:
+        # The partition count below (`/2`) must match this list.
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Copied, not committed: a shard only measures the crate. The path is what
+      # lines the shard's report up with the aggregation job's diff, so it must be
+      # the same in every job.
+      - name: Copy the fixture crate
+        run: bash tests/prepare-shard-crate.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+
+      # `cargo test` cannot partition; nextest can. A push is the baseline and runs
+      # every test. A pull request skips `t4_delta`, so its head covers less than
+      # the baseline (the filter applies before the partitioning, so the three
+      # remaining tests are split 2 and 1).
+      - name: Run this shard under coverage
+        working-directory: sharded-crate
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          args=(--partition "count:${SHARD}/2" --lcov --output-path "$GITHUB_WORKSPACE/shard-${SHARD}.lcov")
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            args+=(-E 'not test(=tests::t4_delta)')
+          fi
+          cargo llvm-cov nextest "${args[@]}"
+
+      # `cargo llvm-cov` writes no `TN:` line. Inserting one (in place, so the
+      # report still ends without a newline, as llvm-cov writes it) lets a baseline
+      # downloaded later say which commit it was published for. Only a push makes
+      # a baseline; on a pull request `GITHUB_SHA` is the synthetic merge commit,
+      # and nothing reads the tag there.
+      - name: Tag the report with the commit
+        if: github.event_name == 'push'
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: perl -pi -e 's/^SF:/TN:$ENV{GITHUB_SHA}\nSF:/' "shard-${SHARD}.lcov"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-shard-${{ matrix.shard }}
+          path: shard-${{ matrix.shard }}.lcov
+
+  publish:
+    name: Publish the baseline (push to main)
+    if: github.event_name == 'push'
+    # Not `if: always()`: a failed shard fails this job.
+    needs: shard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true # every shard file lands in one directory
+          path: shards
+
+      # Every test ran, so the shards' union is 87.5% and each shard alone 43.75%:
+      # a line gate of 70 passes only if the shards were merged.
+      - name: 'B1. Aggregation that publishes the baseline'
+        id: b1
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/b1/coverage-head.lcov
+          fail-under-lines: 70
+          comment: false
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-artifact-name: coverage-baseline-e2e-sharded
+          baseline-workflow: e2e-sharded.yml
+
+      # An artifact of this run is downloaded with the runtime token, so this
+      # needs no permission beyond the workflow's.
+      - name: Download what was published
+        id: published
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-baseline-e2e-sharded
+          path: out/published
+
+      - name: Assert the baseline was published
+        env:
+          B1: ${{ steps.b1.outcome }}
+          PUBLISHED: ${{ steps.published.outcome }}
+          VERSION: ${{ steps.b1.outputs.version }}
+        run: |
+          status=0
+          source tests/assert-lib.sh
+
+          # What was measured, for whoever reads a red run.
+          for shard in shards/shard-*.lcov; do
+            echo "note - $shard covers $(bash tests/lcov-percent.sh "$shard")%"
+          done
+          echo "note - the combined report covers $(bash tests/lcov-percent.sh out/b1/coverage-head.lcov 2>/dev/null)%"
+
+          check "B1. aggregation that publishes" success "$B1"
+          check "B1. the published artifact exists and downloads" success "$PUBLISHED"
+
+          # The topology: merge-multiple put both shards' files in one directory.
+          check "the shard artifacts flattened into shards/" "shards/shard-1.lcov shards/shard-2.lcov" "$(find shards -type f | sort | paste -sd' ' -)"
+
+          # Partitioning on a Linux runner: each test ran in exactly one shard.
+          for fn in alpha bravo charlie delta; do
+            check "$fn is covered by exactly one shard" 1 "$(shards_covering "$fn")"
+          done
+          check "never is reached by no shard" 0 "$(shards_covering never)"
+
+          published=out/published/coverage-head.lcov
+          assert "the artifact holds the combined report, byte for byte" \
+            cmp "$published" out/b1/coverage-head.lcov
+
+          # One file, one record per shard. A bare `cat` of the shards would glue a
+          # record's `end_of_record` onto the next shard's first line, and llvm-cov
+          # writes no newline after its last one.
+          check "the combined report has a record per shard" 2 "$(grep -c '^SF:' "$published")"
+          check "every record is closed on a line of its own" 2 "$(grep -c '^end_of_record$' "$published")"
+          # What a later pull request checks to know the baseline is the one for
+          # its merge-base.
+          check "every record names the commit it was published for" 2 "$(grep -cx "TN:$GITHUB_SHA" "$published")"
+
+          # delta: the baseline ran every test. A pull request skips t4_delta, and
+          # the pull-request job asserts the head covers less than this.
+          assert "delta: the published baseline covers delta, which pull requests skip" covers "$published" delta
+
+          if ! omni-dev --version | grep -qF "$VERSION"; then
+            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
+
+  pull-request:
+    name: Sticky comment, gates and baseline lookup (pull request)
+    # A fork's token cannot write the comment, and neither can Dependabot's: it
+    # gets a read-only token whatever `permissions` asks for. Their shards still
+    # run, so a bump of an action the shards use is exercised.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    # Not `if: always()`: a failed shard fails this job.
+    needs: shard
+    runs-on: ubuntu-latest
+    # Exactly what the README tells a caller to grant, so a permission the action
+    # needs and the README does not mention fails here. `actions: read` is NOT
+    # granted: this repository is public, so it only shows that public callers
+    # do not need it, not that a private one does not.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The patch is the whole crate (32 instrumented lines), so the diff never
+      # misses it whatever this pull request changes. The head covers 21 of them
+      # (65.6%) and a single shard at most 14 (43.75%).
+      - name: Commit the fixture crate locally
+        run: bash tests/prepare-shard-crate.sh --commit
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-shard-*
+          merge-multiple: true # every shard file lands in one directory
+          path: shards
+
+      # A comment left by an earlier run (a push, or a re-run) must not be able to
+      # stand in for one this run is meant to post.
+      - name: Clear the comment from an earlier run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          mkdir -p out
+          rc=0
+          bash tests/read-sticky-comment.sh --delete e2e-sharded out/comment-before.md || rc=$?
+          # 3: there was none. 4: more than one, now all deleted.
+          case "$rc" in 0 | 3 | 4) ;; *) exit "$rc" ;; esac
+
+      # E2, E3 and E4 each differ from E1 in exactly one input, and E1 succeeds. The
+      # gates sit well either side of the measured figures: the head's union is
+      # 65.6% and one shard alone is 43.75%, so a gate of 55 passes only if the
+      # shards were merged, and one of 80 fails.
+      - name: 'E2. Patch gate above the patch coverage'
+        id: e2
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/e2/coverage-head.lcov
+          fail-under-lines: 55
+          fail-under-patch: 80
+          comment-header: e2e-sharded
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-artifact-name: coverage-baseline-e2e-sharded
+          baseline-workflow: e2e-sharded.yml
+
+      # The gate runs after the comment, so the comment is there although E2 fails.
+      - name: Read back and clear the comment after E2
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash tests/read-sticky-comment.sh --delete e2e-sharded out/comment-e2.md
+
+      - name: Move E2 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh e2
+
+      # The patch gate passes here, so a failure is the overall line gate.
+      - name: 'E3. Line gate above the line coverage'
+        id: e3
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/e3/coverage-head.lcov
+          fail-under-lines: 80
+          fail-under-patch: 55
+          comment: false
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-artifact-name: coverage-baseline-e2e-sharded
+          baseline-workflow: e2e-sharded.yml
+
+      - name: Move E3 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh e3
+
+      # One shard's report alone: the gates E1 passes are then out of reach, which
+      # is what shows the merge of the shards is what makes them pass.
+      - name: 'E4. Only one of the shards'
+        id: e4
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-1.lcov
+          report: out/e4/coverage-head.lcov
+          fail-under-lines: 55
+          fail-under-patch: 55
+          comment: false
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-artifact-name: coverage-baseline-e2e-sharded
+          baseline-workflow: e2e-sharded.yml
+
+      - name: Move E4 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh e4
+
+      # Control for the baseline lookup: only the artifact's name differs, so
+      # nothing can be found. A miss is a warning, not a failure, and the comment
+      # then has no deltas.
+      - name: 'E5. A baseline artifact name that does not exist'
+        id: e5
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/e5/coverage-head.lcov
+          fail-under-lines: 55
+          fail-under-patch: 55
+          comment: false
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-artifact-name: coverage-baseline-e2e-sharded-absent
+          baseline-workflow: e2e-sharded.yml
+
+      - name: Move E5 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh e5
+
+      # Everything on: the sharded report, both gates, the comment, the baseline
+      # lookup, and `publish-baseline: true`, which on a pull request must publish
+      # nothing. It runs last, so the comment left on the pull request is the
+      # passing one.
+      - name: 'E1. Everything on'
+        id: e1
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/e1/coverage-head.lcov
+          fail-under-lines: 55
+          fail-under-patch: 55
+          comment-header: e2e-sharded
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-artifact-name: coverage-baseline-e2e-sharded
+          baseline-workflow: e2e-sharded.yml
+
+      - name: Read back the comment after E1
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash tests/read-sticky-comment.sh e2e-sharded out/comment-e1.md
+
+      - name: Move E1 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh e1
+
+      - name: Assert every outcome
+        if: ${{ !cancelled() }}
+        env:
+          E1: ${{ steps.e1.outcome }}
+          E2: ${{ steps.e2.outcome }}
+          E3: ${{ steps.e3.outcome }}
+          E4: ${{ steps.e4.outcome }}
+          E5: ${{ steps.e5.outcome }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PATCH_PERCENT: ${{ steps.e1.outputs.patch-percent }}
+          LINE_PERCENT: ${{ steps.e1.outputs.line-percent }}
+          COMMENT_PATH: ${{ steps.e1.outputs.comment-path }}
+          E5_LINE_PERCENT: ${{ steps.e5.outputs.line-percent }}
+          VERSION: ${{ steps.e1.outputs.version }}
+        run: |
+          status=0
+          source tests/assert-lib.sh
+          # Both are called through `assert`. Command substitution ignores trailing
+          # newlines, which the comment may or may not keep.
+          # shellcheck disable=SC2329
+          same() { [ "$(cat "$1")" = "$(cat "$2")" ]; }
+          # shellcheck disable=SC2329
+          differ() { ! same "$@"; }
+
+          MB="$(git merge-base origin/main HEAD)"
+          head=out/e1/coverage-head.lcov
+          # Empty if E1 wrote no report: the assertions below then fail by name,
+          # where a failed assignment would end the step under `-e` unreported.
+          head_total="$(bash tests/lcov-percent.sh "$head" 2>/dev/null || true)"
+
+          # What was measured, for whoever reads a red run: every figure the gates
+          # and the comparisons below rest on.
+          for shard in shards/shard-*.lcov; do
+            echo "note - $shard covers $(bash tests/lcov-percent.sh "$shard")%"
+          done
+          echo "note - the head (both shards) covers ${head_total}%"
+          echo "note - E1's patch: $(jq -c '{percent: .patch_coverage.percent, covered: .patch_coverage.covered, total: .patch_coverage.total, files: [.patch_coverage.files[].path]}' out/e1/coverage.json 2>&1)"
+
+          check "E1. everything on" success "$E1"
+          check "E2. patch gate above the patch coverage" failure "$E2"
+          check "E3. line gate above the line coverage" failure "$E3"
+          check "E4. only one of the shards" failure "$E4"
+          check "E5. a baseline artifact name that does not exist" success "$E5"
+
+          # The topology: merge-multiple put both shards' files in one directory.
+          check "the shard artifacts flattened into shards/" "shards/shard-1.lcov shards/shard-2.lcov" "$(find shards -type f | sort | paste -sd' ' -)"
+
+          # Partitioning on a Linux runner: each test that ran, ran in exactly one
+          # shard, and nothing reaches `never`. delta: this run skipped t4_delta.
+          for fn in alpha bravo charlie; do
+            check "$fn is covered by exactly one shard" 1 "$(shards_covering "$fn")"
+          done
+          check "delta: skipped on a pull request, so no shard covers it" 0 "$(shards_covering delta)"
+          check "never is reached by no shard" 0 "$(shards_covering never)"
+
+          # E1's combined report. llvm-cov writes no newline after a shard's last
+          # `end_of_record`; the join must still close every record on its own line.
+          check "E1: the combined report has a record per shard" 2 "$(grep -c '^SF:' "$head")"
+          check "E1: every record is closed on a line of its own" 2 "$(grep -c '^end_of_record$' "$head")"
+
+          # The patch gate is not vacuous: the diff adds the crate's lines, they are
+          # the ones the report instruments, and the figure is the report's own.
+          # The tolerance is 0.02 because 21/32 is exactly 65.625, which omni-dev
+          # and lcov-percent.sh round to different neighbours.
+          assert "E1: the patch is the crate's file, so the shards' paths lined up with the diff" \
+            jq -e '[.patch_coverage.files[].path] == ["sharded-crate/src/lib.rs"]' out/e1/coverage.json
+          assert "E1: the patch is not empty" jq -e '.patch_coverage.total > 0' out/e1/coverage.json
+          # shellcheck disable=SC2016 # `$v` is jq's, not the shell's
+          assert "E1: patch coverage is the head report's own coverage" \
+            jq -e --argjson v "$head_total" '((.patch_coverage.percent - $v) | fabs) < 0.02' out/e1/coverage.json
+          check "E1: the patch-percent output is non-empty and the patch's" \
+            "$(jq -r '.patch_coverage.percent' out/e1/coverage.json)" "$PATCH_PERCENT"
+          check "E1: the comment-path output" coverage.md "$COMMENT_PATH"
+          # shellcheck disable=SC2016 # `$l` is jq's, not the shell's
+          assert "E1: the uncovered function is listed as uncovered" \
+            jq -e --arg l "sharded-crate/src/lib.rs:$(line_of never)" '.uncovered_new_lines | index($l) != null' out/e1/coverage.json
+          # shellcheck disable=SC2016 # `$l` is jq's, not the shell's
+          assert "E1: a covered function is not" \
+            jq -e --arg l "sharded-crate/src/lib.rs:$(line_of alpha)" '.uncovered_new_lines | index($l) == null' out/e1/coverage.json
+
+          # The gates sit either side of the figures, so each failure below can only
+          # be the gate it differs in. E1 passes both, E2 fails the patch gate
+          # (its line total clears 55), E3 the line gate (its patch clears 55).
+          assert "E1: the patch clears the gate E1 passes" ge "$(jq -r '.patch_coverage.percent' out/e1/coverage.json)" 55
+          assert "E2: the patch is below E2's patch gate" lt "$(jq -r '.patch_coverage.percent' out/e2/coverage.json)" 80
+          assert "E2: the line total clears the line gate, so the patch gate is what failed" \
+            ge "$(bash tests/lcov-percent.sh out/e2/coverage-head.lcov)" 55
+          assert "E3: the patch clears the patch gate, so the line gate is what failed" \
+            ge "$(jq -r '.patch_coverage.percent' out/e3/coverage.json)" 55
+          assert "E3: the line total is below E3's line gate" lt "$(bash tests/lcov-percent.sh out/e3/coverage-head.lcov)" 80
+
+          # E2 and E3 stopped at a gate: the diff was built, and the comment of E2
+          # (the only one of them that posts) was already there.
+          assert "E2: stopped at the gate: coverage.md written" test -s out/e2/coverage.md
+          assert "E2: stopped at the gate: the comment was already posted" test -s out/comment-e2.md
+          assert "E2: the comment is the rendered diff" same out/comment-e2.md out/e2/coverage.md
+          assert "E3: stopped at the gate: coverage.json written" test -s out/e3/coverage.json
+
+          # E4: one shard's report alone is under the gate that the merged shards
+          # pass, and it was the only record the action was given.
+          check "E4: one record, from the one shard it was given" 1 "$(grep -c '^SF:' out/e4/coverage-head.lcov)"
+          assert "E4: the one shard is under the gate the merged shards pass" \
+            lt "$(jq -r '.patch_coverage.percent' out/e4/coverage.json)" 55
+
+          # The sticky comment: posted by E1 (the only one there, as E2's was
+          # cleared) and equal to what it rendered.
+          assert "E1: the sticky comment is the rendered diff" same out/comment-e1.md out/e1/coverage.md
+          # An earlier push's comment names another commit, so it cannot pass this.
+          assert "E1: the comment is for this commit" grep -qF "${HEAD_SHA:0:7}" out/comment-e1.md
+          assert "E1: the comment names the merge-base" grep -qF "${MB:0:7}" out/comment-e1.md
+
+          # E5 is the miss control, and E1's patch does not depend on the baseline.
+          assert "E5: no baseline was found" test ! -e out/e5/baseline/coverage-head.lcov
+          assert "E5: without a baseline there is no project_delta" \
+            jq -e '.project_delta == null' out/e5/coverage.json
+          check "E5: the line-percent output is empty without a baseline" "" "$E5_LINE_PERCENT"
+          assert "E5: the comment says there is no baseline" grep -q 'No baseline available' out/e5/coverage.md
+          assert "E5: the patch is the same as E1's" \
+            test "$(jq -c '.patch_coverage' out/e5/coverage.json)" = "$(jq -c '.patch_coverage' out/e1/coverage.json)"
+
+          # E1's baseline, if the lookup found one. Hit or miss is checked against
+          # the Actions API in the next step; here a hit must be internally sound.
+          base=out/e1/baseline/coverage-head.lcov
+          # shellcheck disable=SC2016 # `$v` is jq's, not the shell's
+          if [ -s "$base" ]; then
+            echo "note - E1 found a baseline: the hit path ran"
+            # #5: with an ancestor fallback this becomes "an ancestor of the merge-base".
+            assert "E1: the baseline was published for the merge-base" grep -qx "TN:$MB" "$base"
+            check "E1: the baseline is the combined report of both shards" 2 "$(grep -c '^SF:' "$base")"
+            before="$(bash tests/lcov-percent.sh "$base")"
+            assert "E1: total_before is the baseline's own coverage" \
+              jq -e --argjson v "$before" '((.project_delta.total_before - $v) | fabs) < 0.02' out/e1/coverage.json
+            assert "E1: total_after is the head report's coverage" \
+              jq -e --argjson v "$head_total" '((.project_delta.total_after - $v) | fabs) < 0.02' out/e1/coverage.json
+            check "E1: the line-percent output is total_after" \
+              "$(jq -r '.project_delta.total_after' out/e1/coverage.json)" "$LINE_PERCENT"
+            # delta: the baseline ran every test (the publish job asserts that of
+            # the baseline at its own commit) and this head skipped one. Not
+            # checked by line here: a pull request that edits the fixture would
+            # shift the lines the baseline was measured at.
+            assert "delta: the total fell, which is the way round the comparison must read" \
+              jq -e '(.project_delta.total_after | type) == "number" and .project_delta.total_after < .project_delta.total_before' out/e1/coverage.json
+            assert "E1: the comment differs from the one without a baseline" differ out/comment-e1.md out/e5/coverage.md
+          else
+            echo "note - E1 found no baseline: the miss path ran"
+            assert "E1: without a baseline there is no project_delta" \
+              jq -e '.project_delta == null' out/e1/coverage.json
+            check "E1: the line-percent output is empty without a baseline" "" "$LINE_PERCENT"
+            assert "E1: the comment says there is no baseline" grep -q 'No baseline available' out/e1/coverage.md
+          fi
+
+          if ! omni-dev --version | grep -qF "$VERSION"; then
+            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
+
+      # What only the Actions API knows. The token is the job's own, without
+      # `actions: read`; reading a public repository's runs needs none.
+      - name: Check the baseline lookup and the publish against the Actions API
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=0
+          source tests/assert-lib.sh
+
+          # `publish-baseline: true` ran on a pull request, in every scenario.
+          published="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+            --jq '[.artifacts[] | select(.name == "coverage-baseline-e2e-sharded")] | length')"
+          check "a pull-request run publishes no baseline" 0 "$published"
+
+          # What the lookup should have found: the newest successful run of this
+          # workflow for the merge-base, and a live baseline artifact in that run
+          # (dawidd6/action-download-artifact looks in that one run only). There is
+          # deliberately no `event` or `branch` filter, because the action passes
+          # none: a filter here would make this disagree with the lookup in exactly
+          # the case where a run without the artifact shadows the one with it (#5).
+          MB="$(git merge-base origin/main HEAD)"
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/e2e-sharded.yml/runs?head_sha=$MB&per_page=100" \
+            --jq '[.workflow_runs[] | {id, status, conclusion}]')"
+          newest_ok="$(jq -r '[.[] | select(.conclusion == "success")][0].id // empty' <<<"$runs")"
+          expected=miss
+          if [ -n "$newest_ok" ]; then
+            live="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$newest_ok/artifacts" \
+              --jq '[.artifacts[] | select(.name == "coverage-baseline-e2e-sharded" and (.expired | not))] | length')"
+            if [ "$live" -gt 0 ]; then expected=hit; fi
+          fi
+          # A run for the merge-base that has not finished may publish between the
+          # API call and the lookup, in either order. #5: with an ancestor
+          # fallback a `miss` here means "no baseline within reach", not "none".
+          if [ "$expected" = miss ] && [ "$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")" -gt 0 ]; then
+            expected=either
+          fi
+
+          observed=miss
+          if [ -s out/e1/baseline/coverage-head.lcov ]; then observed=hit; fi
+
+          echo "::notice::baseline lookup for merge-base ${MB:0:7}: expected $expected, observed $observed"
+          case "$expected:$observed" in
+            hit:hit | miss:miss | either:*) echo "ok   - the lookup found what the API says it should" ;;
+            *)
+              echo "::error::the lookup found a baseline: $observed; the API says: $expected"
+              status=1
+              ;;
+          esac
+          exit "$status"
