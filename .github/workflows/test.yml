@@ -18,3 +18,6 @@ jobs:
 
       - name: Test combine-shards.sh
         run: bash tests/combine-shards.test.sh
+
+      - name: Test job-errors.sh
+        run: bash tests/job-errors.test.sh
