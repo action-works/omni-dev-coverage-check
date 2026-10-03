@@ -1,0 +1,20 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the scripts
+        run: shellcheck -x scripts/*.sh tests/*.sh
+
+      - name: Test combine-shards.sh
+        run: bash tests/combine-shards.test.sh
