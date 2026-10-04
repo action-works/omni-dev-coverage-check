@@ -212,26 +212,29 @@ The action is a composite action with two phases:
   (rust-works/omni-dev#2148), and against `latest`, so the asset's name, the archive layout
   `tar -xzf … -C /tmp; mv /tmp/omni-dev` relies on (`omni-dev` at the archive root, beside
   `omni-dev-mcp`, `LICENSE` and `README.md`) and the binary itself are held to a real
-  release. Rules:
+  release, when the install runs (see the cache rule below). Rules:
   - The `0.46.0` leg is the floor for the ARM64 pre-built install and stays put, as
     `0.45.0` does for the gate; unlike `OLD_OMNI_DEV` it does not wait on anything. The
     matrix cannot read `env`, so the version is a literal and `failure-messages` repeats
     it (with the leg's job name, `Thin mode (omni-dev 0.46.0, ARM64)`: the x86_64 legs
     keep the names they had, so no lookup or required check moved).
-  - The legs run on `ubuntu-24.04-arm`, not an older ARM image: the binary's highest glibc
-    symbol version is 2.39 (read from the binary), Ubuntu 24.04's. Every leg checks it ran
-    on the architecture it names (`runner.arch` and `uname -m`), as job 6 does, so a leg
-    cannot pass as ARM64 on another runner.
-  - **Their cache key holds a hash of the install code.** `actions/cache` restores
-    `~/.cargo/bin/omni-dev` on a hit and "Download pre-built binary" is then skipped, so a
-    leg that hit would pass on a cached binary and never run the code a pull request
-    changed (the key holds the version, not the action's code). The ARM64 legs put
-    `hashFiles('action.yml', 'scripts/*.sh')` in `cache-prefix`: the first run after a
-    change to the install code installs for real, and runs on unchanged code reuse the
-    entry. A per-run prefix would install every time but write a cache entry per leg per
-    run. The x86_64 legs have the same gap and were left on the default key (not the
-    ARM64 issue's to change). A script the install starts to use outside `scripts/*.sh`
-    needs adding to that hash, or a change to it is cached over again.
+  - The legs run on `ubuntu-24.04-arm`, not an older ARM image: omni-dev's Linux binaries,
+    the x86_64 ones too, need glibc 2.39 (the highest `GLIBC_` version in each binary's
+    version-needs table, read from the 0.45.0 and 0.46.0 releases), Ubuntu 24.04's, so an
+    older runner image fails at `Print omni-dev version`. Every leg checks it ran on the
+    architecture it names (`runner.arch` and `uname -m`), as job 6 does, so a leg cannot
+    pass as ARM64 on another runner.
+  - **A cache hit skips the install.** `actions/cache` restores `~/.cargo/bin/omni-dev` and
+    "Download pre-built binary" is then skipped; the key holds the version, not the action's
+    code. That holds for every leg, x86_64 included, and none works around it: the asset's
+    name, the archive layout and the binary are exercised on the first run for a version (a
+    new release, or an entry that was evicted or never written for that ref), not on each
+    run. A `cache-prefix` made of a hash of `action.yml` and `scripts/*.sh` was tried on the
+    ARM64 legs and dropped: the gap is not ARM64's, so fixing it there alone leaves the
+    matrix inconsistent; the glob has to be kept in step with the install code by hand; the
+    weekly run would still hit an entry; and each miss reinstalls once per scenario, since
+    the entry is saved only in the post step. If it is wanted, do it for every leg that
+    exists to run the install, and decide the schedule and a run-id prefix then.
   - The `latest` ARM64 leg shares the release-asset lag the other `latest` legs have, and
     may see it for longer or shorter, as the asset can be uploaded by another job than the
     x86_64 one: a red `latest` leg right after an omni-dev release, with "has no pre-built

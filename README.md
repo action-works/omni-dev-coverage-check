@@ -301,8 +301,7 @@ ARM64 Linux runner, `use-prebuilt-binary: 'true'` with `version` pinned to an ea
 step. So does a platform with no pre-built binary (macOS x64, a 32-bit Linux runner). The message names the platform
 or the missing asset: set `use-prebuilt-binary: 'false'` to build omni-dev from source instead, or `version` to a
 release that has the asset. A workflow that set `use-prebuilt-binary: 'false'` only to get omni-dev onto an ARM64
-Linux runner can drop it, on `latest` or on `0.46.0` or later. (The ARM64 binary needs the glibc of Ubuntu 24.04, so
-use the `ubuntu-24.04-arm` runner image or newer.)
+Linux runner can drop it, on `latest` or on `0.46.0` or later.
 
 ### Coverage run (fat mode)
 

@@ -11,11 +11,12 @@ name: Integration
 # said is asserted by the last job, which reads the finished jobs' logs through
 # the API. On a pull request it also asserts that none of the jobs that ran the
 # pull-request steps logged an omni-dev deprecation warning, and a control job
-# that logs one on purpose shows that reading can find it. Two things run on an
-# ARM64 Linux runner, to show that the pre-built binary is chosen by architecture: the
-# ARM64 legs of `thin-mode`, on a release that has the ARM64 asset, and
-# `arm64-release-without-asset`, on one that does not. One resolves `version: latest` with a token the API refuses, so that the fallback
-# to the releases/latest redirect has to answer, and compares it with the API's answer.
+# that logs one on purpose shows that reading can find it. To show that the pre-built
+# binary is chosen by architecture, the ARM64 legs of `thin-mode` run on an ARM64 Linux
+# runner against a release that has the ARM64 asset, and `arm64-release-without-asset`
+# against one that does not. One job resolves `version: latest` with a token the API
+# refuses, so that the fallback to the releases/latest redirect has to answer, and
+# compares it with the API's answer.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -77,11 +78,17 @@ env:
 jobs:
   # The thin-mode scenarios on x86_64 and on ARM64 Linux. The ARM64 legs are the install
   # that succeeds on ARM64 (#20): a release that carries `omni-dev-linux-arm64.tar.gz`,
-  # downloaded, extracted and run on a real ARM64 runner. Its control is
-  # `arm64-release-without-asset` below: the same runner and action inputs, a release
-  # without the asset, which must fail. They are legs of this job so that a scenario
-  # added here reaches ARM64 too. The x86_64 legs keep the names they always had; the
-  # ARM64 ones add `, ARM64`, which is what `failure-messages` looks them up by.
+  # downloaded, extracted and run on a real ARM64 runner. `arm64-release-without-asset`
+  # below is the other half: the same runner on a release without the asset, which must
+  # fail (its inputs differ from these in more than the version: it turns the line gate
+  # off, which 0.44.0 lacks). They are legs of this job so that a scenario added here
+  # reaches ARM64 too. The x86_64 legs keep the names they always had; the ARM64 ones add
+  # `, ARM64`, which is what `failure-messages` looks them up by.
+  #
+  # The install runs only when `actions/cache` misses: a hit restores ~/.cargo/bin/omni-dev
+  # and skips "Download pre-built binary". That is so for every leg, and nothing here keys
+  # the cache to the action's code, so the download and the archive layout are exercised
+  # on the first run for a version (a new release, an evicted entry) and not on each run.
   thin-mode:
     name: Thin mode (omni-dev ${{ matrix.omni-dev }}${{ matrix.arch == 'ARM64' && ', ARM64' || '' }})
     runs-on: ${{ matrix.runner }}
@@ -95,28 +102,14 @@ jobs:
           - { omni-dev: 'latest', runner: ubuntu-latest, arch: X64 }
           # 0.46.0 is the first release that publishes omni-dev-linux-arm64.tar.gz
           # (rust-works/omni-dev#2148), so it is the floor for the ARM64 pre-built
-          # install and stays put. `ubuntu-24.04-arm`: the binary needs the glibc of
-          # Ubuntu 24.04 (2.39), which an older ARM runner image lacks.
+          # install and stays put. `ubuntu-24.04-arm`: omni-dev's Linux binaries need
+          # the glibc of Ubuntu 24.04 (2.39), which an older ARM runner image lacks.
           - { omni-dev: '0.46.0', runner: ubuntu-24.04-arm, arch: ARM64 }
           - { omni-dev: 'latest', runner: ubuntu-24.04-arm, arch: ARM64 }
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      # An ARM64 leg exists to run the install, and `actions/cache` restores
-      # ~/.cargo/bin/omni-dev on a hit, which skips "Download pre-built binary": a leg
-      # that hit would pass on a cached binary and never run the code a pull request
-      # changed. The cache key does not hold the action's code, so the ARM64 legs put a
-      # hash of it in the key (`cache-prefix`): the first run after a change to the
-      # install code installs for real, and runs on unchanged code reuse the entry. The
-      # x86_64 legs are left on the default key (see #20's follow-ups).
-      - name: Key the omni-dev cache to the install code (ARM64)
-        id: scope
-        if: ${{ matrix.arch == 'ARM64' }}
-        env:
-          INSTALL_CODE: ${{ hashFiles('action.yml', 'scripts/*.sh') }}
-        run: echo "prefix=install-$INSTALL_CODE-" >> "$GITHUB_OUTPUT"
 
       # Real llvm-cov shape: no newline after the final end_of_record. Each shard
       # alone covers 2 of 4 lines (50%); their union covers 3 of 4 (75%), so a gate
@@ -134,7 +127,6 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
-          cache-prefix: ${{ steps.scope.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/s1.lcov
@@ -151,7 +143,6 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
-          cache-prefix: ${{ steps.scope.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/s2.lcov
@@ -168,7 +159,6 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
-          cache-prefix: ${{ steps.scope.outputs.prefix }}
           run-coverage: false
           report: single.lcov
           fail-under-lines: 90
@@ -184,7 +174,6 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
-          cache-prefix: ${{ steps.scope.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/missing-*.lcov
           report: out/s4.lcov
@@ -218,8 +207,12 @@ jobs:
           # A leg is about the architecture it names only if it ran on it: an ARM64 leg
           # that landed on an x86_64 runner would show nothing about the ARM64 asset.
           case "$EXPECTED_ARCH" in
+            X64) machine=x86_64 ;;
             ARM64) machine=aarch64 ;;
-            *) machine=x86_64 ;;
+            *)
+              echo "::error::matrix.arch is '$EXPECTED_ARCH', which this step does not know: expected X64 or ARM64"
+              exit 1
+              ;;
           esac
           if [ "$ARCH" != "$EXPECTED_ARCH" ] || [ "$(uname -m)" != "$machine" ]; then
             echo "::error::this leg is for $EXPECTED_ARCH but ran on runner.arch $ARCH, uname -m $(uname -m)"
@@ -356,8 +349,9 @@ jobs:
   # check, and never said why. It must now stop at the install step and name the
   # asset it looked for. The control is 5b: the same action inputs on an x86_64
   # runner, which must succeed. The install that succeeds on ARM64 is the ARM64 legs of
-  # `thin-mode` above (#20): this job is their control, the same runner and action inputs
-  # on a release without the asset.
+  # `thin-mode` above (#20): this job is the other half of the pair, the same runner on a
+  # release without the asset. It cannot be a one-input control of them: the line gate is
+  # off here, as in 5b, because 0.44.0 lacks the flag the thin-mode scenarios use.
   arm64-release-without-asset:
     name: Pre-built binary (ARM64 Linux, omni-dev without the ARM64 asset)
     runs-on: ubuntu-24.04-arm
