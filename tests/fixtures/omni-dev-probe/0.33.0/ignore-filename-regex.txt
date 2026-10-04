@@ -1,3 +1,4 @@
+exit=0
 Analyses diff/patch coverage from a per-line report and a git diff
 
 Usage: omni-dev coverage diff [OPTIONS] --report <PATH>

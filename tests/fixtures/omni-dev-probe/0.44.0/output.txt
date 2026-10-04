@@ -1,0 +1,5 @@
+exit=2
+error: invalid value 'x' for '--output <OUTPUT>'
+  [possible values: markdown, yaml, json]
+
+For more information, try '--help'.

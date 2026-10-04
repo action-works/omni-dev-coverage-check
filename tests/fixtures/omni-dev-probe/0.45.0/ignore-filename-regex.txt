@@ -1,3 +1,4 @@
+exit=0
 Analyses diff/patch coverage from a per-line report and a git diff
 
 Usage: omni-dev coverage diff [OPTIONS] --report <PATH>
@@ -9,15 +10,12 @@ Options:
           When set, the profile's `env` bundle replaces the base `env` map in the settings-fallback chain (process env still wins); the base map is not consulted. Overrides `OMNI_DEV_PROFILE`. An unknown name is a hard error listing the known profiles.
 
       --report <PATH>
-          Head coverage report (lcov / llvm-cov-json / cobertura)
-
-  -C, --repo <PATH>
-          Run as if omni-dev was started in `<PATH>` instead of the current working directory.
+          Head coverage report (lcov / llvm-cov-json / cobertura); repeat once per shard to merge a sharded run.
           
-          Resolved exactly once by the owning command and threaded explicitly to its leaves as a parameter; deliberately **not** propagated to an environment variable (so, unlike the other scoped flags, `RepoArg` has no `apply()`), so the repo location never becomes an ambient global. Mirrors `git -C`.
+          Pass one `--report` per shard of a sharded coverage run and they are merged before anything is computed. The merge is a union of the files and of each file's executable lines, taking the larger hit count for a line present in several — so a line any shard covered is covered, and a line only one shard instrumented is judged by that shard alone. With more than one `--report`, a shard with no executable lines fails the run (it would otherwise lower the result unnoticed), and a shard whose absolute paths all fall outside the `--strip-prefix` root draws a warning. Shard order does not affect the output.
 
       --report-format <REPORT_FORMAT>
-          Format of `--report` (auto-detected by default)
+          Format of every `--report` (auto-detected by default)
 
           Possible values:
           - auto:          Auto-detect from report content
@@ -29,6 +27,11 @@ Options:
 
       --base-ref <REV>
           Base revision to diff against (default: merge-base of `origin/main` and `HEAD`)
+
+  -C, --repo <PATH>
+          Run as if omni-dev was started in `<PATH>` instead of the current working directory.
+          
+          Resolved exactly once by the owning command and threaded explicitly to its leaves as a parameter; deliberately **not** propagated to an environment variable (so, unlike the other scoped flags, `RepoArg` has no `apply()`), so the repo location never becomes an ambient global. Mirrors `git -C`.
 
       --head-ref <REV>
           Head revision the report was measured at (default: `HEAD`)
@@ -59,6 +62,11 @@ Options:
 
       --fail-under-patch <PCT>
           Fail (non-zero exit) when patch coverage is below this percentage
+
+      --fail-under-lines <PCT>
+          Fail (non-zero exit) when overall line coverage is below this percentage.
+          
+          Gates on the headline `Total` — covered over executable lines across the head report after `--ignore-filename-regex` and `ignore` markers — so it moves with the same exclusions the patch gate sees. The figure is derived from the report's per-line records, so it can differ slightly from `cargo llvm-cov report --summary-only`. A report with no executable lines fails the gate: there is nothing to measure, and passing would let an empty report slip through.
 
       --strip-prefix <PATH>
           Override the path prefix stripped from report file paths to make them repo-relative (default: the repository working directory)
