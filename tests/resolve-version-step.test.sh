@@ -9,7 +9,8 @@
 # so it now sends the token and tries three times. This pins that: the header, the
 # retries and their delays, the timeouts that let a hung connection be retried, a
 # runner with no jq, and that a pinned version never touches the network and loses a
-# leading v (#38). A spent limit can outlast those attempts, so when all three fail the
+# leading v (#38) or V, and that one with nothing left after it, or empty, fails with a
+# message instead (#51). A spent limit can outlast those attempts, so when all three fail the
 # step reads the tag from the github.com releases/latest redirect instead (#40). This
 # pins that too: the one request it makes, that only a release tag of omni-dev's own is
 # taken from it, and the one error that names both failures when neither answers. The
@@ -167,6 +168,71 @@ release-tag=v0.46.0-dev" "$OUT"
 run_resolve vv0.45.0 "$TOKEN"
 eq "pinned v: one leading v is dropped, not all of them" "version=v0.45.0
 release-tag=vv0.45.0" "$OUT"
+
+# --- a capital V is accepted too (#51) ---------------------------------------
+
+# A caller may type the tag's v as a capital. It has one reading, so it is dropped
+# like the lowercase one and the outputs stay canonical: the version has no v and
+# the tag has a lowercase one, as release tags are written. The same cache entry
+# and the same download follow.
+run_resolve V0.45.0 "$TOKEN" '{"tag_name":"v9.9.9"}'
+eq "pinned V: the step succeeds" 0 "$STATUS"
+eq "pinned V: no API call is made" 0 "$CALLS"
+eq "pinned V: it never waits" "" "$SLEEPS"
+eq "pinned V: the version has no V and the tag has a lowercase v" "version=0.45.0
+release-tag=v0.45.0" "$OUT"
+run_resolve V0.45.0 "$TOKEN"
+eq "pinned V: V0.45.0 and 0.45.0 write identical outputs" "$bare_out" "$OUT"
+# One character, as for the lowercase v: a mixed pair is a typo and stays visibly wrong.
+run_resolve vV0.45.0 "$TOKEN"
+eq "pinned V: only one leading character is dropped" "version=V0.45.0
+release-tag=vV0.45.0" "$OUT"
+run_resolve Vv0.45.0 "$TOKEN"
+eq "pinned V: one leading character is dropped, whichever case, not both" "version=v0.45.0
+release-tag=vv0.45.0" "$OUT"
+# A V that is not the first character is part of the value.
+run_resolve 0.46.0-V "$TOKEN"
+eq "pinned V: a V that is not the first character stays" "version=0.46.0-V
+release-tag=v0.46.0-V" "$OUT"
+
+# --- a value that names no release fails at the step (#51) -------------------
+
+# Nothing is left of `v` or `V` once the leading character goes, and an empty
+# value never had one. Left to pass, the step succeeded with an empty `version`
+# output (a cache key ending `--binary`) and `release-tag=v`, and the failure came
+# later, in the platform step, which blamed the release ("omni-dev v has no
+# pre-built ...") rather than the input. So the step stops with one message that
+# names the input and both ways out, before it writes either output. The empty
+# string is how the script sees `version: ''`; whether a workflow's empty value
+# reaches it, or the input's default applies instead, is what the integration
+# workflow's `version-input` job shows on a runner.
+expect_no_release() { # <name> <version as the script sees it> <value the message quotes>
+  run_resolve "$2" "$TOKEN" '{"tag_name":"v9.9.9"}'
+  eq "$1: the step fails" 1 "$STATUS"
+  eq "$1: it writes no output, so no empty version reaches a later step" "" "$OUT"
+  eq "$1: no API call is made, so the default is not looked up" 0 "$CALLS"
+  eq "$1: it never waits" "" "$SLEEPS"
+  # Non-empty lines: a here-string of an empty log is one empty line, which a plain
+  # line count would call one message.
+  eq "$1: it logs one error and nothing else" 1 "$(grep -c . <<<"$LOG" || true)"
+  has "$1: the error names the input" "$LOG" "::error::The 'version' input"
+  has "$1: the error quotes what it was given" "$LOG" "(got '$3')"
+  has "$1: the error offers a release number" "$LOG" "a release number such as 0.45.0"
+  has "$1: the error offers latest" "$LOG" "or to 'latest'"
+  lacks "$1: the token is not printed" "$LOG" "SENTINEL"
+}
+expect_no_release "empty" "" ""
+expect_no_release "v alone" v v
+expect_no_release "V alone" V V
+
+# The check sits after the `latest` branch, so it holds however the value was obtained,
+# as the strip does: a tag that is only a v would otherwise write an empty version.
+# GitHub publishes no such tag, so this pins where the check sits, not a case a caller
+# can reach (the message then blames the input, which is as close as the step can say).
+run_resolve latest "$TOKEN" '{"tag_name":"v"}'
+eq "latest resolving to a lone v: the step fails" 1 "$STATUS"
+eq "latest resolving to a lone v: it writes no output" "" "$OUT"
+has "latest resolving to a lone v: it logs the refusal" "$LOG" "::error::The 'version' input names no release (got 'v')"
 
 # --- latest, the first answer is good ----------------------------------------
 
@@ -400,9 +466,10 @@ has "input: github-token defaults to the workflow token" "$TOKEN_INPUT" \
 has "input: github-token is optional, so a workflow needs no configuration" \
   "$TOKEN_INPUT" "    required: false"
 # The v is accepted, so the input must say so: a caller who copies a release tag
-# should not have to read the script to learn it works.
-has "input: version says a leading v is accepted" "$VERSION_INPUT" \
-  "with or without a leading v (e.g., 0.45.0 or v0.45.0)"
+# should not have to read the script to learn it works. The capital is accepted
+# too (#51), and the input says that, not only "a leading v".
+has "input: version says a leading v or V is accepted" "$VERSION_INPUT" \
+  "with or without a leading v or V (e.g., 0.45.0 or v0.45.0)"
 
 # The runner evaluates every expression in a `run:` script before bash sees it,
 # whether it sits in a message or a comment and whether or not a backslash precedes

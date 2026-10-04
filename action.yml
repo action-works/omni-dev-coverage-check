@@ -11,7 +11,7 @@ inputs:
   # omni-dev install + cache (mirrors action-works/omni-dev-commit-check)
   # ---------------------------------------------------------------------------
   version:
-    description: 'omni-dev version to install: a release number with or without a leading v (e.g., 0.45.0 or v0.45.0), or latest'
+    description: 'omni-dev version to install: a release number with or without a leading v or V (e.g., 0.45.0 or v0.45.0), or latest. An empty value, or only a v or V, fails the step'
     required: false
     default: 'latest'
   github-token:
@@ -250,7 +250,17 @@ runs:
         # Release tags carry a leading v, so a caller may pin one as written. Drop it
         # from whatever came in, not only from the tag above: left in, release-tag
         # becomes vv0.45.0, the download 404s and `cargo install --version` refuses it.
-        VERSION="${VERSION#v}"
+        # A capital V is dropped too: it has one reading, and release-tag stays lowercase.
+        given="$VERSION"
+        VERSION="${VERSION#[vV]}"
+        # Nothing left means no release was named: an empty value, or just the v. Stop
+        # here, before an output is written. Passed on, the version output is empty (a
+        # cache key ending --binary), the download 404s and the platform step blames
+        # the release rather than this input.
+        if [ -z "$VERSION" ]; then
+          echo "::error::The 'version' input names no release (got '$given'). Set it to a release number such as 0.45.0 or v0.45.0, or to 'latest'."
+          exit 1
+        fi
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         echo "release-tag=v$VERSION" >> "$GITHUB_OUTPUT"
 

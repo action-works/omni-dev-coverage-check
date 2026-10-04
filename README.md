@@ -282,7 +282,7 @@ Both hooks are shell, evaluated in one `bash`: see
 
 | Input                 | Description                                                                                             | Default               |
 |-----------------------|--------------------------------------------------------------------------------------------------------|-----------------------|
-| `version`             | omni-dev version to install (e.g. `0.45.0`, `v0.45.0`, `latest`)                                       | `latest`              |
+| `version`             | omni-dev version to install (e.g. `0.45.0`, `v0.45.0`, `latest`); a leading `v` or `V` is dropped       | `latest`              |
 | `github-token`        | Token authenticating the GitHub API call that resolves `version: latest` (1000/hr vs 60/hr unauthed)   | `${{ github.token }}` |
 | `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source                             | `true`                |
 | `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
@@ -295,7 +295,11 @@ spent limit can last up to an hour), the step reads the release from the redirec
 It fails only if that fails too, and the error names both. (The API lookup needs `jq`, which GitHub-hosted runners
 have; a runner without it fails first, saying so.)
 A pinned `version` makes no request, and may be written as a release tag is, with a leading `v`: `v0.45.0` and
-`0.45.0` give the same `version` (`0.45.0`) and `release-tag` (`v0.45.0`) outputs and share one cache entry.
+`0.45.0` give the same `version` (`0.45.0`) and `release-tag` (`v0.45.0`) outputs and share one cache entry. A
+capital `V` is accepted the same way (`V0.45.0`), and `release-tag` stays lowercase. Only one leading character is
+dropped, so `vv0.45.0` stays visibly wrong. A value with nothing left after that, an empty `version` or just
+`v` or `V`, fails the step at once with a message naming the input, instead of failing later in a step that blames the
+release: give a release number, or leave `version` out to get `latest`.
 
 The pre-built binary is chosen from the runner's OS and architecture: Linux x64, Linux ARM64, macOS ARM64 and
 Windows. Linux ARM64 needs omni-dev 0.46.0 or later, the first release that publishes

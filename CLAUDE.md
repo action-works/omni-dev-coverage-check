@@ -25,7 +25,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the four step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
@@ -137,7 +137,7 @@ The action is a composite action with two phases:
   - Each commit tried costs at least one API request, plus one per successful run it
     has; a full miss spends `depth + 1`. `GITHUB_TOKEN` has 1,000 an hour per
     repository, which is why `integration.yml` passes `baseline-ancestor-depth: 0` (up to
-    18 lookups per pull-request run, and none finds anything), and why the depth is a bound.
+    21 lookups per pull-request run, and none finds anything), and why the depth is a bound.
   - The recompute stays the last resort and runs only when nothing is in reach, so the
     `recompute` job of `pr-paths.yml` turns the walk off: its synthetic base has none.
 - **`worktree-system-deps`** generalizes the one omni-dev-specific wrinkle from
@@ -322,13 +322,27 @@ The action is a composite action with two phases:
   - No `--fail` on that curl: a 403 keeps its JSON body, which is where GitHub's reason ("API rate
     limit exceeded", "Bad credentials") comes from, and the warning prints it.
   - A leading `v` is dropped from the value however it was obtained (#38), once, after the
-    `latest` branch: `VERSION="${VERSION#v}"`. A pin written as a release tag (`v0.45.0`) used to give
-    `release-tag=vv0.45.0` (a 404 that the platform step reports as a missing asset), its own cache key,
-    and a `cargo install --version` that cargo refuses ("not a valid SemVer requirement"). Only one `v`,
-    and only a leading one: `0.46.0-dev` keeps its. Keep the strip out of the `latest` branch, or a pin
-    skips it; `tests/resolve-version-step.test.sh` runs both spellings and checks the input says so.
+    `latest` branch: `VERSION="${VERSION#v}"` when it was written (now `${VERSION#[vV]}`, below). A pin
+    written as a release tag (`v0.45.0`) used to give `release-tag=vv0.45.0` (a 404 that the platform
+    step reports as a missing asset), its own cache key, and a `cargo install --version` that cargo
+    refuses ("not a valid SemVer requirement"). Only one `v`, and only a leading one: `0.46.0-dev` keeps
+    its. Keep the strip out of the `latest` branch, or a pin skips it;
+    `tests/resolve-version-step.test.sh` runs both spellings and checks the input says so.
     That test reads the step alone; the `version-pin` job in `integration.yml` runs both spellings
     through the whole install on a runner (see "Integration workflow").
+  - A capital `V` is dropped the same way (#51): `VERSION="${VERSION#[vV]}"`. It has one reading, and
+    `release-tag` stays lowercase, as release tags are written, so `V0.45.0` shares `0.45.0`'s cache entry.
+    Still one character: `vV0.45.0` and `Vv0.45.0` keep the second, visibly wrong. Accepted rather than
+    rejected because rejecting adds a message and a branch to say what the strip says for free.
+  - A value with nothing left after the strip (`v`, `V`, or an empty one) fails the step with one
+    `::error::` that names the `version` input, quotes what it got and offers a release number or `latest`,
+    before either output is written. Left to pass, the version output was empty (a cache key ending
+    `--binary`) and the platform step blamed the release. The check sits after the strip and after the
+    `latest` branch, so it holds however the value was obtained. The step does not validate the rest:
+    `cargo install --version` takes a requirement (`^0.45`), so a shape check would reject what the
+    `use-prebuilt-binary: false` path accepts. A whitespace-only value and `Latest` are not handled either.
+    The script cannot say whether a workflow's `version: ''` reaches it or the input's default applies
+    instead; the `version-input` job of `integration.yml` shows it on a runner.
   - The release-asset downloads stay unauthenticated on purpose. They are `github.com/.../releases/
     download/` URLs, not API calls, so the limit in #1 does not apply to them, and curl drops
     `Authorization` on the redirect to the asset CDN: the header would only send the token somewhere
@@ -507,7 +521,7 @@ The action is a composite action with two phases:
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
   - The poisoned-cache rule is checked by `tests/assert-omni-dev-version.sh <version>`, which
-    the twelve jobs that assert a scenario's outcome end on, in `integration.yml`,
+    the fourteen jobs that assert a scenario's outcome end on, in `integration.yml`,
     `pr-paths.yml` and `e2e-sharded.yml`. `arm64-release-without-asset` installs nothing
     and `deprecation-control` has one install and asserts no outcome, so neither calls
     it. It needs the version line to start with `omni-dev <version>` and
@@ -580,7 +594,10 @@ The action is a composite action with two phases:
   names the pattern, the `--fail-under-lines` guard names the omni-dev it found and
   both ways out, and (on a pull request only, the one event that runs it) the
   `--output` guard names the omni-dev it found, the 0.32.0 floor and the way out, and
-  the same for the `--ignore-filename-regex` guard (0.33.0 floor, both ways out).
+  the same for the `--ignore-filename-regex` guard (0.33.0 floor, both ways out); and
+  that the resolve step's refusal of a `version` that names no release (#51) names the
+  input, quotes what it got and offers both ways out, for the empty and the lone-`v` leg
+  of the `version-input` job (on every event).
   Match the found version as its own fragment: `omni-dev --version` can carry a
   commit and date after the number. Rules:
   - Read only the `##[error]` lines. The log also echoes every step's script, which
