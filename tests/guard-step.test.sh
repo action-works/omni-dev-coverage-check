@@ -44,25 +44,11 @@ trap 'rm -rf "$WORK"' EXIT
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=step-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
 
-# step_run <step name>: the step's `run: |` body, dedented. The guard keeps `run` last,
-# so the body ends at the first line indented less than it.
-step_run() {
-  awk -v name="$1" '
-    $0 == "    - name: " name { in_step = 1; next }
-    in_step && /^    - name:/ { exit }
-    in_step && $0 == "      run: |" { in_run = 1; next }
-    in_run && /^        / { print substr($0, 9); next }
-    in_run && $0 == "" { print ""; next }
-    in_run { exit }
-  ' "$ACTION"
-}
-
-GUARD="$(step_run 'Check omni-dev supports the flags this run uses')"
-if [ -z "$GUARD" ]; then
-  echo "FAIL - could not read the guard step out of action.yml"
-  exit 1
-fi
+GUARD="$(step_run 'Check omni-dev supports the flags this run uses')" || exit 1
 # step_run stops at the first line indented less than the body, so a key or comment placed
 # after `run:` would cut the script short and every case below would test the stump.
 # shellcheck disable=SC2016 # the script's own last line, to be compared as text

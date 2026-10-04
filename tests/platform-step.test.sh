@@ -25,26 +25,12 @@ trap 'rm -rf "$WORK"' EXIT
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=step-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
 
-# step_run <step name>: the step's `run: |` body, dedented. Both steps keep `run`
-# last, so the body ends at the first line indented less than it.
-step_run() {
-  awk -v name="$1" '
-    $0 == "    - name: " name { in_step = 1; next }
-    in_step && /^    - name:/ { exit }
-    in_step && $0 == "      run: |" { in_run = 1; next }
-    in_run && /^        / { print substr($0, 9); next }
-    in_run && $0 == "" { print ""; next }
-    in_run { exit }
-  ' "$ACTION"
-}
-
-PLATFORM="$(step_run 'Determine platform and download URL')"
-FAIL="$(step_run 'Fail if binary not available')"
-if [ -z "$PLATFORM" ] || [ -z "$FAIL" ]; then
-  echo "FAIL - could not read the platform and failure steps out of action.yml"
-  exit 1
-fi
+PLATFORM="$(step_run 'Determine platform and download URL')" || exit 1
+FAIL="$(step_run 'Fail if binary not available')" || exit 1
 
 BIN="$WORK/bin"
 mkdir "$BIN"

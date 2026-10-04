@@ -30,51 +30,18 @@ trap 'rm -rf "$WORK"' EXIT
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=step-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
 
 if ! command -v jq >/dev/null; then
   echo "FAIL - jq is not installed; the step needs it, as does this test"
   exit 1
 fi
 
-# step_block <step name>: the whole step, from its `- name:` line to the next step's.
-step_block() {
-  awk -v name="$1" '
-    $0 == "    - name: " name { in_step = 1; print; next }
-    in_step && /^    - name:/ { exit }
-    in_step { print }
-  ' "$ACTION"
-}
-
-# step_run <step name>: the step's `run: |` body, dedented. The body ends at the
-# first line indented less than it.
-step_run() {
-  awk -v name="$1" '
-    $0 == "    - name: " name { in_step = 1; next }
-    in_step && /^    - name:/ { exit }
-    in_step && $0 == "      run: |" { in_run = 1; next }
-    in_run && /^        / { print substr($0, 9); next }
-    in_run && $0 == "" { print ""; next }
-    in_run { exit }
-  ' "$ACTION"
-}
-
-# input_block <input name>: the input's block under `inputs:`, up to the next key.
-input_block() {
-  awk -v name="$1" '
-    $0 == "  " name ":" { in_input = 1; print; next }
-    in_input && /^  [^ ]/ { exit }
-    in_input && /^[^ ]/ { exit }
-    in_input { print }
-  ' "$ACTION"
-}
-
 STEP_NAME='Resolve omni-dev version'
-BLOCK="$(step_block "$STEP_NAME")"
-RESOLVE="$(step_run "$STEP_NAME")"
-if [ -z "$BLOCK" ] || [ -z "$RESOLVE" ]; then
-  echo "FAIL - could not read the '$STEP_NAME' step out of action.yml"
-  exit 1
-fi
+BLOCK="$(step_block "$STEP_NAME")" || exit 1
+RESOLVE="$(step_run "$STEP_NAME")" || exit 1
 
 BIN="$WORK/bin"
 mkdir "$BIN"
