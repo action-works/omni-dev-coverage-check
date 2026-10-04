@@ -129,9 +129,6 @@ EOF
 )"
 HELP_TAIL="$(
   cat <<'EOF'
-      --ignore-filename-regex <REGEX>
-          Repeatable. Matching is unanchored, the same semantics as `cargo llvm-cov --ignore-filename-regex`, and is applied after `--strip-prefix` normalisation.
-
   -h, --help
           Print help (see a summary with '-h')
 EOF
@@ -151,19 +148,25 @@ OUTPUT_EQUALS=$'      --output=<OUTPUT>\n          Output format: md or json.'
 OUTPUT_OPTIONAL=$'  -o, --output[=<OUTPUT>]\n          Output format: md or json.'
 LINES_OPTION=$'      --fail-under-lines <PCT>\n          Exit non-zero when the line total is below this percentage.'
 LINES_OPTIONAL=$'      --fail-under-lines[=<PCT>]\n          Exit non-zero when the line total is below this percentage.'
+REGEX_OPTION=$'      --ignore-filename-regex <REGEX>\n          Repeatable, or comma-separated. Matching is unanchored, and is applied after `--strip-prefix` normalisation.'
+REGEX_OPTIONAL=$'      --ignore-filename-regex[=<REGEX>]\n          Repeatable, or comma-separated.'
 
 # Text that holds the flag name without defining the flag.
 OUTPUT_FILE_ONLY=$'      --output-file <PATH>\n          Write the diff to a file.'
 OUTPUT_PROSE=$'      --report-format <FORMAT>\n          Format of every report; it does not change --output, which is the diff.'
 LINES_PER_FILE_ONLY=$'      --fail-under-lines-per-file <PCT>\n          Exit non-zero when any file is below this percentage.'
 LINES_PROSE=$'      --fail-under-patch <PCT>\n          Unlike --fail-under-lines, this gates only the added lines.'
+REGEX_FILE_ONLY=$'      --ignore-filename-regex-file <PATH>\n          Read the patterns from a file.'
+REGEX_PROSE=$'      --strip-prefix <PATH>\n          Applied before --ignore-filename-regex, which matches the stripped path.'
 
 # --- running the step ----------------------------------------------------------------
 
 # run_guard <event> <run-coverage> <fail-under-lines> <help text> [version] [help status]:
-# runs the step as the runner would, with the inputs it reads in its environment. Sets
-# STATUS (the step's exit status), OUT (its output), ERRORS (its `::error::` lines),
-# N_ERRORS and CALLS (what it asked omni-dev, one call per line).
+# runs the step as the runner would, with the inputs it reads in its environment. The
+# `ignore-filename-regex` input is $REGEX_INPUT, empty unless a case sets it for the call
+# (`REGEX_INPUT=LICENSE run_guard ...`). Sets STATUS (the step's exit status), OUT (its
+# output), ERRORS (its `::error::` lines), N_ERRORS and CALLS (what it asked omni-dev,
+# one call per line).
 run_guard() {
   local event=$1 run_coverage=$2 gate=$3 help=$4 version=${5:-omni-dev 0.45.0 (2de88c54 2026-10-03)} help_status=${6:-0} dir
   dir="$(mktemp -d "$WORK/case.XXXXXX")"
@@ -171,7 +174,8 @@ run_guard() {
   OUT="$(
     PATH="$BIN:$PATH" OMNI_DEV_LOG="$dir/omni-dev.log" FAKE_HELP="$help" FAKE_VERSION="$version" \
       FAKE_HELP_STATUS="$help_status" EVENT_NAME="$event" RUN_COVERAGE="$run_coverage" \
-      FAIL_UNDER_LINES="$gate" bash --noprofile --norc -eo pipefail -c "$GUARD" 2>&1
+      FAIL_UNDER_LINES="$gate" IGNORE_FILENAME_REGEX="${REGEX_INPUT:-}" \
+      bash --noprofile --norc -eo pipefail -c "$GUARD" 2>&1
   )"
   STATUS=$?
   ERRORS="$(grep '^::error::' <<<"$OUT" || true)"
@@ -181,6 +185,7 @@ run_guard() {
 
 OUTPUT_MSG="has no 'coverage diff --output'"
 LINES_MSG="has no 'coverage diff --fail-under-lines'"
+REGEX_MSG="has no 'coverage diff --ignore-filename-regex'"
 
 # expect_pass <name>: the step succeeded and printed no error.
 expect_pass() {
@@ -266,7 +271,58 @@ expect_only "--output defined, --fail-under-lines not" "$LINES_MSG"
 run_guard pull_request false 80 "$(help_with "$LINES_OPTION")"
 expect_only "--fail-under-lines defined, --output not" "$OUTPUT_MSG"
 
+# --- --ignore-filename-regex: the input set, wherever a diff runs ----------------------------
+# A pull request also needs --output, so every pull-request help text here defines it and
+# the one error left is the flag under test.
+
+REGEX_INPUT=LICENSE run_guard pull_request true '' "$(help_with "$OUTPUT_OPTION"$'\n\n'"$REGEX_OPTION")"
+expect_pass "--ignore-filename-regex defined"
+
+REGEX_INPUT=LICENSE run_guard pull_request true '' "$(help_with "$OUTPUT_OPTION"$'\n\n'"$REGEX_OPTIONAL")"
+expect_pass "--ignore-filename-regex defined with an optional value"
+
+REGEX_INPUT=LICENSE run_guard pull_request true '' "$(help_with "$OUTPUT_OPTION")"
+expect_only "a help text with no --ignore-filename-regex" "$REGEX_MSG"
+
+REGEX_INPUT=LICENSE run_guard pull_request true '' "$(help_with "$OUTPUT_OPTION"$'\n\n'"$REGEX_FILE_ONLY")"
+expect_only "only --ignore-filename-regex-file" "$REGEX_MSG"
+
+REGEX_INPUT=LICENSE run_guard pull_request true '' "$(help_with "$OUTPUT_OPTION"$'\n\n'"$REGEX_PROSE")"
+expect_only "only prose that mentions --ignore-filename-regex" "$REGEX_MSG"
+
+# The message the user reads: the omni-dev found, the floor and both ways out.
+REGEX_INPUT=LICENSE run_guard pull_request true '' "$(help_with "$OUTPUT_OPTION")" "omni-dev 0.32.0 (0a1b2c3d 2025-01-02)"
+has "the --ignore-filename-regex error names the omni-dev found" "$ERRORS" "::error::omni-dev 0.32.0 (0a1b2c3d 2025-01-02) has no"
+has "the --ignore-filename-regex error names the floor" "$ERRORS" "It needs omni-dev 0.33.0 or later"
+has "the --ignore-filename-regex error says to set 'version'" "$ERRORS" "set 'version' to 0.33.0 or later, or to 'latest'"
+has "the --ignore-filename-regex error says to empty the input" "$ERRORS" "or set 'ignore-filename-regex' to an empty string"
+
+# Thin mode with the line gate on passes the flag on any event, a push included.
+REGEX_INPUT=LICENSE run_guard push false 80 "$(help_with "$LINES_OPTION"$'\n\n'"$REGEX_OPTION")"
+expect_pass "thin mode with the line gate, on a push, flag defined"
+
+REGEX_INPUT=LICENSE run_guard push false 80 "$(help_with "$LINES_OPTION")"
+expect_only "thin mode with the line gate, on a push, flag missing" "$REGEX_MSG"
+
+# Every missing flag is reported, this one with the other two.
+REGEX_INPUT=LICENSE run_guard pull_request false 80 "$(help_with "$OUTPUT_FILE_ONLY"$'\n\n'"$LINES_PER_FILE_ONLY"$'\n\n'"$REGEX_FILE_ONLY")"
+eq "all three flags missing: the step fails" 1 "$STATUS"
+eq "all three flags missing: it reports each, not just the first" 3 "$N_ERRORS"
+has "all three flags missing: --ignore-filename-regex is reported" "$ERRORS" "$REGEX_MSG"
+
 # --- a flag the run does not need is not demanded -----------------------------------------
+
+REGEX_INPUT=LICENSE run_guard push true '' ""
+expect_pass "a fat-mode push with the input set: no omni-dev diff runs, so no flag is needed"
+
+REGEX_INPUT=LICENSE run_guard push false '' ""
+expect_pass "thin mode with the line gate off, on a push, with the input set"
+
+REGEX_INPUT='' run_guard pull_request true '' "$(help_with "$OUTPUT_OPTION")"
+expect_pass "the input empty: --ignore-filename-regex is not demanded on a pull request"
+
+REGEX_INPUT='' run_guard push false 80 "$(help_with "$LINES_OPTION")"
+expect_pass "the input empty: --ignore-filename-regex is not demanded in thin mode with the gate"
 
 run_guard push true '' ""
 expect_pass "a fat-mode push, with no help text at all"
@@ -292,15 +348,25 @@ has "a failing --help: what omni-dev said stays in the log" "$OUT" "unrecognized
 run_guard push true '' "" "omni-dev 0.28.0" 2
 expect_pass "a failing --help on a fat-mode push, which needs no flag"
 
+REGEX_INPUT=LICENSE run_guard pull_request true '' "" "omni-dev 0.28.0" 2
+eq "a failing --help with the input set: the step fails" 1 "$STATUS"
+eq "a failing --help with the input set: --output and the regex flag are reported" 2 "$N_ERRORS"
+has "a failing --help with the input set: --ignore-filename-regex is reported" "$ERRORS" "::error::omni-dev 0.28.0 $REGEX_MSG"
+
+REGEX_INPUT=LICENSE run_guard push true '' "" "omni-dev 0.28.0" 2
+expect_pass "a failing --help on a fat-mode push with the input set, which runs no diff"
+
 # --- the real help of the releases either side of each floor -------------------------------
-# 0.31.0 is the newest release without --output, 0.32.0 the floor; 0.44.0 the newest
-# without --fail-under-lines, 0.45.0 the floor. The 0.28.0 case above stands for a release
-# with no `coverage` subcommand: its --help is an error, not a text.
+# 0.31.0 is the newest release without --output, 0.32.0 the floor (and the newest without
+# --ignore-filename-regex, whose floor is 0.33.0); 0.44.0 the newest without
+# --fail-under-lines, 0.45.0 the floor. The 0.28.0 case above stands for a release with no
+# `coverage` subcommand: its --help is an error, not a text.
 
 FIXTURES="$ROOT/tests/fixtures/omni-dev-help"
 # real_help_case <version> <expect --output: yes|no> <expect --fail-under-lines: yes|no>
+#   <expect --ignore-filename-regex: yes|no>
 real_help_case() {
-  local version=$1 want_output=$2 want_lines=$3 help
+  local version=$1 want_output=$2 want_lines=$3 want_regex=$4 help
   help="$(cat "$FIXTURES/$version.txt")"
   # --output is needed on a pull request, --fail-under-lines in thin mode with the gate on:
   # one run per flag, so each answer is read on its own.
@@ -316,12 +382,21 @@ real_help_case() {
   else
     expect_only "real $version help: --fail-under-lines is missing" "$LINES_MSG"
   fi
+  # On a pull request with the input set --output is needed too, so a release below its
+  # floor reports two errors: read this flag's message, not the error count.
+  REGEX_INPUT=LICENSE run_guard pull_request true '' "$help" "omni-dev $version"
+  if [ "$want_regex" = yes ]; then
+    lacks "real $version help: --ignore-filename-regex is found" "$ERRORS" "$REGEX_MSG"
+  else
+    has "real $version help: --ignore-filename-regex is missing" "$ERRORS" "$REGEX_MSG"
+  fi
 }
 
-real_help_case 0.31.0 no no
-real_help_case 0.32.0 yes no
-real_help_case 0.44.0 yes no
-real_help_case 0.45.0 yes yes
+real_help_case 0.31.0 no no no
+real_help_case 0.32.0 yes no no
+real_help_case 0.33.0 yes no yes
+real_help_case 0.44.0 yes no yes
+real_help_case 0.45.0 yes yes yes
 
 # --- how it asks -------------------------------------------------------------------------
 

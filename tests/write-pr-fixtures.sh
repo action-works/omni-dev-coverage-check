@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Writes the fixtures the pr-paths workflow runs the action on, in the checkout.
 #
-# Usage: write-pr-fixtures.sh <baseline|head>   (run from the workspace root)
+# Usage: write-pr-fixtures.sh <baseline|head|extra>   (run from the workspace root)
 #   baseline  what a push to main publishes
 #   head      what a pull request is measured as
+#   extra     a second file added to the patch, after `head` (see the end of this header)
 #
 # Two instrumented files, in two shard reports under shards/:
 #   patch-fixture.txt  created and committed here, so the diff against the
@@ -26,14 +27,49 @@
 # commit it was published for. Each shard ends without a newline after its final
 # `end_of_record`, as `cargo llvm-cov` writes it.
 #
+# `extra` adds to what `head` wrote, for the scenarios that show `ignore-filename-regex`
+# reaching the patch gate: patch-extra.txt, committed locally like patch-fixture.txt,
+# with 10 added lines none of them covered, in a third shard (shards/shard-3.lcov). The
+# patch is then 8 of 20 lines (40%), and 8 of 10 (80%) once the filter drops the new file.
+# It is a separate step so the scenarios that do not want it are written without it.
+#
 # Editing the patterns changes what the workflow's assertions compare against
 # only through the fixtures themselves: they recompute the expected totals from
 # the downloaded baseline and the head report instead of hard-coding them.
 set -euo pipefail
 
-kind="${1:?usage: write-pr-fixtures.sh <baseline|head>}"
+kind="${1:?usage: write-pr-fixtures.sh <baseline|head|extra>}"
 ws="${GITHUB_WORKSPACE:?GITHUB_WORKSPACE is not set}"
 tn="${GITHUB_SHA:?GITHUB_SHA is not set}"
+
+# 10 lines to be "added" by the pull request under test, none covered by the one shard that
+# names them. Committed locally and never pushed, so the merge-base is unchanged.
+if [ "$kind" = extra ]; then
+  if [ ! -e patch-fixture.txt ] || [ ! -d shards ]; then
+    echo "::error::run 'write-pr-fixtures.sh head' first: extra adds to its fixtures"
+    exit 1
+  fi
+  if [ -e patch-extra.txt ] || [ -e shards/shard-3.lcov ]; then
+    echo "::error::patch-extra.txt or shards/shard-3.lcov already exists in the checkout; refusing to overwrite it"
+    exit 1
+  fi
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    echo "extra $i"
+  done >patch-extra.txt
+  git add patch-extra.txt
+  git -c user.name=integration-test -c user.email=integration-test@invalid \
+    commit -q -m 'test: add a second file with known added lines'
+  {
+    printf 'TN:%s\nSF:%s/patch-extra.txt\n' "$tn" "$ws"
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      printf 'DA:%d,0\n' "$i"
+    done
+    printf 'end_of_record'
+  } >shards/shard-3.lcov
+  echo "Wrote the extra fixtures:"
+  ls -l shards
+  exit 0
+fi
 
 if [ -e patch-fixture.txt ] || [ -e shards ]; then
   echo "::error::patch-fixture.txt or shards/ already exists in the checkout; refusing to overwrite it"
@@ -59,7 +95,7 @@ case "$kind" in
     license2=(0 1 0 0)
     ;;
   *)
-    echo "usage: write-pr-fixtures.sh <baseline|head>" >&2
+    echo "usage: write-pr-fixtures.sh <baseline|head|extra>" >&2
     exit 2
     ;;
 esac

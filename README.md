@@ -304,6 +304,7 @@ on the default `use-prebuilt-binary: 'true'` fails at the install step. So does 
 | `collapse-ranges`  | Collapse consecutive uncovered new lines into ranges (e.g. `9-11`)                    | `true`       |
 | `all-files`        | Report deltas/indirect changes for ALL files, not just the diff's files              | `false`      |
 | `strip-prefix`     | Override the path prefix stripped from report paths to make them repo-relative        | `''`         |
+| `ignore-filename-regex` | Exclude files whose repo-relative path matches any of these regexes (comma-separated) from the head and baseline reports before the diff. [Details](#excluding-files-ci-cannot-measure) | `''` |
 | `report-format`    | `auto`, `lcov`, `llvm-cov-json`, or `cobertura` (auto-detected when empty)            | `''`         |
 | `comment`          | Post the rendered diff as a sticky PR comment                                         | `true`       |
 | `comment-header`   | Sticky comment header (lets the comment update in place each run)                     | `coverage`   |
@@ -377,6 +378,45 @@ posts when a gate fails:
   included. **If you used thin mode before this input applied to it, the default
   now gates you at 30%;** set `fail-under-lines: ''` to keep the old behaviour.
 
+## Excluding files CI cannot measure
+
+Code a CI runner cannot execute (a GPU path, a backend gated to one platform) shows
+near-zero coverage and reads as a regression in the comment. `ignore-filename-regex`
+drops those files from the diff instead:
+
+```yaml
+- uses: action-works/omni-dev-coverage-check@v1
+  with:
+    ignore-filename-regex: 'src/voice/backends/voxtral_mlx/,src/gpu/'
+```
+
+- The value is a list of regexes on one line, separated by commas, each matched against
+  a file's repo-relative path (after `strip-prefix`) and unanchored, so `src/gpu/`
+  excludes everything under it. Only a comma separates patterns: a newline or a space is
+  part of a pattern, so a `|` block (which ends in a newline) or `a, b` (which looks for
+  ` b`) excludes nothing, and a pattern cannot contain a comma (`a{1,3}` is split in two
+  and fails as an invalid regex). An empty piece (`a,,b`, a trailing comma) is ignored,
+  so a typo cannot exclude everything.
+- The path is repo-relative, where `cargo llvm-cov --ignore-filename-regex` matches the
+  absolute one: a pattern written there, such as `^/home/runner/work/…/gpu/`, matches
+  nothing here, with no warning, and `^src/` written here would match nothing there.
+- The files are dropped from the head **and** the baseline report before anything is
+  computed, so the total, the per-file deltas, the patch coverage and the indirect
+  changes all describe the same files, even when the baseline was published before the
+  exclusion.
+- The comment, the patch gate and the thin-mode line gate all get the filter, so a gated
+  percentage is the one the comment shows, and so do the `patch-percent` and
+  `line-percent` outputs, which are read from the same diff.
+- A filter that removes everything is not an error, and the gates differ: if it removes
+  every line a pull request adds, the patch gate has nothing to measure and passes, and
+  the comment says "No new executable lines added by this diff"; if it removes every
+  line of the report, the thin-mode line gate fails with "no executable lines". Check
+  the comment when a pattern is broad.
+- It does not reach what `cargo-llvm-cov` computes: in fat mode the `fail-under-lines`
+  gate and the coverage summary still count every file. Nor does it change the baseline
+  artifact (published as the raw report) or the codecov upload.
+- It needs omni-dev 0.33.0 or later; see [Requirements](#requirements).
+
 ## Requirements
 
 - Check out with `fetch-depth: 0` so `git merge-base` can resolve the PR's fork point.
@@ -394,6 +434,13 @@ posts when a gate fails:
   clap's bare `unexpected argument '-o'` from the comment step. That includes an
   omni-dev below 0.29.0, which has no `coverage` subcommand at all. Other events are
   unaffected.
+- `ignore-filename-regex` needs omni-dev 0.33.0 or later, the first release with
+  `coverage diff --ignore-filename-regex`. With `version: latest` that is automatic; if
+  you pin `version`, pin 0.33.0 or later. With the input set, an older omni-dev stops the
+  action before the coverage run, with a message that names the version it found and the
+  0.33.0 floor, on a pull request and in thin mode with the line gate on: the two places
+  a diff runs. A fat-mode push runs none, so it is unaffected. The input empty asks
+  nothing of omni-dev.
 
 ## Example: pinned version, codecov upload, and a patch gate
 

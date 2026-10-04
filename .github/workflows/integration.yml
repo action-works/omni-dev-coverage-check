@@ -2,16 +2,17 @@ name: Integration
 
 # Runs the action itself (`uses: ./`) on a real runner on every change: in thin
 # mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
-# and the `--output` floor a pull request needs), and in fat mode against a
-# fixture crate (the instrumented test run, the three report outputs, the fat-mode
-# line gate, `setup-commands`/`extra-test-commands`). Each scenario's outcome is
-# asserted at the end of its job; the scenarios are `continue-on-error` so one
-# regression does not hide the rest. What the four scenarios that exist for their
-# message said is asserted by the last job, which reads the finished jobs' logs
-# through the API. On a pull request it also asserts that none of the jobs that
-# ran the pull-request steps logged an omni-dev deprecation warning, and a control
-# job that logs one on purpose shows that reading can find it. One job runs on an
-# ARM64 Linux runner, to show that the pre-built binary is chosen by architecture.
+# `ignore-filename-regex`, and the `--output` floor a pull request needs), and in
+# fat mode against a fixture crate (the instrumented test run, the three report
+# outputs, the fat-mode line gate, `setup-commands`/`extra-test-commands`). Each
+# scenario's outcome is asserted at the end of its job; the scenarios are
+# `continue-on-error` so one regression does not hide the rest. What the five
+# scenarios that exist for their message said is asserted by the last job, which
+# reads the finished jobs' logs through the API. On a pull request it also asserts
+# that none of the jobs that ran the pull-request steps logged an omni-dev
+# deprecation warning, and a control job that logs one on purpose shows that
+# reading can find it. One job runs on an ARM64 Linux runner, to show that the
+# pre-built binary is chosen by architecture.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -471,6 +472,215 @@ jobs:
           bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
+  # `ignore-filename-regex` reaching the diff (#3). The thin-mode line gate is the one
+  # `coverage diff` the action runs on every event, so it is where the filter shows on a
+  # push too. The report is README.md fully covered and LICENSE not at all: 50% (4 of 8
+  # lines), and 100% once LICENSE is filtered out. 8a and 8b differ only in the filter, so
+  # a gate of 70 passes with it and fails without it. 8a's value holds two patterns, the
+  # first matching nothing and starting with `-`, and an anchor: it filters LICENSE only if
+  # the value is split at the comma, matched against the repo-relative path, and reaches
+  # omni-dev as `--ignore-filename-regex=<value>` (a separate argument starting with `-`
+  # is read by clap as a flag). The comment diff and the patch gate take the same filter;
+  # pr-paths.yml shows that (P5, P6) where the patch is known.
+  ignore-filename-regex:
+    name: Ignore filename regex (omni-dev ${{ matrix.omni-dev }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 0.45.0 is the floor of the thin-mode line gate this uses; `latest` catches a
+        # bad future release.
+        omni-dev: ['0.45.0', 'latest']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Sharded, so that a combined report shows where 8b stopped: the combine comes
+      # after the guard and before the gate.
+      - name: Write fixtures
+        run: |
+          mkdir shards out
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
+          printf 'SF:%s/LICENSE\nDA:1,0\nDA:2,0\nDA:3,0\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
+
+      - name: '8a. Line gate with LICENSE filtered out'
+        id: filtered
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/filtered.lcov
+          fail-under-lines: 70
+          ignore-filename-regex: '-nomatch\.txt,^LICENSE$'
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      # Control for 8a: only the filter differs.
+      - name: '8b. The same line gate without the filter'
+        id: unfiltered
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/unfiltered.lcov
+          fail-under-lines: 70
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Assert every outcome
+        env:
+          FILTERED: ${{ steps.filtered.outcome }}
+          UNFILTERED: ${{ steps.unfiltered.outcome }}
+          VERSION: ${{ steps.filtered.outputs.version }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          check "8a. line gate with LICENSE filtered out" success "$FILTERED"
+          check "8b. the same line gate without the filter" failure "$UNFILTERED"
+
+          # 8b must fail at the gate, after the shards were combined.
+          if [ ! -s out/unfiltered.lcov ]; then
+            echo "::error::8b failed before the shards were combined, not at the gate"
+            status=1
+          fi
+
+          # On a pull request both scenarios render the diffs, with the filter in 8a, and
+          # the failure-messages job reads this job's log for a deprecation warning from
+          # either. The files show the steps ran: a skipped step logs nothing, so a log
+          # without a warning proves nothing about a step that did not run.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            if [ ! -s coverage.md ] || ! jq -e 'type == "object"' coverage.json > /dev/null 2>&1; then
+              echo "::error::the pull-request diffs did not both run (coverage.md, coverage.json), so this job's log says nothing about deprecated flags"
+              status=1
+            fi
+          fi
+
+          # The binary on PATH is the version that was resolved. A cache entry
+          # holding another version's binary fails here.
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          exit "$status"
+
+  # The guard for `--ignore-filename-regex` (#3), shaped like `output-flag`: the flag is
+  # passed wherever a diff runs, so with the line gate off the guard fires only on a
+  # `pull_request`, and this job runs on EVERY event and expects by event. An omni-dev
+  # without the flag must be stopped on a pull request and left alone everywhere else (a
+  # fat-mode push calls no `omni-dev coverage` at all). The other-event expectations first
+  # run on the push after a merge. 0.32.0 is the newest release without the flag and has
+  # `--output`, so on a pull request this flag is the guard's only complaint.
+  ignore-filename-regex-flag:
+    name: Ignore filename regex flag (omni-dev ${{ matrix.omni-dev }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The newest release without `--ignore-filename-regex`.
+          - omni-dev: '0.32.0'
+            has-flag: false
+          # The first release with it: the floor the README documents. It differs from
+          # the leg above in nothing but `version`, so it is that leg's control on a pull
+          # request, and it pins the floor exactly.
+          - omni-dev: '0.33.0'
+            has-flag: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write fixtures
+        run: |
+          mkdir shards out
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
+          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
+
+      # Sharded on purpose, as in `output-flag`: the guard runs before "Combine shard
+      # reports", so a missing combined report shows the guard stopped the action.
+      - name: '9. The filter set, with this omni-dev'
+        id: filter
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/filter.lcov
+          fail-under-lines: ''
+          ignore-filename-regex: 'LICENSE'
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Assert the outcome
+        env:
+          FILTER: ${{ steps.filter.outcome }}
+          HAS_FLAG: ${{ matrix.has-flag }}
+          # The pin, not the action's `version` output: a failed composite step
+          # may expose no outputs, and this leg is expected to fail.
+          VERSION: ${{ matrix.omni-dev }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          assert() { # <label> <command...>
+            local label="$1"
+            shift
+            if "$@" > /dev/null 2>&1; then
+              echo "ok   - $label"
+            else
+              echo "::error::$label"
+              status=1
+            fi
+          }
+
+          expect=success
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$HAS_FLAG" = false ]; then
+            expect=failure
+          fi
+          check "9. the filter set, omni-dev with --ignore-filename-regex: $HAS_FLAG, on $GITHUB_EVENT_NAME" "$expect" "$FILTER"
+
+          if [ "$expect" = failure ]; then
+            # Stopped at the guard: before the shards were combined, and before the
+            # comment step could create its output.
+            assert "9: stopped at the guard: no report written" test ! -e out/filter.lcov
+            assert "9: stopped at the guard: no comment written" test ! -e coverage.md
+          else
+            assert "9: got past the guard: the shards were combined" test -s out/filter.lcov
+            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+              # Both call sites the step reaches ran with the flag, on this omni-dev:
+              # markdown and json.
+              assert "9: the comment was rendered with the filter" test -s coverage.md
+              assert "9: the percentages were rendered with the filter" jq -e 'type == "object"' coverage.json
+            else
+              assert "9: no diff rendered outside a pull request" test ! -e coverage.md
+            fi
+          fi
+
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          exit "$status"
+
   fat-mode:
     name: Fat mode (fixture crate)
     runs-on: ubuntu-latest
@@ -719,15 +929,16 @@ jobs:
           omni-dev coverage diff --report single.lcov --base-ref HEAD --format json > /dev/null || rc=$?
           echo "omni-dev exited $rc"
 
-  # Four of the scenarios above exist mainly for their message, which is what a
+  # Five of the scenarios above exist mainly for their message, which is what a
   # user reads: a shard pattern that matches nothing must name the pattern, a
-  # guard that finds no `--fail-under-lines` or no `--output` must say how to fix
-  # it, and a release with no asset for the runner's architecture must name the
-  # asset. A step cannot read its own job's log and a composite action's failing
-  # step exposes no output, so the outcome and file checks above pin the step
-  # order, not the text. This job reads the finished jobs' logs instead. It reads
-  # them for a second thing: on a pull request, the jobs that ran the diffs must
-  # not have logged an omni-dev deprecation warning, and the control job must have.
+  # guard that finds no `--fail-under-lines`, `--output` or `--ignore-filename-regex`
+  # must say how to fix it, and a release with no asset for the runner's
+  # architecture must name the asset. A step cannot read its own job's log and a
+  # composite action's failing step exposes no output, so the outcome and file
+  # checks above pin the step order, not the text. This job reads the finished
+  # jobs' logs instead. It reads them for a second thing: on a pull request, the
+  # jobs that ran the diffs must not have logged an omni-dev deprecation warning,
+  # and the control job must have.
   failure-messages:
     name: Failure messages
     # Skipped when a scenario job is red: the run is red already, and a scenario
@@ -738,6 +949,8 @@ jobs:
       - thin-mode-old-omni-dev
       - arm64-release-without-asset
       - output-flag
+      - ignore-filename-regex
+      - ignore-filename-regex-flag
       - fat-mode
       - deprecation-control
     runs-on: ubuntu-latest
@@ -843,6 +1056,27 @@ jobs:
                 status=1
               fi
             done
+          fi
+
+          # 9: on a pull request the `--ignore-filename-regex` guard names the omni-dev it
+          # found, the floor and both ways out. Only a pull request runs it in the job
+          # below (the line gate is off), so on any other event the leg without the flag
+          # succeeds and has no message to read. The job name is the one
+          # `ignore-filename-regex-flag` sets above; keep the version in step with its matrix.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            guard="has no 'coverage diff --ignore-filename-regex'"
+            if errors="$(bash tests/job-errors.sh 'Ignore filename regex flag (omni-dev 0.32.0)')"; then
+              expect "9: the guard names the omni-dev it found" "$errors" \
+                "omni-dev 0.32.0" "$guard"
+              expect "9: the guard names the 0.33.0 floor" "$errors" \
+                "$guard" "It needs omni-dev 0.33.0 or later"
+              expect "9: the guard says to set 'version' to the floor or 'latest'" "$errors" \
+                "$guard" "set 'version' to 0.33.0 or later, or to 'latest'"
+              expect "9: the guard says to set 'ignore-filename-regex' to an empty string" "$errors" \
+                "$guard" "set 'ignore-filename-regex' to an empty string"
+            else
+              status=1
+            fi
           fi
           exit "$status"
 
