@@ -14,9 +14,11 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `scripts/omni-dev-asset.sh` - Maps a runner's OS and architecture to the omni-dev release asset to download (`tests/omni-dev-asset.test.sh` tests it; `test.yml` runs that)
 - `scripts/find-baseline.sh` - Decides which run's baseline artifact a pull request downloads: the merge-base's, else the nearest first-parent ancestor's (`tests/find-baseline.test.sh` tests it against a stub `curl` and throwaway git repositories; `test.yml` runs that)
 - `tests/baseline-steps.test.sh` - Reads the lookup, download and diff steps out of `action.yml` and checks the wiring (the variables the script requires, the run id handed to the download, the comment's ancestor note) (`test.yml` runs that)
-- `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl` (`test.yml` runs that)
+- `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl`, with the variables the steps' `env:` blocks fill set directly (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
+- `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
+- `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
 - `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the three step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
@@ -146,7 +148,60 @@ The action is a composite action with two phases:
   pre-test with `LLVM_PROFILE_FILE=/dev/null` (reuses the instrumented build,
   contributes no coverage); `extra-test-commands` runs post-test and DOES
   contribute. Both are skipped in the worktree recompute, so the merge-base stays
-  buildable at old fork points and only `test-args` defines that baseline.
+  buildable at old fork points and only `test-args` defines that baseline. Both are
+  shell and are run with `eval "$VAR"` in the step's own shell (see the #39 bullet).
+- **No expression in any `run:` body (#39)**: the runner replaces every `${{ }}` in a script
+  with its value before the shell parses it, so a value that held shell syntax ran as shell.
+  Every value a script reads now comes through the step's `env:` and is read as `"$VAR"`,
+  `runner.*`, `github.action_path` and step outputs included, so the rule has no exceptions to
+  keep a list of. `tests/check-run-expressions.sh` enforces it (a line scan: it reads every
+  `run:` body, comments and messages too, because the runner evaluates those; `if:`, `with:`
+  and `env:` are where expressions belong). Rules:
+  - A new step that needs a value adds it to `env:`. Name it for the input, upper-cased
+    (`REPORT`, `STRIP_PREFIX`); `BASE_SHA` is the merge-base commit, `BASE_REF` the `base-ref`
+    input. Not `RUNNER_*` or `GITHUB_*`: the runner reserves those names for setting. The
+    built-ins are mapped explicitly rather than read (`OS`, `ARCH`, `ACTION_PATH`) so a step's
+    inputs are in one block, and the tests pin each mapping.
+  - The check's `ALLOWED` list (`step name :: expression :: reason`, separator ` :: ` because an
+    expression often holds `||`) is empty and only shrinks: an entry that matches nothing fails
+    it. Do not add one for a value a caller supplies.
+  - `setup-commands` and `extra-test-commands` are shell by design, so they are not allowlisted
+    but run as `eval "$commands"` in the step's own shell: the same `-e -o pipefail`, the
+    exported instrumentation env, one shell for every line. Rejected: `bash file` or `bash -c`
+    (a child shell has neither `-e` nor `pipefail` unless re-added, and loses non-exported
+    state). `eval` does not make these two inputs safe (a value in them still runs as shell, as
+    before); it takes the runner's substitution out of the script text, and the README says never
+    to wire an untrusted value into either.
+  - `test-args` and `worktree-system-deps` are split on whitespace into an array with
+    `set -f; words=($VAR); set +f`: no quote removal, expansion or globbing, and no `|| true`
+    (an earlier `read -r -d '' -a` needed one, which also hid real read failures). A value that
+    holds a quote, a backslash, `$` or a backtick is REFUSED with an `::error::` rather than
+    split: both inputs used to be shell-parsed, and splitting `--skip "slow test"` into
+    `--skip`, `"slow` and `test"` ran zero tests and still exited 0. `worktree-system-deps` also
+    refuses a word that starts with `-`, since `apt-get` reads one as an option (`-o
+    DPkg::Pre-Invoke::=...` runs a command as root). This is a breaking change for a caller who
+    wrote shell quoting or `$VAR` in `test-args`; the README says how to upgrade. A newline in
+    either now separates words, where it used to end the command. Rejected:
+    `eval "cargo test $TEST_ARGS"` (the hole itself) and a quote-aware splitter (`xargs` differs
+    between GNU and BSD, and bash 3.2 has no `mapfile`).
+  - The variables are generic names, and `cargo`, a dependency's build scripts and the caller's
+    commands inherit a step's environment, so the steps that run them drop the action's
+    variables first: `unset TEST_ARGS` and the command variables (copied into `commands`), `env
+    -u VERSION cargo install`, and `unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA` before
+    the merge-base's `cargo llvm-cov`. `tests/input-steps.test.sh` asserts it.
+  - The step tests set the variables and assert that each step's `env:` block fills them from
+    the right place, and that the script holds no expression: setting variables alone would
+    pass if `env:` were wired wrong. `tests/input-steps.test.sh` runs every other step that
+    reads an input against stub `cargo`, `git`, `omni-dev` and `sudo` and asserts the
+    arguments, with a canary command in each hostile value that must never run. A mutation run
+    (remove each guard, unset, `set -f` or quote in a copy of `action.yml`) is how its coverage
+    was checked.
+  - Not covered by a unit test: the pull-request paths on a real runner (`pr-paths.yml`,
+    `e2e-sharded.yml`, `integration.yml`'s fat-mode job) and the download step (it writes to
+    `/tmp`; `platform-step.test.sh` covers what picks its URL).
+  - Left alone, found in review: the pinned `version` is not validated, so a value holding a
+    newline or `/..` can write extra lines to `$GITHUB_OUTPUT` or steer the download URL. That
+    predates #39 and is not an expression-evaluation hole; it is a follow-up, not done here.
 - **Shard join**: `cargo llvm-cov` writes no newline after its final `end_of_record`,
   so a bare `cat` of shards glues records and a consumer can silently drop a file.
   `combine-shards.sh` always puts a newline between shards; keep that if you touch it.
@@ -252,8 +307,7 @@ The action is a composite action with two phases:
     The runner evaluates every `${{ }}` in a `run:` block, in a comment or a message, and a
     backslash does not escape one: a message that wrote the expression would show the masked
     token (`\***`) instead, and an empty `${{ }}` in a comment fails the step. The test fails if
-    the script holds any expression but `inputs.version`, which is still interpolated, as
-    inputs are in most steps of this file; that is how it is today, not a rule to copy.
+    the script holds any expression: the version reaches it through `env: VERSION` too (#39).
   - The token does reach curl's arguments (`-H "Authorization: Bearer ..."`); the environment only
     keeps it out of the script text. It is the job's own masked token, as in commit-check's step.
   - `curl` and `jq` each end in `|| true`: under `bash -e` a refused connection or a gateway's HTML
@@ -683,10 +737,10 @@ The action is a composite action with two phases:
   without it the thin-mode gate would disagree with the comment's total. A new `coverage
   diff` call site takes it, with `--strip-prefix` and `--report-format`, or its
   percentage is measured over other files than the comment's. Rules:
-  - The value goes in through `env:` and is read as `"$IGNORE_FILENAME_REGEX"`, not
-    interpolated into the script as `strip-prefix` is: a regex is full of `\`, `$` and
-    quotes that bash reinterprets inside double quotes (`\\` becomes `\`). The guard
-    step reads it the same way.
+  - The value goes in through `env:` and is read as `"$IGNORE_FILENAME_REGEX"`, as every
+    input is since #39 (this was the first): a regex is full of `\`, `$` and quotes that
+    bash reinterprets inside double quotes (`\\` becomes `\`) once it is part of the
+    script text. The guard step reads it the same way.
   - It is passed as `--ignore-filename-regex=<value>`, one argument. As two, a pattern
     that starts with `-` (`-sys/`, for the `*-sys` crates) is read by clap as a flag
     and the step fails with "unexpected argument '-s'". Integration scenario 8a's first

@@ -10,7 +10,9 @@
 # as a missing asset, and that every `binary-available=false` carries the `reason`
 # the failing step prints. The step scripts are read out of action.yml itself, so
 # renaming a step or moving its `run:` block fails here, by name, rather than
-# leaving a test of a copy.
+# leaving a test of a copy. The step reads everything it needs from environment
+# variables its `env:` block fills (nothing is substituted into the script text), so a
+# case sets those variables, and the wiring cases at the end check that `env:` fills each.
 #
 # `curl` is a stub that answers with $FAKE_HTTP_STATUS and logs its arguments, so
 # no case touches the network and each can choose the status the lookup sees.
@@ -29,7 +31,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 # shellcheck source=step-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
 
+PLATFORM_BLOCK="$(step_block 'Determine platform and download URL')" || exit 1
 PLATFORM="$(step_run 'Determine platform and download URL')" || exit 1
+FAIL_BLOCK="$(step_block 'Fail if binary not available')" || exit 1
 FAIL="$(step_run 'Fail if binary not available')" || exit 1
 
 BIN="$WORK/bin"
@@ -49,25 +53,19 @@ output_of() {
   grep "^$2=" "$1" | head -n1 | cut -d= -f2-
 }
 
-# The ${{ }} patterns below are literal text to be replaced, not expansions.
-# shellcheck disable=SC2016
 # run_platform <os> <arch> <http status> [tag]: runs the platform step as the
-# runner would, with the expressions it holds replaced by the values given. Sets
-# STATUS (the step's exit status), OUT (its $GITHUB_OUTPUT file) and CURLS (the
+# runner would, with the variables its `env:` block fills set to the values given.
+# Sets STATUS (the step's exit status), OUT (its $GITHUB_OUTPUT file) and CURLS (the
 # curl calls it made, one per line).
 run_platform() {
-  local os=$1 arch=$2 http=$3 tag=${4:-v0.44.0} script dir
-  script="$PLATFORM"
-  script="${script//'${{ steps.resolve-version.outputs.release-tag }}'/$tag}"
-  script="${script//'${{ runner.os }}'/$os}"
-  script="${script//'${{ runner.arch }}'/$arch}"
-  script="${script//'${{ github.action_path }}'/$ROOT}"
+  local os=$1 arch=$2 http=$3 tag=${4:-v0.44.0} dir
   dir="$(mktemp -d "$WORK/case.XXXXXX")"
   OUT="$dir/output"
   : >"$OUT"
   : >"$dir/curl.log"
   PATH="$BIN:$PATH" GITHUB_OUTPUT="$OUT" CURL_LOG="$dir/curl.log" FAKE_HTTP_STATUS="$http" \
-    bash --noprofile --norc -eo pipefail -c "$script" >"$dir/stdout" 2>&1
+    RELEASE_TAG="$tag" OS="$os" ARCH="$arch" ACTION_PATH="$ROOT" \
+    bash --noprofile --norc -eo pipefail -c "$PLATFORM" >"$dir/stdout" 2>&1
   STATUS=$?
   CURLS="$(cat "$dir/curl.log")"
 }
@@ -152,5 +150,29 @@ run_fail -u
 eq "without a reason it still fails" 1 "$FAIL_STATUS"
 has "without a reason it still says what to do" "$FAIL_OUT" "::error::Pre-built binary not available"
 has "without a reason it still names the escape hatch" "$FAIL_OUT" "use-prebuilt-binary: false"
+
+# --- the wiring around the scripts -------------------------------------------------------
+
+# The cases above set the variables, so they would pass if `env:` filled them from the
+# wrong place. These pin where each comes from. The runner replaces every expression in a
+# script before bash sees it, in a comment or a message too, so a script holds none: its
+# values arrive in the environment (#39).
+# shellcheck disable=SC2016
+has "env: RELEASE_TAG is the release the resolve step chose" "$PLATFORM_BLOCK" \
+  '        RELEASE_TAG: ${{ steps.resolve-version.outputs.release-tag }}'
+# shellcheck disable=SC2016
+has "env: OS is the runner's OS" "$PLATFORM_BLOCK" '        OS: ${{ runner.os }}'
+# shellcheck disable=SC2016
+has "env: ARCH is the runner's architecture" "$PLATFORM_BLOCK" '        ARCH: ${{ runner.arch }}'
+# shellcheck disable=SC2016
+has "env: ACTION_PATH is where the action's scripts are" "$PLATFORM_BLOCK" \
+  '        ACTION_PATH: ${{ github.action_path }}'
+# shellcheck disable=SC2016
+has "env: the failing step reads the reason the platform step wrote" "$FAIL_BLOCK" \
+  '        REASON: ${{ steps.platform.outputs.reason }}'
+# shellcheck disable=SC2016
+eq "script: the platform step holds no expression" "" "$(grep -n -F '${{' <<<"$PLATFORM" || true)"
+# shellcheck disable=SC2016
+eq "script: the failing step holds no expression" "" "$(grep -n -F '${{' <<<"$FAIL" || true)"
 
 summary

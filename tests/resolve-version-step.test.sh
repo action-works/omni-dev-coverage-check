@@ -14,7 +14,10 @@
 # pins that too: the one request it makes, that only a release tag of omni-dev's own is
 # taken from it, and the one error that names both failures when neither answers. The
 # step's script is read out of action.yml itself, so renaming the step or moving its
-# `run:` fails here, by name, rather than leaving a test of a copy.
+# `run:` fails here, by name, rather than leaving a test of a copy. The script reads the
+# version and the token from environment variables its `env:` block fills (nothing is
+# substituted into the script text), so a case sets those, and the wiring cases at the
+# end check that `env:` fills them.
 #
 # `curl` is a stub that replays the responses a case scripts, one per call, and logs
 # each call's arguments; `sleep` is a stub that logs its argument and returns, so no
@@ -73,18 +76,14 @@ chmod +x "$BIN/curl" "$BIN/sleep"
 TOKEN='ghs_SENTINEL_not_a_real_token'
 RATE_LIMITED='{"message":"API rate limit exceeded for 10.0.0.1. (But here'"'"'s the good news: Authenticated requests get a higher rate limit.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}'
 
-# The ${{ }} patterns below are literal text to be replaced, not expansions.
-# shellcheck disable=SC2016
 # run_resolve <version> <token> [response...]: runs the step as the runner would,
-# with the one expression its script holds replaced by <version>, `GH_TOKEN` set to
-# <token> as the step's `env:` does, and the responses replayed one per curl call.
-# Sets STATUS (the step's exit status), OUT (the contents of its $GITHUB_OUTPUT),
+# with `VERSION` and `GH_TOKEN` set to <version> and <token> as the step's `env:` does,
+# and the responses replayed one per curl call. Sets STATUS (the step's exit status), OUT (the contents of its $GITHUB_OUTPUT),
 # LOG (what it printed), CALLS (curl calls made), CURLS (their arguments) and SLEEPS
 # (the sleeps asked for, space-separated).
 run_resolve() {
-  local version=$1 token=$2 script dir i=0
+  local version=$1 token=$2 dir i=0
   shift 2
-  script="${RESOLVE//'${{ inputs.version }}'/$version}"
   dir="$(mktemp -d "$WORK/case.XXXXXX")"
   : >"$dir/output"
   : >"$dir/curl.log"
@@ -93,8 +92,8 @@ run_resolve() {
     i=$((i + 1))
     printf '%s' "$response" >"$dir/response.$i"
   done
-  PATH="$BIN:$PATH" CASE_DIR="$dir" GITHUB_OUTPUT="$dir/output" GH_TOKEN="$token" \
-    bash --noprofile --norc -eo pipefail -c "$script" >"$dir/log" 2>&1
+  PATH="$BIN:$PATH" CASE_DIR="$dir" GITHUB_OUTPUT="$dir/output" VERSION="$version" GH_TOKEN="$token" \
+    bash --noprofile --norc -eo pipefail -c "$RESOLVE" >"$dir/log" 2>&1
   STATUS=$?
   OUT="$(cat "$dir/output")"
   LOG="$(cat "$dir/log")"
@@ -377,9 +376,7 @@ nojq="$WORK/nojq"
 mkdir "$nojq"
 dir="$(mktemp -d "$WORK/case.XXXXXX")"
 : >"$dir/output"
-# shellcheck disable=SC2016
-script="${RESOLVE//'${{ inputs.version }}'/latest}"
-LOG="$(PATH="$nojq" GITHUB_OUTPUT="$dir/output" GH_TOKEN="$TOKEN" "$BASH" --noprofile --norc -eo pipefail -c "$script" 2>&1)"
+LOG="$(PATH="$nojq" GITHUB_OUTPUT="$dir/output" VERSION=latest GH_TOKEN="$TOKEN" "$BASH" --noprofile --norc -eo pipefail -c "$RESOLVE" 2>&1)"
 STATUS=$?
 eq "no jq: the step fails" 1 "$STATUS"
 has "no jq: the error says jq is missing" "$LOG" "::error::jq is required to resolve 'version: latest'"
@@ -391,6 +388,9 @@ eq "no jq: it wrote no version" "" "$(cat "$dir/output")"
 
 # The cases above run the script under bash; it uses arrays, which sh and pwsh lack.
 has "shell: the step runs under bash, as these cases do" "$BLOCK" "      shell: bash"
+# shellcheck disable=SC2016
+has "env: the step reads the version from the version input" "$BLOCK" \
+  '        VERSION: ${{ inputs.version }}'
 # shellcheck disable=SC2016
 has "env: the step reads the token from the github-token input" "$BLOCK" \
   '        GH_TOKEN: ${{ inputs.github-token }}'
@@ -406,12 +406,11 @@ has "input: version says a leading v is accepted" "$VERSION_INPUT" \
 
 # The runner evaluates every expression in a `run:` script before bash sees it,
 # whether it sits in a message or a comment and whether or not a backslash precedes
-# it. The token is already in $GH_TOKEN; an expression for it in the text would be
-# rewritten to its masked value, so a message could not show the expression it
-# meant, and an empty one fails the step before it starts.
+# it. The token is already in $GH_TOKEN and the version in $VERSION; an expression for
+# either in the text would be rewritten to its value (masked, for the token), so a
+# message could not show the expression it meant, and an empty one fails the step
+# before it starts. A value that holds shell syntax would also run as shell.
 # shellcheck disable=SC2016
-rest="${RESOLVE//'${{ inputs.version }}'/}"
-# shellcheck disable=SC2016
-eq "script: the only expression is inputs.version" "" "$(grep -n -F '${{' <<<"$rest" || true)"
+eq "script: it holds no expression" "" "$(grep -n -F '${{' <<<"$RESOLVE" || true)"
 
 summary

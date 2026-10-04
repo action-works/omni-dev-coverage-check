@@ -43,15 +43,15 @@ inputs:
     required: false
     default: ''
   test-args:
-    description: 'Arguments passed to `cargo test`/`cargo llvm-cov` under instrumentation (fat mode)'
+    description: 'Arguments passed to `cargo test`/`cargo llvm-cov` under instrumentation (fat mode). Split on whitespace only: a value holding a quote, a backslash, `$` or a backtick fails the step instead of being interpreted'
     required: false
     default: '--all-features --workspace'
   setup-commands:
-    description: 'Shell commands run under the coverage instrumentation env BEFORE the main test run, with profiling disabled (LLVM_PROFILE_FILE=/dev/null) so they reuse the instrumented dependency build without contributing coverage. Use to fetch fixtures the tests need (e.g. an ML model file). One command per line. Empty runs nothing'
+    description: 'Shell commands run under the coverage instrumentation env BEFORE the main test run, with profiling disabled (LLVM_PROFILE_FILE=/dev/null) so they reuse the instrumented dependency build without contributing coverage. Use to fetch fixtures the tests need (e.g. an ML model file). One command per line, evaluated as shell (`eval`, in one bash shell with `-e -o pipefail`), so never pass untrusted text. Empty runs nothing'
     required: false
     default: ''
   extra-test-commands:
-    description: 'Additional `cargo test`/`cargo llvm-cov` invocations run under the instrumentation env AFTER the main test run, contributing to the head coverage corpus. Use for model-gated/`--ignored` suites that the single `test-args` run cannot reach. One command per line. Empty runs nothing. NOT applied to the merge-base worktree recompute'
+    description: 'Additional `cargo test`/`cargo llvm-cov` invocations run under the instrumentation env AFTER the main test run, contributing to the head coverage corpus. Use for model-gated/`--ignored` suites that the single `test-args` run cannot reach. One command per line, evaluated as shell (`eval`, in one bash shell with `-e -o pipefail`), so never pass untrusted text. Empty runs nothing. NOT applied to the merge-base worktree recompute'
     required: false
     default: ''
   fail-under-lines:
@@ -119,7 +119,7 @@ inputs:
     required: false
     default: 'true'
   worktree-system-deps:
-    description: 'Space-separated apt packages to install before the worktree recompute (e.g. libasound2-dev). Empty installs nothing'
+    description: 'Space-separated apt packages to install before the worktree recompute (e.g. libasound2-dev). Split on whitespace only: a value holding a quote, a backslash, `$` or a backtick, or a word starting with a dash, fails the step. Empty installs nothing'
     required: false
     default: ''
   publish-baseline:
@@ -178,9 +178,9 @@ runs:
       id: resolve-version
       shell: bash
       env:
+        VERSION: ${{ inputs.version }}
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
-        VERSION="${{ inputs.version }}"
         if [ "$VERSION" = "latest" ]; then
           # The jq calls below end in `|| true` and send stderr away, so a runner
           # with no jq would be retried three times and reported as a rate limit.
@@ -265,11 +265,12 @@ runs:
       id: platform
       if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true'
       shell: bash
+      env:
+        RELEASE_TAG: ${{ steps.resolve-version.outputs.release-tag }}
+        OS: ${{ runner.os }}
+        ARCH: ${{ runner.arch }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        RELEASE_TAG="${{ steps.resolve-version.outputs.release-tag }}"
-        OS="${{ runner.os }}"
-        ARCH="${{ runner.arch }}"
-
         # A binary that cannot be had is reported through `reason`, which "Fail if
         # binary not available" prints as the one error. Nothing is guessed: a
         # platform with no asset gets no binary, not the nearest one.
@@ -280,7 +281,7 @@ runs:
         }
 
         # The asset is chosen from the OS and the architecture (see the script).
-        if ! BINARY_NAME=$(bash "${{ github.action_path }}/scripts/omni-dev-asset.sh" "$OS" "$ARCH"); then
+        if ! BINARY_NAME=$(bash "$ACTION_PATH/scripts/omni-dev-asset.sh" "$OS" "$ARCH"); then
           unavailable "No pre-built omni-dev binary is published for $OS $ARCH. Set 'use-prebuilt-binary: false' to build from source."
         fi
 
@@ -309,10 +310,11 @@ runs:
     - name: Download pre-built binary
       if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'true'
       shell: bash
+      env:
+        DOWNLOAD_URL: ${{ steps.platform.outputs.download-url }}
+        BINARY_NAME: ${{ steps.platform.outputs.binary-name }}
       run: |
         mkdir -p ~/.cargo/bin
-        DOWNLOAD_URL="${{ steps.platform.outputs.download-url }}"
-        BINARY_NAME="${{ steps.platform.outputs.binary-name }}"
 
         echo "Downloading omni-dev from $DOWNLOAD_URL"
         curl -sL "$DOWNLOAD_URL" -o "/tmp/$BINARY_NAME"
@@ -352,10 +354,11 @@ runs:
     - name: Install omni-dev from source
       if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true'
       shell: bash
+      env:
+        VERSION: ${{ steps.resolve-version.outputs.version }}
       run: |
-        VERSION="${{ steps.resolve-version.outputs.version }}"
         echo "Installing omni-dev $VERSION via cargo install..."
-        cargo install omni-dev --version "$VERSION"
+        env -u VERSION cargo install omni-dev --version "$VERSION"
 
     - name: Print omni-dev version
       shell: bash
@@ -453,7 +456,8 @@ runs:
         REPORT_FORMAT: ${{ inputs.report-format }}
         RUN_COVERAGE: ${{ inputs.run-coverage }}
         STRIP_PREFIX: ${{ inputs.strip-prefix }}
-      run: bash "${{ github.action_path }}/scripts/combine-shards.sh"
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/scripts/combine-shards.sh"
 
     # -------------------------------------------------------------------------
     # Coverage run (fat mode). Every cargo step below sources cargo-llvm-cov's
@@ -488,19 +492,43 @@ runs:
       # run after `clean` (so it isn't wiped) and before the test runs.
       if: inputs.run-coverage == 'true' && inputs.setup-commands != ''
       shell: bash
+      env:
+        SETUP_COMMANDS: ${{ inputs.setup-commands }}
       run: |
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
         export LLVM_PROFILE_FILE=/dev/null
-        ${{ inputs.setup-commands }}
+        # The input is shell by design. It is evaluated here, in this step's own shell
+        # (bash -e -o pipefail, the instrumentation env loaded), so every line shares
+        # state; the runner never splices it into this script as an expression. The
+        # variable is dropped first so the commands do not see it in their environment.
+        commands="$SETUP_COMMANDS"
+        unset SETUP_COMMANDS
+        eval "$commands"
 
     - name: Run tests with coverage
       if: inputs.run-coverage == 'true'
       shell: bash
+      env:
+        TEST_ARGS: ${{ inputs.test-args }}
       run: |
+        # The value is split on whitespace only: no quote removal, no expansion, no
+        # globbing. A value that used to rely on the shell parsing it fails here, loudly,
+        # rather than reaching cargo as different arguments from the ones written.
+        case "$TEST_ARGS" in
+          *[\"\'\\\`\$]*)
+            echo '::error::test-args holds a quote, a backslash, a dollar sign or a backtick. It is split on whitespace only and none of those is interpreted, so cargo would get arguments other than the ones written. Write plain whitespace-separated arguments.'
+            exit 1
+            ;;
+        esac
+        set -f
+        test_args=($TEST_ARGS)
+        set +f
+        # The caller's tests run next: they should not see the action's variable.
+        unset TEST_ARGS
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        cargo test ${{ inputs.test-args }}
+        cargo test "${test_args[@]}"
 
     - name: Run extra (gated) tests with coverage
       # Additional instrumented suites the single `test-args` run cannot reach
@@ -509,10 +537,15 @@ runs:
       # gate. Deliberately NOT run in the worktree recompute below.
       if: inputs.run-coverage == 'true' && inputs.extra-test-commands != ''
       shell: bash
+      env:
+        EXTRA_TEST_COMMANDS: ${{ inputs.extra-test-commands }}
       run: |
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        ${{ inputs.extra-test-commands }}
+        # Shell by design, evaluated in this step's own shell, as the setup commands are.
+        commands="$EXTRA_TEST_COMMANDS"
+        unset EXTRA_TEST_COMMANDS
+        eval "$commands"
 
     # The reports below, and the line gate at the end, share ONE profile merge.
     # Every `cargo llvm-cov report` runs `llvm-profdata merge` over all the raw
@@ -528,10 +561,12 @@ runs:
       # `cargo llvm-cov report` step: one placed before it merges again.
       if: inputs.run-coverage == 'true'
       shell: bash
+      env:
+        REPORT: ${{ inputs.report }}
       run: |
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        cargo llvm-cov report --lcov --output-path "${{ inputs.report }}"
+        cargo llvm-cov report --lcov --output-path "$REPORT"
 
     - name: Remove merged raw coverage profiles
       # The lcov step merged them into one profile, so they have done their job.
@@ -599,9 +634,11 @@ runs:
       id: mb
       if: github.event_name == 'pull_request'
       shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
       run: |
-        if [ -n "${{ inputs.base-ref }}" ]; then
-          SHA="${{ inputs.base-ref }}"
+        if [ -n "$BASE_REF" ]; then
+          SHA="$BASE_REF"
         else
           SHA="$(git merge-base origin/main HEAD)"
         fi
@@ -623,7 +660,8 @@ runs:
         BASELINE_ARTIFACT: ${{ inputs.baseline-artifact-name }}
         BASE_REF: ${{ steps.mb.outputs.sha }}
         ANCESTOR_DEPTH: ${{ inputs.baseline-ancestor-depth }}
-      run: bash "${{ github.action_path }}/scripts/find-baseline.sh"
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/scripts/find-baseline.sh"
 
     - name: Download baseline coverage
       # By run id, so it downloads what the lookup found and nothing else.
@@ -650,19 +688,46 @@ runs:
       id: recompute
       if: github.event_name == 'pull_request' && inputs.run-coverage == 'true' && inputs.recompute-baseline == 'true'
       shell: bash
+      env:
+        REPORT: ${{ inputs.report }}
+        WORKTREE_SYSTEM_DEPS: ${{ inputs.worktree-system-deps }}
+        TEST_ARGS: ${{ inputs.test-args }}
+        BASE_SHA: ${{ steps.mb.outputs.sha }}
       run: |
-        REPORT_BASENAME="$(basename "${{ inputs.report }}")"
+        REPORT_BASENAME="$(basename "$REPORT")"
         if [ -f "baseline/$REPORT_BASENAME" ]; then
           echo "a baseline was downloaded; skipping recompute"
           exit 0
         fi
         # Optional system deps for building historical commits (e.g. a merge-base
-        # that predates a native-dependency removal). No-op when unset.
-        if [ -n "${{ inputs.worktree-system-deps }}" ]; then
-          sudo apt-get update && sudo apt-get install -y ${{ inputs.worktree-system-deps }}
+        # that predates a native-dependency removal). No-op when unset. Packages and
+        # test arguments are split on whitespace only: no quote removal, no expansion, no
+        # globbing. The test arguments passed the same check in "Run tests with coverage".
+        case "$WORKTREE_SYSTEM_DEPS" in
+          *[\"\'\\\`\$]*)
+            echo '::error::worktree-system-deps holds a quote, a backslash, a dollar sign or a backtick. It is split on whitespace only and none of those is interpreted. Write package names separated by spaces.'
+            exit 1
+            ;;
+        esac
+        set -f
+        system_deps=($WORKTREE_SYSTEM_DEPS)
+        test_args=($TEST_ARGS)
+        set +f
+        for dep in "${system_deps[@]}"; do
+          case "$dep" in
+            -*)
+              echo "::error::worktree-system-deps holds '$dep', which starts with a dash and would be read by apt-get as an option. Name packages only."
+              exit 1
+              ;;
+          esac
+        done
+        if [ -n "$WORKTREE_SYSTEM_DEPS" ]; then
+          sudo apt-get update && sudo apt-get install -y "${system_deps[@]}"
         fi
-        git worktree add ../base "${{ steps.mb.outputs.sha }}"
-        ( cd ../base && cargo llvm-cov ${{ inputs.test-args }} --no-report \
+        git worktree add ../base "$BASE_SHA"
+        # The merge-base's tests run next: they should not see the action's variables.
+        unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA
+        ( cd ../base && cargo llvm-cov "${test_args[@]}" --no-report \
             && cargo llvm-cov report --lcov --output-path "$REPORT_BASENAME" )
         mkdir -p baseline
         # Rewrite the worktree's absolute SF paths to the main workspace prefix so
@@ -685,38 +750,41 @@ runs:
         BASE_SHA: ${{ steps.mb.outputs.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit
+        REPORT: ${{ inputs.report }}
+        COLLAPSE_RANGES: ${{ inputs.collapse-ranges }}
+        ALL_FILES: ${{ inputs.all-files }}
+        STRIP_PREFIX: ${{ inputs.strip-prefix }}
+        REPORT_FORMAT: ${{ inputs.report-format }}
         IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
         BASELINE_SHA: ${{ steps.baseline-lookup.outputs.sha }}
         BASELINE_DISTANCE: ${{ steps.baseline-lookup.outputs.distance }}
         BASELINE_RECOMPUTED: ${{ steps.recompute.outputs.recomputed }}
       run: |
-        REPORT_BASENAME="$(basename "${{ inputs.report }}")"
+        REPORT_BASENAME="$(basename "$REPORT")"
         args=(coverage diff
-          --report "${{ inputs.report }}"
+          --report "$REPORT"
           --base-ref "$BASE_SHA"
           --artifact-url "$ARTIFACT_URL"
           --run-url "$RUN_URL"
           --base-sha "$BASE_SHA"
           --head-sha "$HEAD_SHA"
           --commit-url "$COMMIT_URL")
-        if [ "${{ inputs.collapse-ranges }}" = "true" ]; then
+        if [ "$COLLAPSE_RANGES" = "true" ]; then
           args+=(--collapse-ranges)
         fi
-        if [ "${{ inputs.all-files }}" = "true" ]; then
+        if [ "$ALL_FILES" = "true" ]; then
           args+=(--all-files)
         fi
-        if [ -n "${{ inputs.strip-prefix }}" ]; then
-          args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        if [ -n "$STRIP_PREFIX" ]; then
+          args+=(--strip-prefix "$STRIP_PREFIX")
         fi
-        # Read from the environment, not interpolated into the script like the values
-        # around it: a regex is full of `\`, `$` and quotes that bash would reinterpret.
         # Passed as `--flag=value`: as a separate argument a pattern that starts with `-`
         # (`-sys/`) would be read by clap as a flag. The same at the two gates below.
         if [ -n "$IGNORE_FILENAME_REGEX" ]; then
           args+=("--ignore-filename-regex=$IGNORE_FILENAME_REGEX")
         fi
-        if [ -n "${{ inputs.report-format }}" ]; then
-          args+=(--report-format "${{ inputs.report-format }}")
+        if [ -n "$REPORT_FORMAT" ]; then
+          args+=(--report-format "$REPORT_FORMAT")
         fi
         # Diff is computed merge-base..HEAD, attributing patch coverage to this PR.
         if [ -f "baseline/$REPORT_BASENAME" ]; then
@@ -781,26 +849,31 @@ runs:
       if: github.event_name == 'pull_request' && inputs.fail-under-patch != ''
       shell: bash
       env:
+        REPORT: ${{ inputs.report }}
+        BASE_SHA: ${{ steps.mb.outputs.sha }}
+        FAIL_UNDER_PATCH: ${{ inputs.fail-under-patch }}
+        STRIP_PREFIX: ${{ inputs.strip-prefix }}
+        REPORT_FORMAT: ${{ inputs.report-format }}
         IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
       run: |
-        REPORT_BASENAME="$(basename "${{ inputs.report }}")"
+        REPORT_BASENAME="$(basename "$REPORT")"
         args=(coverage diff
-          --report "${{ inputs.report }}"
-          --base-ref "${{ steps.mb.outputs.sha }}"
-          --fail-under-patch "${{ inputs.fail-under-patch }}"
+          --report "$REPORT"
+          --base-ref "$BASE_SHA"
+          --fail-under-patch "$FAIL_UNDER_PATCH"
           -o json)
         # Mirror the parse-affecting flags from the comment diff so the gated
         # percentage matches what the comment reported. Leaving one out is not a
         # harmless omission: `--ignore-filename-regex` changes the denominator, so
         # the gate would measure files the comment does not show.
-        if [ -n "${{ inputs.strip-prefix }}" ]; then
-          args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        if [ -n "$STRIP_PREFIX" ]; then
+          args+=(--strip-prefix "$STRIP_PREFIX")
         fi
         if [ -n "$IGNORE_FILENAME_REGEX" ]; then
           args+=("--ignore-filename-regex=$IGNORE_FILENAME_REGEX")
         fi
-        if [ -n "${{ inputs.report-format }}" ]; then
-          args+=(--report-format "${{ inputs.report-format }}")
+        if [ -n "$REPORT_FORMAT" ]; then
+          args+=(--report-format "$REPORT_FORMAT")
         fi
         if [ -f "baseline/$REPORT_BASENAME" ]; then
           args+=(--baseline-report "baseline/$REPORT_BASENAME")
@@ -810,11 +883,13 @@ runs:
     - name: Enforce line-coverage gate
       if: inputs.run-coverage == 'true' && inputs.fail-under-lines != ''
       shell: bash
+      env:
+        FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}
       run: |
         # Reads the profile the lcov step merged; it does not merge again.
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        cargo llvm-cov report --summary-only --fail-under-lines "${{ inputs.fail-under-lines }}"
+        cargo llvm-cov report --summary-only --fail-under-lines "$FAIL_UNDER_LINES"
 
     - name: Enforce line-coverage gate (thin mode)
       # No profile data here for `cargo llvm-cov report`, so the gate reads the
@@ -822,26 +897,30 @@ runs:
       if: inputs.run-coverage != 'true' && inputs.fail-under-lines != ''
       shell: bash
       env:
-        BASE_REF: ${{ steps.mb.outputs.sha }}
+        REPORT: ${{ inputs.report }}
+        BASE_SHA: ${{ steps.mb.outputs.sha }}
+        FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}
+        STRIP_PREFIX: ${{ inputs.strip-prefix }}
+        REPORT_FORMAT: ${{ inputs.report-format }}
         IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
       run: |
         # On a push there is no merge-base (the step is skipped): HEAD..HEAD is an
         # empty diff, which is all a head-only gate needs.
         args=(coverage diff
-          --report "${{ inputs.report }}"
-          --base-ref "${BASE_REF:-HEAD}"
-          --fail-under-lines "${{ inputs.fail-under-lines }}"
+          --report "$REPORT"
+          --base-ref "${BASE_SHA:-HEAD}"
+          --fail-under-lines "$FAIL_UNDER_LINES"
           -o json)
         # Mirror the parse-affecting flags from the comment diff so the gated
         # percentage is the one the comment reported. omni-dev gates on the head
         # report AFTER `--ignore-filename-regex`, so this one needs it too.
-        if [ -n "${{ inputs.strip-prefix }}" ]; then
-          args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        if [ -n "$STRIP_PREFIX" ]; then
+          args+=(--strip-prefix "$STRIP_PREFIX")
         fi
         if [ -n "$IGNORE_FILENAME_REGEX" ]; then
           args+=("--ignore-filename-regex=$IGNORE_FILENAME_REGEX")
         fi
-        if [ -n "${{ inputs.report-format }}" ]; then
-          args+=(--report-format "${{ inputs.report-format }}")
+        if [ -n "$REPORT_FORMAT" ]; then
+          args+=(--report-format "$REPORT_FORMAT")
         fi
         omni-dev "${args[@]}" > /dev/null

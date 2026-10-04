@@ -48,6 +48,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 # shellcheck source=step-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
 
+GUARD_BLOCK="$(step_block 'Check omni-dev supports the flags this run uses')" || exit 1
 GUARD="$(step_run 'Check omni-dev supports the flags this run uses')" || exit 1
 # step_run stops at the first line indented less than the body, so a key or comment placed
 # after `run:` would cut the script short and every case below would test the stump.
@@ -530,5 +531,23 @@ fixture_case 0.44.0 ignore-filename-regex help
 fixture_case 0.45.0 output invalid
 fixture_case 0.45.0 fail-under-lines invalid
 fixture_case 0.45.0 ignore-filename-regex help
+
+# --- the wiring around the script ---------------------------------------------------------
+
+# The cases above set the variables the script reads, so they would pass if `env:` filled
+# them from the wrong input. These pin where each comes from. The runner replaces every
+# expression in a script before bash sees it, in a comment or a message too, so the script
+# holds none: its values arrive in the environment (#39).
+# shellcheck disable=SC2016
+has "env: EVENT_NAME is the event that triggered the run" "$GUARD_BLOCK" \
+  '        EVENT_NAME: ${{ github.event_name }}'
+# shellcheck disable=SC2016
+has "env: RUN_COVERAGE is the run-coverage input" "$GUARD_BLOCK" \
+  '        RUN_COVERAGE: ${{ inputs.run-coverage }}'
+# shellcheck disable=SC2016
+has "env: FAIL_UNDER_LINES is the fail-under-lines input" "$GUARD_BLOCK" \
+  '        FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}'
+# shellcheck disable=SC2016
+eq "script: it holds no expression" "" "$(grep -n -F '${{' <<<"$GUARD" || true)"
 
 summary

@@ -137,19 +137,10 @@ if [ -z "$DIFF_SCRIPT" ]; then
   echo "FAIL - could not read the diff step out of action.yml"
   exit 1
 fi
-for expr in report collapse-ranges all-files strip-prefix report-format; do
-  case "$expr" in
-    report) value=coverage-head.lcov ;;
-    collapse-ranges) value=true ;;
-    all-files) value=false ;;
-    *) value= ;;
-  esac
-  DIFF_SCRIPT="${DIFF_SCRIPT//"\${{ inputs.$expr }}"/$value}"
-done
-# An expression this test does not fill in would leave a literal `${{` in the script, which bash
-# would fail on with its output thrown away below: say so here instead, by name.
+# The step reads its inputs from the environment, so there is nothing to fill in: an expression
+# left in the script would reach bash as literal text, with its output thrown away below.
 if [[ "$DIFF_SCRIPT" == *'${{'* ]]; then
-  echo "FAIL - the diff step holds an expression this test does not fill in: $(grep -o '\${{[^}]*}}' <<<"$DIFF_SCRIPT" | sort -u | paste -sd' ' -)"
+  echo "FAIL - the diff step holds an expression: $(grep -o '\${{[^}]*}}' <<<"$DIFF_SCRIPT" | sort -u | paste -sd' ' -)"
   exit 1
 fi
 BIN="$WORK/bin"
@@ -174,7 +165,8 @@ real_comment() {
   : >"$dir/output"
   (
     cd "$dir" && PATH="$BIN:$PATH" GITHUB_OUTPUT="$dir/output" ARTIFACT_URL=u RUN_URL=u BASE_SHA=0 HEAD_SHA=0 \
-      COMMIT_URL=https://example/commit BASELINE_SHA="$2" BASELINE_DISTANCE="$1" \
+      COMMIT_URL=https://example/commit REPORT=coverage-head.lcov COLLAPSE_RANGES=true ALL_FILES=false \
+      STRIP_PREFIX='' REPORT_FORMAT='' IGNORE_FILENAME_REGEX='' BASELINE_SHA="$2" BASELINE_DISTANCE="$1" \
       bash --noprofile --norc -eo pipefail -c "$DIFF_SCRIPT" >/dev/null 2>&1
   )
   echo "$dir/coverage.md"

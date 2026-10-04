@@ -43,6 +43,9 @@ jobs:
       - name: Test baseline-lib.sh
         run: bash tests/baseline-lib.test.sh
 
+      - name: Test the input-reading steps of action.yml
+        run: bash tests/input-steps.test.sh
+
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
 
@@ -67,8 +70,18 @@ jobs:
       - name: Test step-lib.sh
         run: bash tests/step-lib.test.sh
 
+      - name: Test check-run-expressions.sh
+        run: bash tests/check-run-expressions.test.sh
+
       # Not a lint of the scripts, but it needs no setup and belongs on every pull
       # request: it fails when action.yml (or a script it ships) passes omni-dev a
       # flag omni-dev has deprecated, before a major release removes it.
       - name: Check the action passes no deprecated omni-dev flag
         run: bash tests/check-deprecated-flags.sh
+
+      # The runner replaces every expression in a `run:` body with its value before the
+      # shell parses the script, so a value that holds shell syntax runs as shell (#39).
+      # Values reach a script through `env:`. This fails when a new expression appears in
+      # a body of action.yml, before a caller's untrusted value can reach one.
+      - name: Check no run body of the action holds an expression
+        run: bash tests/check-run-expressions.sh
