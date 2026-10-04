@@ -154,7 +154,9 @@ eq "a registered leftover: the step succeeds" 0 "$RC"
 eq "a registered leftover: and its worktree is gone afterwards" gone "$(gone)"
 eq "a registered leftover: with one record fewer than it started with" 1 "$(worktrees)"
 
-# Its directory was wiped but git still records it: `git worktree add` refuses that too.
+# Its directory was wiped but git still records it: `git worktree add` refuses that too. On the
+# git this was written with (2.50) `remove --force` clears that record by itself, so this case
+# does not tell `prune` apart; `prune` is for gits where it does not, and is held as text below.
 new_case
 git -C "$WS" worktree add -q --detach ../base "$BASE_SHA"
 mv "$DIR/base" "$DIR/base.wiped"
@@ -204,11 +206,11 @@ eq "refused system deps: it touched nothing at ../base" precious "$(cat "$DIR/ba
 # came first, so no case can tell the two orders apart; this is held as text.)
 line_of() { grep -n -F -- "$1" <<<"$SCRIPT" | head -n1 | cut -d: -f1; }
 CLEAR_AT="$(line_of 'git worktree remove --force ../base 2>/dev/null || true')"
-PRUNE_AT="$(line_of 'git worktree prune')"
+PRUNE_AT="$(line_of 'git worktree prune || true')"
 ADD_AT="$(line_of 'git worktree add ../base "$BASE_SHA"')"
 TRAP_AT="$(line_of "trap 'git worktree remove --force ../base || true' EXIT")"
 pass "script: it clears a stale worktree" test -n "$CLEAR_AT"
-pass "script: it prunes the records of missing ones" test -n "$PRUNE_AT"
+pass "script: it prunes the records of missing ones, and a failed prune is not a failure" test -n "$PRUNE_AT"
 pass "script: it adds the worktree" test -n "$ADD_AT"
 pass "script: it removes the worktree when it ends" test -n "$TRAP_AT"
 pass "script: the stale one is cleared before the add" test "${CLEAR_AT:-999}" -lt "${ADD_AT:-0}"

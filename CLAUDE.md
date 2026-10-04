@@ -163,11 +163,23 @@ The action is a composite action with two phases:
   - **A stale one is cleared before the add**: `git worktree remove --force ../base 2>/dev/null
     || true`, then `git worktree prune`. A worktree an earlier run left (cancelled before this step
     ended, on a reused runner) is registered and stops the add; so does a record whose directory
-    was wiped, which `prune` clears. `remove` only touches a worktree git knows, so a directory
-    that merely has the name `base` is kept, and the add then fails as it always did (decided: a
-    directory of someone else's is not the action's to delete, and the failure says
-    `already exists`). `prune` is repository-wide, but it drops only records whose directory is
-    already gone, which no checkout of a CI workspace needs. Rejected: removing after use only (a
+    was wiped. On git 2.50 `remove --force` clears that record itself, so no case can tell `prune`
+    apart there (found in review): `prune` is kept for gits where it does not, and is held as text.
+    `prune` is `|| true`, so it adds no way for a working run to fail. `remove` only touches a
+    worktree git knows, so a directory that merely has the name `base` is kept, and the add then
+    fails as it always did (decided: a directory of someone else's is not the action's to delete,
+    and the failure says `already exists`). `prune` is repository-wide, but it drops only records
+    whose directory is already gone, which no checkout of a CI workspace needs.
+  - **Known limits, accepted (review):** the clear's stderr is hidden, so a leftover it could not
+    remove (locked, root-owned) shows only as the add's `already exists`; a worktree of the
+    caller's own registered at `../base` is removed by the clear, with its uncommitted changes (the
+    run would have failed at the add before, so no working run changes); a SIGKILL during the
+    removal, after the runner's INT and TERM window, can leave a half-deleted `../base` that
+    neither `remove` nor `prune` clears, which is no worse than before; and a caller's cache of
+    `../base` finds it gone at the end of the job. **A caller who copied the old workaround (a
+    `git worktree remove --force ../base` step between two runs of the action) now fails there:
+    the worktree is already gone, git exits 128 with `'../base' is not a working tree`. The README
+    says to delete that step, or add `|| true`.** Rejected: removing after use only (a
     cancelled run leaves it for the next),
     and `rm -rf ../base` (it would delete that directory).
   - The removal comes after the baseline is copied: the `sed` that rewrites the report's paths

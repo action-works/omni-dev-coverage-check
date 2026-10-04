@@ -409,7 +409,9 @@ while the PR was open:
    prefix so `omni-dev coverage diff` strips one prefix for both head and baseline.
    Use `worktree-system-deps` if building that historical commit needs system
    packages (omni-dev passes `libasound2-dev`). The worktree (`../base`, and the build in it)
-   is removed when the step ends, so the action can run again in the same job.
+   is removed when the step ends, so the action can run again in the same job. If your workflow
+   removes `../base` itself between two runs of the action, delete that step (or add `|| true`):
+   the worktree is already gone, and `git worktree remove` fails on one that is not there.
 4. **Publish** on `main` pushes: this run's lcov becomes the baseline future PRs
    download. In a sharded run that is the combined report.
 

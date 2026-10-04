@@ -842,7 +842,7 @@ runs:
         # knows, so a directory that merely has the name `base` is kept, and the add then
         # fails as it did.
         git worktree remove --force ../base 2>/dev/null || true
-        git worktree prune
+        git worktree prune || true
         git worktree add ../base "$BASE_SHA"
         # However the step ends: the merge-base's build (`../base/target`) is as large as the
         # whole build, and the job has no further use for it. Set after the add, so a worktree
