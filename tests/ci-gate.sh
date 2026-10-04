@@ -41,12 +41,20 @@ fi
 # `all(.[]; ...)` is true for an empty object, so the length is checked on its own.
 if ! jq -e 'type == "object" and length > 0 and all(.[]; type == "object" and (.result | type == "string"))' \
   <<<"$needs" > /dev/null 2>&1; then
-  echo "::error::ci-gate.sh did not get a non-empty object of jobs that each have a result; \$NEEDS is: $needs"
+  # toJSON is pretty-printed: on one line, so the whole dump is in the annotation.
+  echo "::error::ci-gate.sh did not get a non-empty object of jobs that each have a result; \$NEEDS is: $(printf '%s' "$needs" | tr '\n' ' ')"
   exit 2
 fi
 
+# The list is captured, not read from a process substitution: a jq that died there would
+# leave the loop below with nothing to judge, and a loop over nothing counts no failure.
 # @tsv escapes a tab or a newline in a name, so each job is one line and one workflow
 # command.
+if ! listing="$(jq -r 'to_entries[] | [.key, .value.result] | @tsv' <<<"$needs")" || [ -z "$listing" ]; then
+  echo "::error::ci-gate.sh could not list the jobs in \$NEEDS, so it cannot say that they succeeded"
+  exit 2
+fi
+
 total=0
 bad=0
 while IFS=$'\t' read -r job result; do
@@ -57,7 +65,7 @@ while IFS=$'\t' read -r job result; do
     echo "::error::$job finished '$result', not 'success'"
     bad=$((bad + 1))
   fi
-done < <(jq -r 'to_entries[] | [.key, .value.result] | @tsv' <<<"$needs")
+done <<<"$listing"
 
 if [ "$bad" -ne 0 ]; then
   echo "::error::ci-gate: $bad of $total jobs did not succeed. A skipped job means one that it needs failed or was cancelled: look for that one above."

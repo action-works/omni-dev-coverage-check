@@ -107,6 +107,10 @@ refuses "a job with no result" '{"a":{"outputs":{}}}'
 refuses "a result that is not a string" '{"a":{"result":true}}'
 refuses "one good job and one without a result" '{"a":{"result":"success"},"b":{}}'
 
+# toJSON(needs) is pretty-printed; the dump has to be on the one line a workflow command reads.
+run_gate $'{\n  "a": {}\n}'
+has "  and a multi-line dump is on one line" "$OUT" '$NEEDS is: {   "a": {} }'
+
 run_gate ''
 eq "NEEDS empty: refused" 2 "$STATUS"
 has "  and says so" "$OUT" "::error::ci-gate.sh needs the needs context in \$NEEDS"
@@ -123,45 +127,66 @@ STATUS=$?
 eq "no jq on PATH: refused" 2 "$STATUS"
 has "  and says so" "$OUT" "::error::ci-gate.sh needs jq"
 
+# A jq that answers the check and then dies on the listing must not read as "no failure":
+# a loop over no jobs counts none. The stub is the real jq for its first call only.
+mkdir "$WORK/flaky"
+cat > "$WORK/flaky/jq" <<EOF
+#!$BASH
+count="$WORK/flaky/count"
+n=\$(cat "\$count" 2>/dev/null || echo 0)
+echo \$((n + 1)) > "\$count"
+[ "\$n" -lt 1 ] || exit 5
+exec "$(command -v jq)" "\$@"
+EOF
+chmod +x "$WORK/flaky/jq"
+OUT="$(PATH="$WORK/flaky:$PATH" NEEDS='{"a":{"result":"failure"}}' "$BASH" "$GATE" 2>&1)"
+STATUS=$?
+eq "jq dies after the check, on a red job: refused, not passed" 2 "$STATUS"
+has "  and says so" "$OUT" "::error::ci-gate.sh could not list the jobs"
+lacks "  and does not claim success" "$OUT" "all 0 jobs succeeded"
+
 # --- 2. the workflows -----------------------------------------------------------------
 
-# jobs_of <workflow>: the job ids under `jobs:`, one per line.
-jobs_of() {
+# job_lines <workflow>: every line under `jobs:`, tagged with the job it belongs to, as
+# `<job><TAB><line>` (a comment or a blank line between two jobs goes with the one above it,
+# which no use below minds). The one place that knows the layout of `jobs:`; the readers
+# after it are built on it. Refuses a file with no jobs.
+job_lines() {
   awk '
     /^jobs:[ \t]*$/ { j = 1; next }
     j && /^[^ \t#]/ { j = 0 }
-    j && /^  [^ \t#]/ { k = $0; sub(/^  /, "", k); sub(/:.*/, "", k); print k; n++ }
+    j && /^  [^ \t#]/ { cur = $0; sub(/^  /, "", cur); sub(/:.*/, "", cur); n++ }
+    j && n { print cur "\t" $0 }
     END { if (!n) { print "no jobs under a top-level `jobs:`" > "/dev/stderr"; exit 1 } }
   ' "$1"
 }
 
+# jobs_of <workflow>: the job ids, one per line, in file order.
+jobs_of() {
+  job_lines "$1" | awk -F'\t' '!seen[$1]++ { print $1 }'
+}
+
+# job_block <workflow> <job>: the job's lines, its key line included. Refuses a job that is
+# not in the file.
+job_block() {
+  job_lines "$1" | JOB="$2" awk -F'\t' '
+    $1 == ENVIRON["JOB"] { print substr($0, length($1) + 2); found = 1 }
+    END { if (!found) { print "no job " ENVIRON["JOB"] > "/dev/stderr"; exit 1 } }
+  '
+}
+
 # job_needs <workflow> <job>: what the job lists under `needs:`, one per line (none for a
-# job with no `needs:`). Refuses a `needs:` that is not a block list, and a job not in
-# the file.
+# job with no `needs:`). Refuses a `needs:` that is not a block list.
 job_needs() {
-  JOB="$2" awk '
-    /^jobs:[ \t]*$/ { j = 1; next }
-    j && /^[^ \t#]/ { j = 0 }
-    j && /^  [^ \t#]/ {
-      k = $0; sub(/^  /, "", k); sub(/:.*/, "", k)
-      cur = k; inneeds = 0
-      if (k == ENVIRON["JOB"]) found = 1
-      next
+  job_block "$1" "$2" | awk '
+    /^    needs:[ \t]*$/ { inneeds = 1; next }
+    /^    needs:/ { print "needs is not a block list" > "/dev/stderr"; exit 1 }
+    inneeds {
+      if ($0 ~ /^      - /) { x = $0; sub(/^      - /, "", x); sub(/[ \t]*(#.*)?$/, "", x); print x; next }
+      if ($0 ~ /^[ \t]*(#.*)?$/) next
+      inneeds = 0
     }
-    j && cur == ENVIRON["JOB"] {
-      if ($0 ~ /^    needs:[ \t]*$/) { inneeds = 1; next }
-      if ($0 ~ /^    needs:/) { print "needs of " cur " is not a block list" > "/dev/stderr"; bad = 1; exit 1 }
-      if (inneeds) {
-        if ($0 ~ /^      - /) { x = $0; sub(/^      - /, "", x); sub(/[ \t]*(#.*)?$/, "", x); print x; next }
-        if ($0 ~ /^[ \t]*(#.*)?$/) next
-        inneeds = 0
-      }
-    }
-    END {
-      if (bad) exit 1
-      if (!found) { print "no job " ENVIRON["JOB"] > "/dev/stderr"; exit 1 }
-    }
-  ' "$1"
+  '
 }
 
 # triggers_of <workflow>: the events under the top-level `on:`, one per line. Refuses an
@@ -173,16 +198,6 @@ triggers_of() {
     on && /^[^ \t#]/ { on = 0 }
     on && /^  [^ \t#]/ { k = $0; sub(/^  /, "", k); sub(/:.*/, "", k); print k }
     END { if (bad) exit 1; if (!seen) { print "no top-level on:" > "/dev/stderr"; exit 1 } }
-  ' "$1"
-}
-
-# job_block <workflow> <job>: the job's lines, key line included.
-job_block() {
-  JOB="$2" awk '
-    /^jobs:[ \t]*$/ { j = 1; next }
-    j && /^[^ \t#]/ { j = 0 }
-    j && /^  [^ \t#]/ { k = $0; sub(/^  /, "", k); sub(/:.*/, "", k); on = (k == ENVIRON["JOB"]) }
-    j && on { print }
   ' "$1"
 }
 
@@ -205,6 +220,17 @@ wiring_problems() {
       [ -n "$job" ] || continue
       grep -Fxq -- "$job" <<<"$jobs" || echo "ci-gate needs a job that does not exist: $job"
     done <<<"$needs"
+
+    # A job-level `continue-on-error` lets a red job report `success`, which passes the gate;
+    # a job-level `if:` can make it `skipped`, which turns the gate red on every run it
+    # does not apply to. ci-gate's rule (anything but success is red) is safe only while
+    # neither exists.
+    while IFS= read -r job; do
+      [ "$job" != ci-gate ] || continue
+      block="$(job_block "$integration" "$job")"
+      grep -Eq '^    (if|continue-on-error):' <<<"$block" \
+        && echo "$job has a job-level if: or continue-on-error:, which ci-gate cannot see through"
+    done <<<"$jobs"
   fi
 
   block="$(job_block "$integration" ci-gate)"
@@ -295,19 +321,25 @@ mutate() {
   has "$name" "$(wiring_problems "$dir")" "$fragment"
 }
 
-# Drop the LAST `      - <need>` line: ci-gate's list is the last in the file, and
-# failure-messages' list above it must keep its own.
-drop_last_need() {
-  printf '%s' '{ lines[NR] = $0 } /^      - '"$1"'$/ { last = NR } END { for (i = 1; i <= NR; i++) if (i != last) print lines[i] }'
-}
-mutate "a need dropped (version-pin)" integration.yml "$(drop_last_need version-pin)" "ci-gate does not need: version-pin"
-mutate "a need dropped (failure-messages)" integration.yml "$(drop_last_need failure-messages)" "ci-gate does not need: failure-messages"
-mutate "a job added that ci-gate does not need" integration.yml \
-  '{ print } END { print ""; print "  brand-new-job:"; print "    runs-on: ubuntu-latest"; print "    steps: []" }' \
+# Every edit to ci-gate's `needs` is scoped to ci-gate's own block, so it holds wherever the job
+# sits in the file. IN_JOB tracks the current job; the program that follows it runs after.
+IN_JOB='/^  [^ \t#]/ { cur = $0; sub(/^  /, "", cur); sub(/:.*/, "", cur) }'
+mutate "a need dropped (version-pin)" integration.yml \
+  "$IN_JOB"' cur == "ci-gate" && /^      - version-pin$/ { next } { print }' "ci-gate does not need: version-pin"
+mutate "a need dropped (failure-messages)" integration.yml \
+  "$IN_JOB"' cur == "ci-gate" && /^      - failure-messages$/ { next } { print }' "ci-gate does not need: failure-messages"
+# Appended after ci-gate, with a `needs:` of its own: the readers must not take its list for
+# ci-gate's.
+mutate "a job added after ci-gate that it does not need" integration.yml \
+  '{ print } END { print ""; print "  brand-new-job:"; print "    needs:"; print "      - thin-mode"; print "    runs-on: ubuntu-latest"; print "    steps: []" }' \
   "ci-gate does not need: brand-new-job"
 mutate "a need that is not a job" integration.yml \
-  '{ print } /^      - failure-messages$/ { print "      - not-a-job" }' \
+  "$IN_JOB"' { print } cur == "ci-gate" && /^      - failure-messages$/ { print "      - not-a-job" }' \
   "ci-gate needs a job that does not exist: not-a-job"
+mutate "a needed job given a job-level if:" integration.yml \
+  '{ print } /^  version-pin:$/ { print "    if: false" }' "version-pin has a job-level if: or continue-on-error:"
+mutate "a needed job given a job-level continue-on-error" integration.yml \
+  '{ print } /^  fat-mode:$/ { print "    continue-on-error: true" }' "fat-mode has a job-level if: or continue-on-error:"
 mutate "the if: removed" integration.yml '$0 != "    if: ${{ always() }}"' "does not run 'if: always()'"
 mutate "the if: made !cancelled()" integration.yml \
   '$0 == "    if: ${{ always() }}" { print "    if: ${{ !cancelled() }}"; next } { print }' "does not run 'if: always()'"
@@ -338,7 +370,7 @@ mutate "Validate Commit Messages renamed" commit-check.yml \
 # The readers refuse what they cannot read, so a reformatted file is reported, not read
 # as if it held nothing.
 mutate "a flow-style needs: is refused" integration.yml \
-  '/^    needs:[ \t]*$/ && ++n == 2 { print "    needs: [thin-mode]"; skip = 1; next } skip && /^      - / { next } { skip = 0; print }' \
+  "$IN_JOB"' cur == "ci-gate" && /^    needs:[ \t]*$/ { print "    needs: [thin-mode]"; skip = 1; next } skip && /^      - / { next } { skip = 0; print }' \
   "cannot read the needs of ci-gate"
 mutate "a flow-style on: is refused" test.yml '/^on:[ \t]*$/ { print "on: [push, pull_request]"; skip = 1; next } skip && /^  / { next } /^[^ \t]/ { skip = 0 } { print }' \
   "cannot read the triggers of test.yml"
