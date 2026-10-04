@@ -316,19 +316,40 @@ runs:
       shell: bash
       run: omni-dev --version
 
-    - name: Check omni-dev supports the thin-mode line gate
-      # `latest` can resolve to a release that predates the flag. Fail with the
-      # fix rather than letting clap report an unknown argument at gate time.
-      if: inputs.run-coverage != 'true' && inputs.fail-under-lines != ''
+    - name: Check omni-dev supports the flags this run uses
+      # A pinned `version` (or `latest` resolving to a release that predates a
+      # flag) would otherwise get clap's bare "unexpected argument" from a later
+      # step. Fail with the fix instead, and before any coverage run. It runs only
+      # when a flag is needed: a push in fat mode calls no `omni-dev coverage` at
+      # all, so an old pin keeps working there.
+      #   --output            every pull request (the comment and the patch gate): 0.32.0
+      #   --fail-under-lines  thin mode with the line gate on
+      # The `if:` is the union of these needs and the script re-derives each one, so
+      # a new flag goes in both places or it is skipped here or checked for nothing.
+      if: github.event_name == 'pull_request' || (inputs.run-coverage != 'true' && inputs.fail-under-lines != '')
       shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        RUN_COVERAGE: ${{ inputs.run-coverage }}
+        FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}
       run: |
         # Capture first: `grep -q` closing the pipe early would SIGPIPE omni-dev,
         # and under `pipefail` that fails the step even when grep matched.
         help="$(omni-dev coverage diff --help)"
-        if ! grep -q -- '--fail-under-lines' <<<"$help"; then
-          echo "::error::$(omni-dev --version) has no 'coverage diff --fail-under-lines', which thin mode uses for the line gate. Set 'version' to a release that includes it, or set 'fail-under-lines' to an empty string to run thin mode without a line gate."
-          exit 1
+        found="$(omni-dev --version)"
+        status=0
+        if [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ] \
+          && ! grep -q -- '--fail-under-lines' <<<"$help"; then
+          echo "::error::$found has no 'coverage diff --fail-under-lines', which thin mode uses for the line gate. Set 'version' to a release that includes it, or set 'fail-under-lines' to an empty string to run thin mode without a line gate."
+          status=1
         fi
+        # No input turns this one off: the diff runs on every pull request, even
+        # with `comment: false`.
+        if [ "$EVENT_NAME" = 'pull_request' ] && ! grep -q -- '--output' <<<"$help"; then
+          echo "::error::$found has no 'coverage diff --output', which the pull-request comment and the patch gate use. It needs omni-dev 0.32.0 or later: set 'version' to 0.32.0 or later, or to 'latest'."
+          status=1
+        fi
+        exit "$status"
 
     - name: Combine shard reports
       # Thin mode with a sharded run: check each shard and join them into

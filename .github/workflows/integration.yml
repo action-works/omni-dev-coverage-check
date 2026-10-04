@@ -1,14 +1,15 @@
 name: Integration
 
 # Runs the action itself (`uses: ./`) on a real runner on every change: in thin
-# mode against fixture lcov files (the thin-mode line gate and `shard-reports`),
-# and in fat mode against a fixture crate (the instrumented test run, the three
-# report outputs, the fat-mode line gate, `setup-commands`/`extra-test-commands`).
-# Each scenario's outcome is asserted at the end of its job; the scenarios are
-# `continue-on-error` so one regression does not hide the rest. What the three
-# scenarios that exist for their message said is asserted by the last job, which
-# reads the finished jobs' logs through the API. One job runs on an ARM64 Linux
-# runner, to show that the pre-built binary is chosen by architecture.
+# mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
+# and the `--output` floor a pull request needs), and in fat mode against a
+# fixture crate (the instrumented test run, the three report outputs, the fat-mode
+# line gate, `setup-commands`/`extra-test-commands`). Each scenario's outcome is
+# asserted at the end of its job; the scenarios are `continue-on-error` so one
+# regression does not hide the rest. What the four scenarios that exist for their
+# message said is asserted by the last job, which reads the finished jobs' logs
+# through the API. One job runs on an ARM64 Linux runner, to show that the
+# pre-built binary is chosen by architecture.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -324,6 +325,117 @@ jobs:
           fi
           exit "$status"
 
+  # The pull-request half of the guard. The comment diff and the patch gate pass
+  # `-o/--output` (omni-dev 0.32.0), and they run only on a `pull_request` event, so
+  # the guard fires only there. This job runs on EVERY event and what it expects
+  # depends on the event: an omni-dev without the flag must be stopped on a pull
+  # request and left alone everywhere else (a fat-mode push calls no `omni-dev
+  # coverage` at all, so an old pin works there today). The other-event expectations
+  # first run on the push after a merge, as `pr-paths.yml` says of the baseline hit.
+  #
+  # Thin mode with the line gate off, so nothing but the `--output` need is in play,
+  # and no cargo build.
+  output-flag:
+    name: Output flag (omni-dev ${{ matrix.omni-dev }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The newest release with `coverage diff` but without `--output`.
+          - omni-dev: '0.31.0'
+            has-output: false
+          # The first release with it: the floor the README documents. It differs
+          # from the leg above in nothing but `version`, so it is that leg's control
+          # on a pull request, and it pins the floor exactly.
+          - omni-dev: '0.32.0'
+            has-output: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write fixtures
+        run: |
+          mkdir shards out
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
+          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
+
+      # Sharded on purpose: the guard runs before "Combine shard reports", so a
+      # missing combined report shows the guard stopped the action. clap's error
+      # from the comment step comes after the combine, and its redirect into
+      # `coverage.md` would leave an empty file.
+      - name: '7. Pull-request path with this omni-dev'
+        id: pr
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/pr.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Assert the outcome
+        env:
+          PR: ${{ steps.pr.outcome }}
+          HAS_OUTPUT: ${{ matrix.has-output }}
+          # The pin, not the action's `version` output: a failed composite step
+          # may expose no outputs, and this leg is expected to fail.
+          VERSION: ${{ matrix.omni-dev }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          assert() { # <label> <command...>
+            local label="$1"
+            shift
+            if "$@" > /dev/null 2>&1; then
+              echo "ok   - $label"
+            else
+              echo "::error::$label"
+              status=1
+            fi
+          }
+
+          expect=success
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$HAS_OUTPUT" = false ]; then
+            expect=failure
+          fi
+          check "7. pull-request path, omni-dev with --output: $HAS_OUTPUT, on $GITHUB_EVENT_NAME" "$expect" "$PR"
+
+          if [ "$expect" = failure ]; then
+            # Stopped at the guard: before the shards were combined, and before the
+            # comment step could create its output.
+            assert "7: stopped at the guard: no report written" test ! -e out/pr.lcov
+            assert "7: stopped at the guard: no comment written" test ! -e coverage.md
+          else
+            assert "7: got past the guard: the shards were combined" test -s out/pr.lcov
+            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+              # Both `-o` call sites the step reaches ran: markdown and json.
+              assert "7: the comment was rendered with -o markdown" test -s coverage.md
+              assert "7: the percentages were rendered with -o json" jq -e 'type == "object"' coverage.json
+            else
+              assert "7: no diff rendered outside a pull request" test ! -e coverage.md
+            fi
+          fi
+
+          if ! omni-dev --version | grep -qF "$VERSION"; then
+            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
+            status=1
+          fi
+          exit "$status"
+
   fat-mode:
     name: Fat mode (fixture crate)
     runs-on: ubuntu-latest
@@ -533,19 +645,19 @@ jobs:
           fi
           exit "$status"
 
-  # Three of the scenarios above exist mainly for their message, which is what a
+  # Four of the scenarios above exist mainly for their message, which is what a
   # user reads: a shard pattern that matches nothing must name the pattern, a
-  # guard that finds no `--fail-under-lines` must say how to fix it, and a release
-  # with no asset for the runner's architecture must name the asset. A step cannot
-  # read its own job's log and a composite action's failing step exposes no output,
-  # so the outcome and file checks above pin the step order, not the text. This job
-  # reads the finished jobs' logs instead.
+  # guard that finds no `--fail-under-lines` or no `--output` must say how to fix
+  # it, and a release with no asset for the runner's architecture must name the
+  # asset. A step cannot read its own job's log and a composite action's failing
+  # step exposes no output, so the outcome and file checks above pin the step
+  # order, not the text. This job reads the finished jobs' logs instead.
   failure-messages:
     name: Failure messages
     # Skipped when a scenario job is red: the run is red already, and a scenario
     # that did not run as intended would only add "message missing" errors that
     # bury the cause.
-    needs: [thin-mode, thin-mode-old-omni-dev, arm64-release-without-asset]
+    needs: [thin-mode, thin-mode-old-omni-dev, arm64-release-without-asset, output-flag]
     runs-on: ubuntu-latest
     # The only job here with `actions: read`, which reading a job's log needs.
     # `contents: read` is the checkout: a job-level `permissions` drops the rest.
@@ -625,5 +737,25 @@ jobs:
               "$asset" "set 'use-prebuilt-binary: false' to build from source"
           else
             status=1
+          fi
+
+          # 7: on a pull request the `--output` guard names the omni-dev it found, the
+          # floor and the way out. Only a pull request runs it, so on any other event
+          # the 0.31.0 leg succeeds and has no message to read. The job name is the one
+          # `output-flag` sets above; keep the version in step with its matrix. The
+          # version is a fragment of its own because `omni-dev --version` can carry
+          # a commit and date after it.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            guard="has no 'coverage diff --output'"
+            if errors="$(bash tests/job-errors.sh 'Output flag (omni-dev 0.31.0)')"; then
+              expect "7: the guard names the omni-dev it found" "$errors" \
+                "omni-dev 0.31.0" "$guard"
+              expect "7: the guard names the 0.32.0 floor" "$errors" \
+                "$guard" "It needs omni-dev 0.32.0 or later"
+              expect "7: the guard says to set 'version' to the floor or 'latest'" "$errors" \
+                "$guard" "set 'version' to 0.32.0 or later, or to 'latest'"
+            else
+              status=1
+            fi
           fi
           exit "$status"
