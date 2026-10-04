@@ -132,6 +132,12 @@ The action is a composite action with two phases:
     limit: the step checks for `jq` first and says so.
   - No `--fail` on that curl: a 403 keeps its JSON body, which is where GitHub's reason ("API rate
     limit exceeded", "Bad credentials") comes from, and the warning prints it.
+  - A leading `v` is dropped from the value however it was obtained (#38), once, after the
+    `latest` branch: `VERSION="${VERSION#v}"`. A pin written as a release tag (`v0.45.0`) used to give
+    `release-tag=vv0.45.0` (a 404 that the platform step reports as a missing asset), its own cache key,
+    and a `cargo install --version` that cargo refuses ("not a valid SemVer requirement"). Only one `v`,
+    and only a leading one: `0.46.0-dev` keeps its. Keep the strip out of the `latest` branch, or a pin
+    skips it; `tests/resolve-version-step.test.sh` runs both spellings and checks the input says so.
   - The release-asset downloads stay unauthenticated on purpose. They are `github.com/.../releases/
     download/` URLs, not API calls, so the limit in #1 does not apply to them, and curl drops
     `Authorization` on the redirect to the asset CDN: the header would only send the token somewhere

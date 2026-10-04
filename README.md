@@ -266,7 +266,7 @@ downloads a baseline that already includes their coverage.
 
 | Input                 | Description                                                                                             | Default               |
 |-----------------------|--------------------------------------------------------------------------------------------------------|-----------------------|
-| `version`             | omni-dev version to install (e.g. `0.45.0`, `latest`)                                                   | `latest`              |
+| `version`             | omni-dev version to install (e.g. `0.45.0`, `v0.45.0`, `latest`)                                       | `latest`              |
 | `github-token`        | Token authenticating the GitHub API call that resolves `version: latest` (1000/hr vs 60/hr unauthed)   | `${{ github.token }}` |
 | `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source                             | `true`                |
 | `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
@@ -274,7 +274,8 @@ downloads a baseline that already includes their coverage.
 `version: latest` makes one call to the GitHub API to find the newest release. It sends `github-token` and tries
 three times (waiting 3s, then 6s) before the step fails, so the 60-requests-an-hour limit on unauthenticated calls
 from a shared runner address does not fail the job. It needs no configuration: the token defaults to the workflow's.
-A pinned `version` makes no API call.
+A pinned `version` makes no API call, and may be written as a release tag is, with a leading `v`: `v0.45.0` and
+`0.45.0` give the same `version` (`0.45.0`) and `release-tag` (`v0.45.0`) outputs and share one cache entry.
 
 The pre-built binary is chosen from the runner's OS and architecture: Linux x64, macOS ARM64 and Windows today,
 and Linux ARM64 from the first omni-dev release that publishes `omni-dev-linux-arm64.tar.gz` (built since
@@ -337,7 +338,7 @@ on the default `use-prebuilt-binary: 'true'` fails at the install step. So does 
 
 | Output          | Description                                             |
 |-----------------|---------------------------------------------------------|
-| `version`       | Resolved omni-dev version that was installed            |
+| `version`       | Resolved omni-dev version installed (no leading `v`)    |
 | `release-tag`   | Resolved omni-dev release tag (v-prefixed)              |
 | `patch-percent` | Patch (diff) coverage percentage for this PR            |
 | `line-percent`  | Overall line coverage percentage (requires a baseline)  |
