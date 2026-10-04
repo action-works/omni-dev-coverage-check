@@ -990,28 +990,37 @@ The action is a composite action with two phases:
     `origin/main..HEAD`, and a queue-style `Merge pull request #N` commit on top of a conventional one
     linted clean locally (omni-dev 0.45.0). The concurrency groups key on `github.ref` and
     `cancel-in-progress` is for `pull_request` only, so queue runs do not cancel each other.
-  - **Ruleset settings** (applied by hand): merge method `MERGE`, because the baseline walk relies on
+  - **Ruleset settings**, applied by hand on 2026-10-04 as the ruleset `main` (id 24451641, enforcement
+    `active`; read or change it with `gh api repos/action-works/omni-dev-coverage-check/rulesets/24451641`
+    or in the repository settings, since it is not kept in the repository) once `ci-gate` had passed
+    on a `push` to `main`: merge method `MERGE`, because the baseline walk relies on
     the first-parent commits of `main` being merged pull requests, each with its own baseline;
     `max_entries_to_merge: 1` and `min_entries_to_merge: 1`, because a group of N would land as N
     first-parent commits but only one `push` run, at the tip, so N-1 would have no baseline and the
     delta would no longer be attributable to the pull request alone (expected, not verified; grouping
     buys nothing with a CI of 1 to 2 minutes); `max_entries_to_build: 5`, `grouping_strategy:
     ALLGREEN`, `check_response_timeout_minutes: 30`, `min_entries_to_merge_wait_minutes: 0`; and a
-    bypass for the admin role, so a red `main` can still be fixed.
+    bypass for the Repository admin role (`RepositoryRole` 5, mode `always`, which also lets an admin
+    push or merge around the queue), so a red `main` can still be fixed. The required checks are the
+    three above, matched by context name, with `strict_required_status_checks_policy: false` (the
+    queue tests the merged result, which is what `strict` is for).
   - **Decided in #76: the `latest` jobs gate.** After each omni-dev release every `version: latest` job
     is red for about 6 to 10 minutes (#64), and `ci-gate` needs them, so a queued pull request is
     ejected in that window and has to be enqueued again. Leaving them out would mean restructuring
     `failure-messages` and `ci-gate`; #64 is the real fix. The same goes for anything else that reads
     live state: `latest-redirect`, and `deprecation-control` (an omni-dev that removes `--format` or
     rewords clap's message turns it red with no pull request at fault). Merges then wait for the
-    cause to be fixed, or for the admin bypass, which is what it is for. Each merge also runs Test, Commit Check and
-    Integration a second time, about 2 minutes of latency, and the cache entries a queue ref saves are
-    never restored by anyone (a queue entry has its own ref), so each merge adds a few that age out.
-  - **Not verified** (the first queue run is the real test): plan eligibility, which came from secondary
-    sources (merge queue is available for a public repository owned by an organization, including on
-    the Free plan, and not at all for one owned by a personal account, so moving the repository
-    would end it); whether `allow_auto_merge: false` affects `gh pr merge` entering the queue; that a
-    group of N lands as N first-parent commits; and everything on a real runner.
+    cause to be fixed, or for the admin bypass, which is what it is for. Each merge also runs Test,
+    Commit Check and Integration a second time, about 2 minutes of latency, and the cache entries a
+    queue ref saves are never restored by anyone (a queue entry has its own ref), so each merge adds a
+    few that age out.
+  - **Verified**: plan eligibility. The `merge_queue` rule was accepted on 2026-10-04 for this public
+    repository, owned by an organization on the Free plan. It is not available for a repository owned
+    by a personal account, so moving the repository would end the queue.
+  - **Not verified** as of 2026-10-04 (the result of the first pull request through the queue is
+    recorded on #76): whether `allow_auto_merge: false` affects `gh pr merge` entering the queue (the
+    setting is `false` and was not changed); that a group of N lands as N first-parent commits (the
+    group size is 1, so it does not arise); and how the queue behaves on an ejection.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.
