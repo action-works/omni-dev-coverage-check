@@ -19,6 +19,12 @@ jobs:
       - name: Test combine-shards.sh
         run: bash tests/combine-shards.test.sh
 
+      - name: Test omni-dev-asset.sh
+        run: bash tests/omni-dev-asset.test.sh
+
+      - name: Test the platform step of action.yml
+        run: bash tests/platform-step.test.sh
+
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
 

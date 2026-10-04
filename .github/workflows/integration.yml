@@ -5,9 +5,10 @@ name: Integration
 # and in fat mode against a fixture crate (the instrumented test run, the three
 # report outputs, the fat-mode line gate, `setup-commands`/`extra-test-commands`).
 # Each scenario's outcome is asserted at the end of its job; the scenarios are
-# `continue-on-error` so one regression does not hide the rest. What the two
+# `continue-on-error` so one regression does not hide the rest. What the three
 # scenarios that exist for their message said is asserted by the last job, which
-# reads the finished jobs' logs through the API.
+# reads the finished jobs' logs through the API. One job runs on an ARM64 Linux
+# runner, to show that the pre-built binary is chosen by architecture.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -253,6 +254,76 @@ jobs:
           fi
           exit "$status"
 
+  # An ARM64 Linux runner on an omni-dev release with no ARM64 asset (#19). The
+  # action used to map every Linux runner to the x86_64 build, so this run would
+  # have downloaded a binary it cannot execute and failed later, at the version
+  # check, and never said why. It must now stop at the install step and name the
+  # asset it looked for. The control is 5b: the same action inputs on an x86_64
+  # runner, which must succeed. The install that succeeds on ARM64 needs a release that
+  # carries the asset, which does not exist yet (#20).
+  arm64-release-without-asset:
+    name: Pre-built binary (ARM64 Linux, omni-dev without the ARM64 asset)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write fixtures
+        run: |
+          mkdir shards out
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
+          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
+
+      # 5b's action inputs, so the runner's architecture is what differs. The shards
+      # are combined after the install, so a missing combined report shows where it
+      # stopped.
+      - name: '6. Pre-built omni-dev that has no ARM64 asset'
+        id: install
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ env.OLD_OMNI_DEV }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/arm64.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Assert the outcome
+        env:
+          INSTALL: ${{ steps.install.outcome }}
+          ARCH: ${{ runner.arch }}
+        run: |
+          status=0
+          # The scenario is only about an ARM64 runner if this is one.
+          if [ "$ARCH" != ARM64 ] || [ "$(uname -m)" != aarch64 ]; then
+            echo "::error::6 did not run on ARM64 Linux (runner.arch $ARCH, uname -m $(uname -m))"
+            status=1
+          fi
+
+          if [ "$INSTALL" = failure ]; then
+            echo "ok   - 6. pre-built omni-dev that has no ARM64 asset"
+          else
+            echo "::error::6. pre-built omni-dev that has no ARM64 asset: expected failure, got $INSTALL"
+            status=1
+          fi
+
+          # It stopped at the install, not later.
+          if [ -e out/arm64.lcov ]; then
+            echo "::error::6 got past the install: the shards were combined"
+            status=1
+          fi
+
+          # No binary was installed, least of all the x86_64 one that the old
+          # mapping would have put here.
+          if [ -e "$HOME/.cargo/bin/omni-dev" ]; then
+            echo "::error::6 left an omni-dev behind at $HOME/.cargo/bin/omni-dev"
+            status=1
+          fi
+          exit "$status"
+
   fat-mode:
     name: Fat mode (fixture crate)
     runs-on: ubuntu-latest
@@ -462,9 +533,10 @@ jobs:
           fi
           exit "$status"
 
-  # Two of the scenarios above exist mainly for their message, which is what a
-  # user reads: a shard pattern that matches nothing must name the pattern, and a
-  # guard that finds no `--fail-under-lines` must say how to fix it. A step cannot
+  # Three of the scenarios above exist mainly for their message, which is what a
+  # user reads: a shard pattern that matches nothing must name the pattern, a
+  # guard that finds no `--fail-under-lines` must say how to fix it, and a release
+  # with no asset for the runner's architecture must name the asset. A step cannot
   # read its own job's log and a composite action's failing step exposes no output,
   # so the outcome and file checks above pin the step order, not the text. This job
   # reads the finished jobs' logs instead.
@@ -473,7 +545,7 @@ jobs:
     # Skipped when a scenario job is red: the run is red already, and a scenario
     # that did not run as intended would only add "message missing" errors that
     # bury the cause.
-    needs: [thin-mode, thin-mode-old-omni-dev]
+    needs: [thin-mode, thin-mode-old-omni-dev, arm64-release-without-asset]
     runs-on: ubuntu-latest
     # The only job here with `actions: read`, which reading a job's log needs.
     # `contents: read` is the checkout: a job-level `permissions` drops the rest.
@@ -535,6 +607,22 @@ jobs:
               "$guard" "Set 'version' to a release that includes it"
             expect "5a: the guard says to set 'fail-under-lines' to an empty string" "$errors" \
               "$guard" "set 'fail-under-lines' to an empty string"
+          else
+            status=1
+          fi
+
+          # 6: a release with no asset for the runner's architecture names the release
+          # and the asset it looked for, and gives both ways out. The job name is the
+          # one `arm64-release-without-asset` sets above. Every check holds the asset's
+          # own name, so a message about another file cannot satisfy it.
+          asset="omni-dev-linux-arm64.tar.gz"
+          if errors="$(bash tests/job-errors.sh 'Pre-built binary (ARM64 Linux, omni-dev without the ARM64 asset)')"; then
+            expect "6: the release and the missing asset are named" "$errors" \
+              "omni-dev v$OLD_OMNI_DEV has no pre-built $asset" "Linux ARM64"
+            expect "6: the message says to set 'version' to a release that has the asset" "$errors" \
+              "$asset" "Set 'version' to a release that has it"
+            expect "6: the message says to build from source" "$errors" \
+              "$asset" "set 'use-prebuilt-binary: false' to build from source"
           else
             status=1
           fi

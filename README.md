@@ -210,6 +210,13 @@ downloads a baseline that already includes their coverage.
 | `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source                             | `true`                |
 | `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
 
+The pre-built binary is chosen from the runner's OS and architecture: Linux x64, macOS ARM64 and Windows today,
+and Linux ARM64 from the first omni-dev release that publishes `omni-dev-linux-arm64.tar.gz` (built since
+[rust-works/omni-dev#2116](https://github.com/rust-works/omni-dev/issues/2116)). Until then an ARM64 Linux runner
+on the default `use-prebuilt-binary: 'true'` fails at the install step. So does a platform with no pre-built binary
+(macOS x64, a 32-bit Linux runner). The message names the platform or the missing asset: set
+`use-prebuilt-binary: 'false'` to build omni-dev from source instead, or `version` to a release that has the asset.
+
 ### Coverage run (fat mode)
 
 | Input              | Description                                                                                   | Default               |

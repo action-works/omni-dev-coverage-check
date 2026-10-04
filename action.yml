@@ -222,47 +222,40 @@ runs:
       shell: bash
       run: |
         RELEASE_TAG="${{ steps.resolve-version.outputs.release-tag }}"
-
-        # Determine platform-specific binary name
         OS="${{ runner.os }}"
         ARCH="${{ runner.arch }}"
 
-        case "$OS" in
-          Linux)
-            BINARY_NAME="omni-dev-linux.tar.gz"
-            ;;
-          macOS)
-            if [ "$ARCH" = "ARM64" ]; then
-              BINARY_NAME="omni-dev-macos-arm64.tar.gz"
-            else
-              # x64 macOS binary not available yet
-              echo "binary-available=false" >> $GITHUB_OUTPUT
-              echo "available-platforms=Linux, macOS-ARM64, Windows" >> $GITHUB_OUTPUT
-              echo "::warning::Pre-built binary not available for macOS x64. Available platforms: Linux, macOS-ARM64, Windows. Set 'use-prebuilt-binary: false' to build from source."
-              exit 0
-            fi
-            ;;
-          Windows)
-            BINARY_NAME="omni-dev-windows.zip"
-            ;;
-          *)
-            echo "binary-available=false" >> $GITHUB_OUTPUT
-            echo "available-platforms=Linux, macOS-ARM64, Windows" >> $GITHUB_OUTPUT
-            echo "::warning::Pre-built binary not available for $OS. Available platforms: Linux, macOS-ARM64, Windows. Set 'use-prebuilt-binary: false' to build from source."
-            exit 0
-            ;;
-        esac
+        # A binary that cannot be had is reported through `reason`, which "Fail if
+        # binary not available" prints as the one error. Nothing is guessed: a
+        # platform with no asset gets no binary, not the nearest one.
+        unavailable() {
+          echo "binary-available=false" >> "$GITHUB_OUTPUT"
+          echo "reason=$1" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        # The asset is chosen from the OS and the architecture (see the script).
+        if ! BINARY_NAME=$(bash "${{ github.action_path }}/scripts/omni-dev-asset.sh" "$OS" "$ARCH"); then
+          unavailable "No pre-built omni-dev binary is published for $OS $ARCH. Set 'use-prebuilt-binary: false' to build from source."
+        fi
 
         DOWNLOAD_URL="https://github.com/rust-works/omni-dev/releases/download/${RELEASE_TAG}/${BINARY_NAME}"
 
-        # Verify the binary exists
-        HTTP_STATUS=$(curl -sL -o /dev/null -w "%{http_code}" "$DOWNLOAD_URL")
-        if [ "$HTTP_STATUS" != "200" ] && [ "$HTTP_STATUS" != "302" ]; then
-          echo "binary-available=false" >> $GITHUB_OUTPUT
-          echo "available-platforms=Linux, macOS-ARM64, Windows" >> $GITHUB_OUTPUT
-          echo "::warning::Pre-built binary not found at $DOWNLOAD_URL (HTTP $HTTP_STATUS). The version '$VERSION' may not have pre-built binaries. Set 'use-prebuilt-binary: false' to build from source, or use a version with available binaries."
-          exit 0
-        fi
+        # Verify the binary exists. Only a 404 says it does not: any other status
+        # (a refused connection prints 000, a server error 5xx) says the lookup failed.
+        # curl prints 000 but also exits non-zero for a refused connection, and this
+        # shell runs with -e, so without `|| true` the step would end there with a bare
+        # exit code instead of reaching the message below.
+        HTTP_STATUS=$(curl -sL -o /dev/null -w "%{http_code}" "$DOWNLOAD_URL" || true)
+        case "$HTTP_STATUS" in
+          200 | 302) ;;
+          404)
+            unavailable "omni-dev $RELEASE_TAG has no pre-built $BINARY_NAME for $OS $ARCH. Set 'version' to a release that has it, or set 'use-prebuilt-binary: false' to build from source."
+            ;;
+          *)
+            unavailable "Could not check whether omni-dev $RELEASE_TAG has a pre-built $BINARY_NAME (HTTP $HTTP_STATUS from $DOWNLOAD_URL). Re-run the job, or set 'use-prebuilt-binary: false' to build from source."
+            ;;
+        esac
 
         echo "binary-available=true" >> $GITHUB_OUTPUT
         echo "download-url=$DOWNLOAD_URL" >> $GITHUB_OUTPUT
@@ -296,8 +289,10 @@ runs:
     - name: Fail if binary not available
       if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'false'
       shell: bash
+      env:
+        REASON: ${{ steps.platform.outputs.reason }}
       run: |
-        echo "::error::Pre-built binary not available for this platform/version. Set 'use-prebuilt-binary: false' to build from source."
+        echo "::error::${REASON:-Pre-built binary not available for this platform/version. Set 'use-prebuilt-binary: false' to build from source.}"
         exit 1
 
     - name: Install system dependencies for source build

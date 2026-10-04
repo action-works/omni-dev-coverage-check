@@ -11,6 +11,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `action.yml` - The composite GitHub Action definition (the core of this project)
 - `README.md` - User documentation with examples and input/output reference
 - `scripts/combine-shards.sh` - Checks and joins per-shard lcov files for the `shard-reports` input
+- `scripts/omni-dev-asset.sh` - Maps a runner's OS and architecture to the omni-dev release asset to download (`tests/omni-dev-asset.test.sh` tests it; `test.yml` runs that)
+- `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl` (`test.yml` runs that)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
@@ -79,6 +81,28 @@ The action is a composite action with two phases:
 - **Shard join**: `cargo llvm-cov` writes no newline after its final `end_of_record`,
   so a bare `cat` of shards glues records and a consumer can silently drop a file.
   `combine-shards.sh` always puts a newline between shards; keep that if you touch it.
+- **Pre-built asset is chosen by OS *and* architecture**: `scripts/omni-dev-asset.sh`
+  maps `runner.os` + `runner.arch` to the release asset, and exits 1 for a pair with no
+  asset rather than returning the nearest one. Linux used to map to the x86_64 build
+  whatever the architecture, so an ARM64 runner downloaded a binary it could not run and
+  failed at the version check, far from the step that chose it (#19). Windows ARM64 still
+  takes the x86_64 asset (Windows on ARM emulates it); a 32-bit Windows gets none. The
+  platform step turns "no asset for this pair" and "the release has no such file" into
+  one `reason` output, which "Fail if binary not available" prints as the error. Keep it
+  one message: `integration.yml` asserts its text, and `tests/platform-step.test.sh` reads
+  both steps' scripts out of `action.yml` to pin the wiring. Only an HTTP 404 means the
+  release lacks the asset; any other status (a refused connection is `000`) says the lookup
+  failed and to re-run, so a network blip is not reported as a missing asset. curl prints `000`
+  but also exits non-zero for a refused connection, and `shell: bash` runs with `-e`, so the
+  lookup is `curl … || true`; without it the step ends with curl's bare exit code before it can
+  say anything. The stub `curl` in `tests/platform-step.test.sh` exits 7 for `000` for the
+  same reason: a stub that exits 0 lets the `000` cases pass without the step surviving
+  them. A new release
+  asset is one more case in the script and in `tests/omni-dev-asset.test.sh`.
+  `arm64-release-without-asset` runs on a real ARM64 runner against `OLD_OMNI_DEV` (which
+  never gets an ARM64 asset), with 5b as its control. The ARM64 install that succeeds
+  needs a release carrying the asset (#20), and until then nothing checks the ARM64 asset's
+  name against a real release.
 - **Thin-mode line gate needs a new omni-dev**: `latest` can resolve to a release
   without `coverage diff --fail-under-lines`, so a guard step feature-detects it and
   fails with the fix. Do not tag a release of this action until an omni-dev release
