@@ -17,6 +17,12 @@
 # It sets no shell option, so the test's own `set` stays in force. A case recorded in a
 # subshell (`( ... )`, a pipeline) is not counted: the counters live in the caller.
 #
+# A helper given nothing to check fails instead of passing: an empty fragment is in every
+# text, `"$@"` with no command succeeds, and a command that is not found counts as one that
+# failed, so `has "x" "$text" "$FRAGMENT"` or `pass "x" $COMMAND` with an empty variable
+# would go green on nothing. `summary` fails when no case ran, for the same reason: a test
+# whose cases never reached a helper has tested nothing.
+#
 # Not here, on purpose: tests/assert-lib.sh is a different helper set (the e2e
 # workflow's `check <label> <expected> <actual>`), and sourcing both would make `check`
 # mean two things. That is why the command checker below is `pass`.
@@ -42,12 +48,24 @@ eq() {
 
 # has <name> <text> <fragment>: the text contains the fragment (a fixed string).
 has() {
-  if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "no '$3' in: $2"; fi
+  if [ -z "$3" ]; then
+    bad "$1" "the fragment is empty, and every text holds that"
+  elif [[ "$2" == *"$3"* ]]; then
+    ok "$1"
+  else
+    bad "$1" "no '$3' in: $2"
+  fi
 }
 
 # lacks <name> <text> <fragment>: the text does not contain the fragment.
 lacks() {
-  if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "unexpected '$3' in: $2"; fi
+  if [ -z "$3" ]; then
+    bad "$1" "the fragment is empty, and every text holds that"
+  elif [[ "$2" != *"$3"* ]]; then
+    ok "$1"
+  else
+    bad "$1" "unexpected '$3' in: $2"
+  fi
 }
 
 # pass <name> <command...>: passes when the command succeeds. The command keeps the
@@ -55,19 +73,35 @@ lacks() {
 pass() {
   local name=$1
   shift
-  if "$@"; then ok "$name"; else bad "$name"; fi
+  if [ "$#" -eq 0 ] || ! command -v "$1" >/dev/null; then
+    bad "$name" "no command to run: '${1:-}'"
+  elif "$@"; then
+    ok "$name"
+  else
+    bad "$name"
+  fi
 }
 
 # fail <name> <command...>: passes when the command fails.
 fail() {
   local name=$1
   shift
-  if "$@"; then bad "$name" "succeeded, but should have failed"; else ok "$name"; fi
+  if [ "$#" -eq 0 ] || ! command -v "$1" >/dev/null; then
+    bad "$name" "no command to run: '${1:-}'"
+  elif "$@"; then
+    bad "$name" "succeeded, but should have failed"
+  else
+    ok "$name"
+  fi
 }
 
-# summary: the totals, and a status that is non-zero if any case failed.
+# summary: the totals, and a status that is non-zero if any case failed, or none ran.
 summary() {
   echo
   echo "$passed passed, $failed failed"
+  if [ $((passed + failed)) -eq 0 ]; then
+    echo "no case ran, so nothing was tested"
+    return 1
+  fi
   [ "$failed" -eq 0 ]
 }

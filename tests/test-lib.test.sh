@@ -107,6 +107,12 @@ verdict "a script that ends on summary exits non-zero when one failed, trap or n
 run 'before=$(set +o); source "$LIB"; after=$(set +o); [ "$before" = "$after" ] && echo options-unchanged'
 verdict "sourcing the library changes no shell option" 0 "options-unchanged"
 
+run 'summary'
+verdict "summary: no case ran, so it returns non-zero and says why" 1 "0 passed, 0 failed" "no case ran"
+
+run 'ok first; summary'
+verdict "summary: it does not say no case ran when one did" 0 "!no case ran"
+
 # --- eq --------------------------------------------------------------------------
 
 run 'eq "same" a a; summary'
@@ -168,6 +174,16 @@ verdict "lacks: * is found where it is" 1 "FAIL - star present"
 run 'lacks "dash" "run now" "--flag"; summary'
 verdict "lacks: a fragment that starts with - is not an option" 0 "ok   - dash"
 
+# An empty fragment is in every text, so `has` would always pass and `lacks` always fail.
+run 'has "empty" "abc" ""; summary'
+verdict "has: an empty fragment fails and says it is empty" 1 "FAIL - empty" "the fragment is empty"
+run 'FRAGMENT=; has "empty variable" "abc" "$FRAGMENT"; summary'
+verdict "has: an empty variable as the fragment fails" 1 "FAIL - empty variable"
+run 'lacks "empty" "abc" ""; summary'
+verdict "lacks: an empty fragment fails and says it is empty" 1 "FAIL - empty" "the fragment is empty"
+run 'has "empty text, a fragment" "" "x"; summary'
+verdict "has: an empty text is not the problem, an empty fragment is" 1 "no 'x' in: " "!the fragment is empty"
+
 # --- pass and fail: a command ------------------------------------------------------------
 
 run 'pass "true" true; summary'
@@ -190,6 +206,25 @@ verdict "fail: a command that succeeds fails and says so" 1 "FAIL - true" "succe
 
 run 'fail "arguments" test 1 -eq 2; summary'
 verdict "fail: the command gets its arguments" 0 "ok   - arguments"
+
+# With no command, "$@" is empty and succeeds; a command that is not found "fails". Neither
+# is a result, so neither passes.
+run 'pass "no command"; summary'
+verdict "pass: no command at all fails and says so" 1 "FAIL - no command" "no command to run: ''"
+run 'COMMAND=; pass "empty command" $COMMAND; summary'
+verdict "pass: an unquoted empty variable as the command fails" 1 "FAIL - empty command" "no command to run"
+run 'pass "empty word" "" true; summary'
+verdict "pass: an empty command word fails" 1 "FAIL - empty word" "no command to run"
+run 'pass "not found" no-such-command-for-test-lib; summary'
+verdict "pass: a command that is not found fails and names it" 1 "FAIL - not found" "no command to run: 'no-such-command-for-test-lib'"
+run 'fail "no command"; summary'
+verdict "fail: no command at all fails, and does not count as a command that failed" 1 \
+  "FAIL - no command" "no command to run: ''"
+run 'fail "not found" no-such-command-for-test-lib; summary'
+verdict "fail: a command that is not found fails, and does not count as one that failed" 1 \
+  "FAIL - not found" "no command to run: 'no-such-command-for-test-lib'"
+run 'greet() { return 1; }; fail "a function" greet; pass "a builtin" test 1 -eq 1; summary'
+verdict "pass and fail: a function and a builtin are commands" 0 "2 passed, 0 failed"
 
 # --- the counters are shared by every helper ---------------------------------------------
 
