@@ -31,31 +31,9 @@ exit "\${STUB_EXIT:-0}"
 EOF
 chmod +x "$BIN/omni-dev"
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
-
-# check <name> <command...>: passes when the command succeeds.
-check() {
-  local name=$1
-  shift
-  if "$@"; then ok "$name"; else bad "$name"; fi
-}
-
-# equals <name> <expected> <actual>
-equals() {
-  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected: $2 | got: $3"; fi
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
 # run <PATH> <stub output> <stub exit status> [script arguments...]
 # Sets STATUS, OUT (stdout) and ERR (stderr) of the script.
@@ -70,15 +48,15 @@ run() {
 # accepts <pin> <version line>
 accepts() {
   run "$BIN" "$2" 0 "$1"
-  check "accepts $1 for '$2'" test "$STATUS" -eq 0
-  equals "  and says so" "ok   - omni-dev on PATH is $1 ($2)" "$OUT"
+  pass "accepts $1 for '$2'" test "$STATUS" -eq 0
+  eq "  and says so" "ok   - omni-dev on PATH is $1 ($2)" "$OUT"
 }
 
 # rejects <pin> <version line>
 rejects() {
   run "$BIN" "$2" 0 "$1"
-  check "rejects $1 for '$2'" test "$STATUS" -eq 1
-  equals "  and says what it found" "::error::omni-dev on PATH is not $1 ($2); a poisoned cache?" "$OUT"
+  pass "rejects $1 for '$2'" test "$STATUS" -eq 1
+  eq "  and says what it found" "::error::omni-dev on PATH is not $1 ($2); a poisoned cache?" "$OUT"
 }
 
 # --- the number must be the whole version -------------------------------------
@@ -106,8 +84,8 @@ rejects 0.45.0 ''
 
 # Exiting non-zero fails even when what it printed looks right.
 run "$BIN" 'omni-dev 0.45.0 (b5445b9 2026-10-03)' 3 0.45.0
-check "a binary that exits non-zero fails" test "$STATUS" -eq 1
-equals "  and says the status and what it printed" \
+pass "a binary that exits non-zero fails" test "$STATUS" -eq 1
+eq "  and says the status and what it printed" \
   "::error::omni-dev --version exited 3 (expected 0.45.0): omni-dev 0.45.0 (b5445b9 2026-10-03)" "$OUT"
 
 # Its stderr is left in the log: that is where such a binary says why.
@@ -115,26 +93,24 @@ OUT="$(PATH="$BIN" STUB_OUT='' STUB_EXIT=1 STUB_ERR='error while loading shared 
   "$BASH" "$SCRIPT" 0.45.0 2>"$WORK/err")"
 STATUS=$?
 ERR="$(<"$WORK/err")"
-check "a binary that prints nothing and fails also fails" test "$STATUS" -eq 1
-equals "  and says it printed nothing" "::error::omni-dev --version exited 1 (expected 0.45.0): no output" "$OUT"
-equals "  and its stderr is not swallowed" "error while loading shared libraries: libasound.so.2" "$ERR"
+pass "a binary that prints nothing and fails also fails" test "$STATUS" -eq 1
+eq "  and says it printed nothing" "::error::omni-dev --version exited 1 (expected 0.45.0): no output" "$OUT"
+eq "  and its stderr is not swallowed" "error while loading shared libraries: libasound.so.2" "$ERR"
 
 run "$EMPTY" '' 0 0.45.0
-check "no omni-dev on PATH fails" test "$STATUS" -eq 1
-equals "  and says so" "::error::omni-dev is not on PATH (expected 0.45.0)" "$OUT"
+pass "no omni-dev on PATH fails" test "$STATUS" -eq 1
+eq "  and says so" "::error::omni-dev is not on PATH (expected 0.45.0)" "$OUT"
 
 # --- no version to expect -----------------------------------------------------
 
 # An empty pin is a step that failed and exposed no `version` output. It must not
 # pass whatever is on PATH, as `grep -F ""` would.
 run "$BIN" 'omni-dev 0.45.0 (b5445b9 2026-10-03)' 0
-check "no version argument is a usage error" test "$STATUS" -eq 2
-check "  and is named" grep -q 'needs the version to expect' <<<"$OUT"
+pass "no version argument is a usage error" test "$STATUS" -eq 2
+pass "  and is named" grep -q 'needs the version to expect' <<<"$OUT"
 
 run "$BIN" 'omni-dev 0.45.0 (b5445b9 2026-10-03)' 0 ''
-check "an empty version argument is a usage error, not a match for anything" test "$STATUS" -eq 2
-check "  and is named" grep -q 'needs the version to expect' <<<"$OUT"
+pass "an empty version argument is a usage error, not a match for anything" test "$STATUS" -eq 2
+pass "  and is named" grep -q 'needs the version to expect' <<<"$OUT"
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary

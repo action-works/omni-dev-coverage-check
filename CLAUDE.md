@@ -18,6 +18,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
+- `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
+- `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the three step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
 - `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
@@ -385,6 +387,26 @@ The action is a composite action with two phases:
     `has_flag` call (a plain long flag: it goes into the match as a fixed string) and a case
     there. What it cannot tell: a flag that still works but is deprecated reads as present,
     which is right for this step and is what the deprecated-flag checks below are for.
+- **Test helpers and step extractors**: each `tests/*.test.sh` sources `tests/test-lib.sh`
+  and ends on `summary`, whose status is the test's exit status; do not define `ok`, `bad`,
+  `eq` and the rest in a test again. The command checker is `pass` (and `fail` for one that
+  must fail), not `check`: `tests/assert-lib.sh` defines a different `check <label> <expected>
+  <actual>` for the e2e workflow, and a file should not source both. `test-lib.test.sh` runs
+  failing cases because no other test does, and every test ends on `summary`: one that
+  returned 0 would pass them all. A test that runs a step's script, or matches on a step or
+  an input, reads it with `tests/step-lib.sh`, which takes the file from `$ACTION`. Rules:
+  - It reads the layout `action.yml` has (a step at 4 spaces, its keys at 6, the `run: |`
+    body at 8) and refuses the rest: nothing on stdout, the reason on stderr, status 1. Call it
+    as `X="$(step_run 'Step name')" || exit 1`; a `-z` check on the result is not needed, and a
+    fourth awk copy would read the wrong thing without saying so. `run: |`, `|-` and `|+` are
+    all read; an inline `run:` (`Print omni-dev version` is one), a folded `>`, a body not at
+    8 spaces, a step with no `run:` and a name that is missing or doubled are refused.
+  - A change to that layout is an edit to `step-lib.sh` and `step-lib.test.sh`, not to each
+    test. A comment at 4 spaces or less in the middle of a step would end it early; there is
+    none today.
+  - The awk is POSIX: the ubuntu runners' default is mawk, which has no regex intervals
+    (`{n,m}`) or `gensub`. Names reach awk through the environment, not `-v`, so a backslash
+    in one is not an escape.
 - **Integration workflow**: `integration.yml` asserts each scenario's step `outcome`
   (not `conclusion`, which is `success` under `continue-on-error`). Three rules keep it
   honest. Run one omni-dev version per job: `actions/cache` saves in a post step, so a

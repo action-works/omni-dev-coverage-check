@@ -17,33 +17,9 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/assert-lib.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
-
-# pass <name> <command...>: passes when the command succeeds.
-pass() {
-  local name=$1
-  shift
-  if "$@"; then ok "$name"; else bad "$name"; fi
-}
-
-# fail <name> <command...>: passes when the command fails.
-fail() {
-  local name=$1
-  shift
-  if "$@"; then bad "$name" "succeeded, but should have failed"; else ok "$name"; fi
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
 # In a child shell with the library sourced: lib <snippet>.
 lib() {
@@ -144,6 +120,4 @@ pass "shards_covering: counts the shards for another function" test "$(fixture_l
 rm -f "$WORK/shards/shard-3.lcov"
 pass "shards_covering: one of two" test "$(fixture_lib 'shards_covering first')" = 1
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary

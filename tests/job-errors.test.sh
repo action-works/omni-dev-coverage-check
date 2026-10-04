@@ -21,31 +21,9 @@ LOG="$DIR/job-log.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
-
-# check <name> <command...>: passes when the command succeeds.
-check() {
-  local name=$1
-  shift
-  if "$@"; then ok "$name"; else bad "$name"; fi
-}
-
-# equals <name> <expected> <actual>
-equals() {
-  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected: $2 | got: $3"; fi
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
 # A fresh directory per case, with the fake gh and an empty set of jobs.
 fresh() {
@@ -171,39 +149,39 @@ d=$(fresh)
 add_job "$d" 101 'Thin mode (omni-dev latest)'
 printf '%s\n' "$LOG_TWO_ERRORS" >"$d/logs/101"
 run_errors "$d" 'Thin mode (omni-dev latest)'
-check "reads a job's log" test "$STATUS" -eq 0
-equals "prints each error message without its timestamp or marker" \
+pass "reads a job's log" test "$STATUS" -eq 0
+eq "prints each error message without its timestamp or marker" \
   "shard-reports pattern 'shards/missing-*.lcov' matched no files; a shard that never uploaded would silently lower coverage
 Process completed with exit code 1." "$OUT"
-check "does not return the echoed script, which holds the same message text" \
+pass "does not return the echoed script, which holds the same message text" \
   bash -c '! grep -qF "has no" <<<"$1"' _ "$OUT"
-check "fixture: the log does echo the message text outside an error line" \
+pass "fixture: the log does echo the message text outside an error line" \
   grep -qF "has no 'coverage diff" "$d/logs/101"
 
 # A gh that refuses escape sequences, like the one on a current runner, must be
 # given the flag; an older one has no such flag and must not be.
 run_errors "$d" 'Thin mode (omni-dev latest)' FAKE_GH_OLD=1
-check "reads the log with a gh that has no --allow-escape-sequences" test "$STATUS" -eq 0
-equals "and prints the same messages" \
+pass "reads the log with a gh that has no --allow-escape-sequences" test "$STATUS" -eq 0
+eq "and prints the same messages" \
   "shard-reports pattern 'shards/missing-*.lcov' matched no files; a shard that never uploaded would silently lower coverage
 Process completed with exit code 1." "$OUT"
-check "fixture: a current gh does refuse this log without the flag" \
+pass "fixture: a current gh does refuse this log without the flag" \
   bash -c '! env -i PATH="$1/bin:$PATH" FAKE_DIR="$1" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=42 \
     gh api "repos/o/r/actions/jobs/101/logs" >/dev/null 2>&1' _ "$d"
 
 printf '%s\r\n' "2026-10-03T15:44:33.5179483Z ##[error]a message" >"$d/logs/101"
 run_errors "$d" 'Thin mode (omni-dev latest)'
-equals "strips carriage returns" "a message" "$OUT"
+eq "strips carriage returns" "a message" "$OUT"
 
 printf '%s\n' "2026-10-03T15:44:33.5179483Z echo ##[error]not a runner marker" \
   "2026-10-03T15:44:33.5179483Z ##[group]Run something" >"$d/logs/101"
 run_errors "$d" 'Thin mode (omni-dev latest)'
-equals "a step's own output that merely contains the marker does not count" "" "$OUT"
+eq "a step's own output that merely contains the marker does not count" "" "$OUT"
 
 printf '%s\n' "2026-10-03T15:44:33.5179483Z ##[group]Run something" >"$d/logs/101"
 run_errors "$d" 'Thin mode (omni-dev latest)'
-check "a log without errors is not a failure" test "$STATUS" -eq 0
-equals "a log without errors prints nothing" "" "$OUT"
+pass "a log without errors is not a failure" test "$STATUS" -eq 0
+eq "a log without errors prints nothing" "" "$OUT"
 
 # --- finding the job ----------------------------------------------------------
 
@@ -215,24 +193,24 @@ printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]from 201" >"$d/logs/201"
 printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]from 202" >"$d/logs/202"
 printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]from 203" >"$d/logs/203"
 run_errors "$d" 'Thin mode (omni-dev latest)'
-equals "picks the job by its exact name" "from 202" "$OUT"
+eq "picks the job by its exact name" "from 202" "$OUT"
 
 run_errors "$d" 'Thin mode (omni-dev 0.4'
-check "a name that only prefixes another is not found" test "$STATUS" -ne 0
-check "a missing job is named in the error" grep -q "0 jobs named 'Thin mode (omni-dev 0.4'" <<<"$ERR"
+pass "a name that only prefixes another is not found" test "$STATUS" -ne 0
+pass "a missing job is named in the error" grep -q "0 jobs named 'Thin mode (omni-dev 0.4'" <<<"$ERR"
 
 add_job "$d" 204 'Thin mode (omni-dev latest)'
 run_errors "$d" 'Thin mode (omni-dev latest)'
-check "two jobs with one name are ambiguous, not the first" test "$STATUS" -ne 0
-check "an ambiguous name is reported" grep -q "2 jobs named" <<<"$ERR"
+pass "two jobs with one name are ambiguous, not the first" test "$STATUS" -ne 0
+pass "an ambiguous name is reported" grep -q "2 jobs named" <<<"$ERR"
 
 run_errors "$d" 'Thin mode (omni-dev 0.45.0)' FAKE_JOBS_FAIL=1
-check "a failed jobs call fails the script" test "$STATUS" -ne 0
-check "and is not mistaken for a missing job or an unreadable log" \
+pass "a failed jobs call fails the script" test "$STATUS" -ne 0
+pass "and is not mistaken for a missing job or an unreadable log" \
   bash -c '! grep -q "jobs named\|could not read the log" <<<"$1"' _ "$ERR"
-check "and shows the API's own error, not a parse error after it" \
+pass "and shows the API's own error, not a parse error after it" \
   bash -c 'grep -q "Not Found" <<<"$1" && ! grep -q "jq:" <<<"$1"' _ "$ERR"
-equals "and prints no messages" "" "$OUT"
+eq "and prints no messages" "" "$OUT"
 
 # --- reading the log may take a few tries -------------------------------------
 
@@ -240,19 +218,19 @@ d=$(fresh)
 add_job "$d" 301 'Job'
 printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]late" >"$d/logs/301"
 run_errors "$d" 'Job' FAKE_FAIL_FIRST=2 JOB_LOG_ATTEMPTS=6
-check "retries a log that is not readable yet" test "$STATUS" -eq 0
-equals "and then returns it" "late" "$OUT"
-equals "reading it took three tries" 3 "$(cat "$d/log-reads")"
+pass "retries a log that is not readable yet" test "$STATUS" -eq 0
+eq "and then returns it" "late" "$OUT"
+eq "reading it took three tries" 3 "$(cat "$d/log-reads")"
 
 d=$(fresh)
 add_job "$d" 302 'Job'
 printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]never" >"$d/logs/302"
 run_errors "$d" 'Job' FAKE_FAIL_FIRST=99 JOB_LOG_ATTEMPTS=3
-check "gives up on a log that never becomes readable" test "$STATUS" -ne 0
-equals "after exactly the attempts it was given" 3 "$(cat "$d/log-reads")"
-check "and says which job" grep -q "could not read the log of job 'Job' (302) after 3 attempts" <<<"$ERR"
-check "and why, in gh's own words" grep -q "after 3 attempts: gh: Not Found (HTTP 404)" <<<"$ERR"
-equals "and prints no messages" "" "$OUT"
+pass "gives up on a log that never becomes readable" test "$STATUS" -ne 0
+eq "after exactly the attempts it was given" 3 "$(cat "$d/log-reads")"
+pass "and says which job" grep -q "could not read the log of job 'Job' (302) after 3 attempts" <<<"$ERR"
+pass "and why, in gh's own words" grep -q "after 3 attempts: gh: Not Found (HTTP 404)" <<<"$ERR"
+eq "and prints no messages" "" "$OUT"
 
 # --- reading the deprecation warnings -----------------------------------------
 
@@ -288,47 +266,47 @@ d=$(fresh)
 add_job "$d" 401 'Thin mode (omni-dev latest)'
 deprecation_log >"$d/logs/401"
 run_deprecations "$d" 'Thin mode (omni-dev latest)'
-check "deprecations: reads a job's log" test "$STATUS" -eq 0
-equals "deprecations: prints the warnings a program logged, without their timestamp" \
+pass "deprecations: reads a job's log" test "$STATUS" -eq 0
+eq "deprecations: prints the warnings a program logged, without their timestamp" \
   "$WARN_FLAG
 $WARN_FN
 $WARN_CAPITAL
 $WARN_UPPER
 $WARN_NOUN" "$OUT"
-check "deprecations: not the echoed script, which holds the same words" \
+pass "deprecations: not the echoed script, which holds the same words" \
   bash -c '! grep -qF "echo" <<<"$1"' _ "$OUT"
-check "deprecations: not the runner's or node's own notice" \
+pass "deprecations: not the runner's or node's own notice" \
   bash -c '! grep -qE "Node.js 20|punycode" <<<"$1"' _ "$OUT"
-check "deprecations: not a warning that is not about a deprecation" \
+pass "deprecations: not a warning that is not about a deprecation" \
   bash -c '! grep -qF "unused variable" <<<"$1"' _ "$OUT"
-check "fixture: the log does echo the warning's words outside a warning line" \
+pass "fixture: the log does echo the warning's words outside a warning line" \
   grep -qF "echo \"$WARN_FLAG\"" "$d/logs/401"
-check "fixture: the log does hold the runner's and node's deprecation notices" \
+pass "fixture: the log does hold the runner's and node's deprecation notices" \
   bash -c 'grep -qF "##[warning]Node.js 20 is deprecated" "$1" && grep -qF "DeprecationWarning" "$1"' _ "$d/logs/401"
 
 printf '%s\r\n' "2026-10-04T00:59:22.6Z $WARN_FLAG" >"$d/logs/401"
 run_deprecations "$d" 'Thin mode (omni-dev latest)'
-equals "deprecations: strips carriage returns" "$WARN_FLAG" "$OUT"
+eq "deprecations: strips carriage returns" "$WARN_FLAG" "$OUT"
 
 printf '%s\n' "2026-10-04T00:59:22.6Z warning: unused variable: \`x\`" >"$d/logs/401"
 run_deprecations "$d" 'Thin mode (omni-dev latest)'
-check "deprecations: a log without one is not a failure" test "$STATUS" -eq 0
-equals "deprecations: a log without one prints nothing" "" "$OUT"
+pass "deprecations: a log without one is not a failure" test "$STATUS" -eq 0
+eq "deprecations: a log without one prints nothing" "" "$OUT"
 
 # The plumbing is job-log.sh's, shared with job-errors.sh and tested above for it;
 # these show the new script fails the same way, with no warnings printed.
 run_deprecations "$d" 'No such job'
-check "deprecations: a missing job fails the script" test "$STATUS" -ne 0
-check "deprecations: and is named" grep -q "0 jobs named 'No such job'" <<<"$ERR"
-equals "deprecations: and prints nothing" "" "$OUT"
+pass "deprecations: a missing job fails the script" test "$STATUS" -ne 0
+pass "deprecations: and is named" grep -q "0 jobs named 'No such job'" <<<"$ERR"
+eq "deprecations: and prints nothing" "" "$OUT"
 
 d=$(fresh)
 add_job "$d" 402 'Job'
 deprecation_log >"$d/logs/402"
 run_deprecations "$d" 'Job' FAKE_FAIL_FIRST=99 JOB_LOG_ATTEMPTS=2
-check "deprecations: a log that is never readable fails the script" test "$STATUS" -ne 0
-check "deprecations: and says so" grep -q "could not read the log of job 'Job' (402) after 2 attempts" <<<"$ERR"
-equals "deprecations: and prints nothing" "" "$OUT"
+pass "deprecations: a log that is never readable fails the script" test "$STATUS" -ne 0
+pass "deprecations: and says so" grep -q "could not read the log of job 'Job' (402) after 2 attempts" <<<"$ERR"
+eq "deprecations: and prints nothing" "" "$OUT"
 
 # --- the log itself -----------------------------------------------------------
 
@@ -336,10 +314,8 @@ d=$(fresh)
 add_job "$d" 501 'Job'
 deprecation_log >"$d/logs/501"
 run_script "$LOG" "$d" 'Job'
-check "job-log: reads a job's log" test "$STATUS" -eq 0
-equals "job-log: prints every line, carriage returns removed, nothing filtered" \
+pass "job-log: reads a job's log" test "$STATUS" -eq 0
+eq "job-log: prints every line, carriage returns removed, nothing filtered" \
   "$(tr -d '\r' <"$d/logs/501")" "$OUT"
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary

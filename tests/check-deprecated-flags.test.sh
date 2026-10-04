@@ -14,19 +14,9 @@ SCRIPT="$ROOT/tests/check-deprecated-flags.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
 # runs <script> <file...>: runs a script, leaving its status in STATUS and its
 # output (stdout and stderr together) in OUT.
@@ -47,16 +37,6 @@ status_is() {
   if [ "$STATUS" -eq "$2" ]; then ok "$1"; else bad "$1" "exit $STATUS, want $2; output: $OUT"; fi
 }
 
-# has <name> <fragment>: the last run's output holds the fixed string.
-has() {
-  if grep -qF -- "$2" <<<"$OUT"; then ok "$1"; else bad "$1" "output lacks '$2': $OUT"; fi
-}
-
-# lacks <name> <fragment>: the last run's output does not hold the fixed string.
-lacks() {
-  if grep -qF -- "$2" <<<"$OUT"; then bad "$1" "output holds '$2': $OUT"; else ok "$1"; fi
-}
-
 # --- the flag on the invocation line -----------------------------------------
 
 cat >"$WORK/invocation.yml" <<'EOF'
@@ -65,9 +45,9 @@ run: |
 EOF
 run "$WORK/invocation.yml"
 status_is "invocation line: fails" 1
-has "invocation line: names the file and line" "file=$WORK/invocation.yml,line=2,"
-has "invocation line: names the replacement" "pass -o/--output instead"
-has "invocation line: shows the line" "--report r.lcov --format markdown"
+has "invocation line: names the file and line" "$OUT" "file=$WORK/invocation.yml,line=2,"
+has "invocation line: names the replacement" "$OUT" "pass -o/--output instead"
+has "invocation line: shows the line" "$OUT" "--report r.lcov --format markdown"
 
 # --- the flag inside an args array, away from the omni-dev call ---------------
 
@@ -79,7 +59,7 @@ omni-dev "${args[@]}"
 EOF
 run "$WORK/array.yml"
 status_is "args array: fails" 1
-has "args array: names the line of the flag, not of the call" "line=3,"
+has "args array: names the line of the flag, not of the call" "$OUT" "line=3,"
 
 cat >"$WORK/append.yml" <<'EOF'
 args+=(--format json)
@@ -113,7 +93,7 @@ args+=(--output json)
 EOF
 run "$WORK/lookalikes.yml"
 status_is "look-alikes and the replacement: pass" 0
-has "pass: says what was scanned" "$WORK/lookalikes.yml"
+has "pass: says what was scanned" "$OUT" "$WORK/lookalikes.yml"
 
 cat >"$WORK/comments.yml" <<'EOF'
 # --format was replaced by -o/--output in omni-dev 0.32.0
@@ -139,16 +119,16 @@ EOF
 printf 'ok\n--format z\n' >"$WORK/second.sh"
 run "$WORK/two.yml" "$WORK/second.sh"
 status_is "several hits: fails" 1
-has "several hits: first line of the first file" "file=$WORK/two.yml,line=1,"
-has "several hits: second line of the first file" "file=$WORK/two.yml,line=3,"
-has "several hits: line numbers restart in the next file" "file=$WORK/second.sh,line=2,"
-lacks "several hits: a clean line is not reported" "file=$WORK/two.yml,line=2,"
+has "several hits: first line of the first file" "$OUT" "file=$WORK/two.yml,line=1,"
+has "several hits: second line of the first file" "$OUT" "file=$WORK/two.yml,line=3,"
+has "several hits: line numbers restart in the next file" "$OUT" "file=$WORK/second.sh,line=2,"
+lacks "several hits: a clean line is not reported" "$OUT" "file=$WORK/two.yml,line=2,"
 
 # --- a missing file is an error, not a pass ----------------------------------
 
 run "$WORK/no-such-file.yml"
 status_is "missing file: exit 2, not a pass" 2
-has "missing file: says which" "no such file: $WORK/no-such-file.yml"
+has "missing file: says which" "$OUT" "no such file: $WORK/no-such-file.yml"
 
 run "$WORK/lookalikes.yml" "$WORK/no-such-file.yml"
 status_is "one missing file among good ones: exit 2" 2
@@ -166,7 +146,7 @@ variant extra "DEPRECATED+=('--no-cache|--cache')"
 printf 'omni-dev coverage diff --no-cache\n' >"$WORK/extra-hit.yml"
 runs "$WORK/extra.sh" "$WORK/extra-hit.yml"
 status_is "a flag added to the list is caught" 1
-has "a flag added to the list: names what to use instead" "pass --cache instead"
+has "a flag added to the list: names what to use instead" "$OUT" "pass --cache instead"
 runs "$WORK/extra.sh" "$WORK/invocation.yml"
 status_is "a flag added to the list: the first one is still caught" 1
 
@@ -175,7 +155,7 @@ for entry in '--no.cache|--cache' '-o|--output' '--Format|x' '|x'; do
   variant refused "DEPRECATED+=('$entry')"
   runs "$WORK/refused.sh" "$WORK/lookalikes.yml"
   status_is "list entry '$entry': refused with exit 2" 2
-  has "list entry '$entry': says why" "is not a long flag"
+  has "list entry '$entry': says why" "$OUT" "is not a long flag"
 done
 
 # --- the real files ----------------------------------------------------------
@@ -184,8 +164,8 @@ done
 OUT="$(cd "$WORK" && bash "$SCRIPT" 2>&1)"
 STATUS=$?
 status_is "default scan of the repository passes" 0
-has "default scan: covers action.yml" "action.yml"
-has "default scan: covers the scripts" "scripts/combine-shards.sh"
+has "default scan: covers action.yml" "$OUT" "action.yml"
+has "default scan: covers the scripts" "$OUT" "scripts/combine-shards.sh"
 
 # The same check must find the flag in the real action.yml. Rewriting its `-o`
 # call sites back to `--format` is what a regression would look like. The copy
@@ -210,6 +190,4 @@ else
   fi
 fi
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary

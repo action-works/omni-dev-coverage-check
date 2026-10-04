@@ -27,79 +27,23 @@ ACTION="$ROOT/action.yml"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
-
-# eq <name> <expected> <actual>
-eq() {
-  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi
-}
-
-# has <name> <text> <fragment>: the text contains the fragment (a fixed string).
-has() {
-  if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "no '$3' in: $2"; fi
-}
-
-# lacks <name> <text> <fragment>
-lacks() {
-  if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "unexpected '$3' in: $2"; fi
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=step-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
 
 if ! command -v jq >/dev/null; then
   echo "FAIL - jq is not installed; the step needs it, as does this test"
   exit 1
 fi
 
-# step_block <step name>: the whole step, from its `- name:` line to the next step's.
-step_block() {
-  awk -v name="$1" '
-    $0 == "    - name: " name { in_step = 1; print; next }
-    in_step && /^    - name:/ { exit }
-    in_step { print }
-  ' "$ACTION"
-}
-
-# step_run <step name>: the step's `run: |` body, dedented. The body ends at the
-# first line indented less than it.
-step_run() {
-  awk -v name="$1" '
-    $0 == "    - name: " name { in_step = 1; next }
-    in_step && /^    - name:/ { exit }
-    in_step && $0 == "      run: |" { in_run = 1; next }
-    in_run && /^        / { print substr($0, 9); next }
-    in_run && $0 == "" { print ""; next }
-    in_run { exit }
-  ' "$ACTION"
-}
-
-# input_block <input name>: the input's block under `inputs:`, up to the next key.
-input_block() {
-  awk -v name="$1" '
-    $0 == "  " name ":" { in_input = 1; print; next }
-    in_input && /^  [^ ]/ { exit }
-    in_input && /^[^ ]/ { exit }
-    in_input { print }
-  ' "$ACTION"
-}
-
 STEP_NAME='Resolve omni-dev version'
-BLOCK="$(step_block "$STEP_NAME")"
-RESOLVE="$(step_run "$STEP_NAME")"
-if [ -z "$BLOCK" ] || [ -z "$RESOLVE" ]; then
-  echo "FAIL - could not read the '$STEP_NAME' step out of action.yml"
-  exit 1
-fi
+BLOCK="$(step_block "$STEP_NAME")" || exit 1
+RESOLVE="$(step_run "$STEP_NAME")" || exit 1
+TOKEN_INPUT="$(input_block github-token)" || exit 1
+VERSION_INPUT="$(input_block version)" || exit 1
 
 BIN="$WORK/bin"
 mkdir "$BIN"
@@ -451,13 +395,13 @@ has "shell: the step runs under bash, as these cases do" "$BLOCK" "      shell: 
 has "env: the step reads the token from the github-token input" "$BLOCK" \
   '        GH_TOKEN: ${{ inputs.github-token }}'
 # shellcheck disable=SC2016
-has "input: github-token defaults to the workflow token" "$(input_block github-token)" \
+has "input: github-token defaults to the workflow token" "$TOKEN_INPUT" \
   '    default: ${{ github.token }}'
 has "input: github-token is optional, so a workflow needs no configuration" \
-  "$(input_block github-token)" "    required: false"
+  "$TOKEN_INPUT" "    required: false"
 # The v is accepted, so the input must say so: a caller who copies a release tag
 # should not have to read the script to learn it works.
-has "input: version says a leading v is accepted" "$(input_block version)" \
+has "input: version says a leading v is accepted" "$VERSION_INPUT" \
   "with or without a leading v (e.g., 0.45.0 or v0.45.0)"
 
 # The runner evaluates every expression in a `run:` script before bash sees it,
@@ -470,6 +414,4 @@ rest="${RESOLVE//'${{ inputs.version }}'/}"
 # shellcheck disable=SC2016
 eq "script: the only expression is inputs.version" "" "$(grep -n -F '${{' <<<"$rest" || true)"
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary
