@@ -37,6 +37,9 @@ jobs:
       - name: Test the baseline steps of action.yml
         run: bash tests/baseline-steps.test.sh
 
+      - name: Test the cargo llvm-cov report steps of action.yml
+        run: bash tests/llvm-cov-ignore-steps.test.sh
+
       - name: Test expected-baseline.sh
         run: bash tests/expected-baseline.test.sh
 

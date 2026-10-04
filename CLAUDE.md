@@ -20,21 +20,22 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
 - `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
+- `tests/llvm-cov-ignore-steps.test.sh` - Runs the five steps that run `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate and the recompute's report), read out of `action.yml`, against a stub `cargo`, and checks the one `--ignore-filename-regex=<value>` each gets, or none when the input is empty; it fails when another step runs `cargo llvm-cov report` (`test.yml` runs that)
 - `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
-- `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the three step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
+- `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the four step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
-- `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
+- `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place); `src/ignored.rs` is the file nothing reaches, which F5 excludes and F6 keeps
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
 - `tests/llvm-tool-shim.sh` - Pass-through for `llvm-cov`/`llvm-profdata` that logs each `llvm-profdata merge`; the fat-mode job installs it to assert the profile is merged once (see "One profile merge"; `tests/llvm-tool-shim.test.sh` tests it, with stub tools; `test.yml` runs that)
-- `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the ancestor fallback, the merge-base worktree recompute, and `ignore-filename-regex` reaching the comment and the patch gate
+- `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the ancestor fallback, the merge-base worktree recompute, `ignore-filename-regex` reaching the comment and the patch gate, and `llvm-cov-ignore-filename-regex` reaching the recompute's report
 - `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on (`extra` adds a second patched file for P5 and P6)
 - `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
-- `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit
+- `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit; `ignored.rs` is committed unchanged with both, for the filter scenario
 - `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
 - `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally (`tests/prepare-shard-crate.test.sh` tests it; `test.yml` runs that)
 - `tests/assert-lib.sh` - Assertion helpers the `e2e-sharded.yml` checking steps source (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
@@ -61,7 +62,7 @@ The action is a composite action with two phases:
      of instrumented dependency artifacts), then emit the per-line `report` lcov
      (the first report: it merges the raw profiles, once), remove the raw profiles,
      and emit `codecov.json` and a `--summary-only` summary, which read that
-     merged profile.
+     merged profile. Every `report` call takes `llvm-cov-ignore-filename-regex`.
    - **Thin mode (`run-coverage: false`)**: skip cargo-llvm-cov entirely; the
      caller supplies the per-line lcov via the `report` input — or, for a run
      sharded across jobs, via `shard-reports`, which `scripts/combine-shards.sh`
@@ -187,8 +188,11 @@ The action is a composite action with two phases:
   - The variables are generic names, and `cargo`, a dependency's build scripts and the caller's
     commands inherit a step's environment, so the steps that run them drop the action's
     variables first: `unset TEST_ARGS` and the command variables (copied into `commands`), `env
-    -u VERSION cargo install`, and `unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA` before
-    the merge-base's `cargo llvm-cov`. `tests/input-steps.test.sh` asserts it.
+    -u VERSION cargo install`, and `unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA
+    LLVM_COV_IGNORE_FILENAME_REGEX` before the merge-base's `cargo llvm-cov` (the last is copied
+    into the `ignore` array first, which is how the recompute's report still gets the filter).
+    `tests/input-steps.test.sh` asserts it, and `tests/llvm-cov-ignore-steps.test.sh` asserts the
+    filter variable.
   - The step tests set the variables and assert that each step's `env:` block fills them from
     the right place, and that the script holds no expression: setting variables alone would
     pass if `env:` were wired wrong. `tests/input-steps.test.sh` runs every other step that
@@ -231,8 +235,8 @@ The action is a composite action with two phases:
   - The fat-mode integration job puts pass-through shims (`tests/llvm-tool-shim.sh`)
     on `LLVM_COV` and `LLVM_PROFDATA` (both, because setting one makes cargo-llvm-cov
     warn). Each merge appends a line to `llvm-profdata-merges.txt`, which
-    `move-outputs.sh` files per scenario. F1, F2 and F3 expect 1 (the old order gives
-    4, 4 and 3) and F4, which stops before any report, expects 0, so the 1s are counts.
+    `move-outputs.sh` files per scenario. F1, F2, F3, F5 and F6 expect 1 (the old order
+    gives 4, 4, 3, 4 and 4) and F4, which stops before any report, expects 0, so the 1s are counts.
     A cargo-llvm-cov that stopped skipping the merge, or whose `--profraw-only` stopped
     working, shows up as a different count or as reports that fail. The action installs
     the newest cargo-llvm-cov, and this was exercised on 0.9.1 only. F1 also checks that
@@ -661,8 +665,14 @@ The action is a composite action with two phases:
   functions are each reached by a different part of the run (`main_run`,
   `extra_only`, `setup_only`, `never`), and its tests leave marker files so an
   expected failure can show where it stopped. The gates of 40 and 80 are set around
-  its measured 58.3% (33.3% without the extra command), so re-measure if the
-  fixture's lines change or a toolchain attributes them differently.
+  its measured 48.3% (14 of 29 lines; 27.6% without the extra command), so re-measure if the
+  fixture's lines change or a toolchain attributes them differently. `src/ignored.rs` (5 of
+  the 29 lines, reached by nothing) is what F5 and F6 are about: without it the fixture is at
+  58.3% (14 of 24), and their gate of 53 sits between the two, so F5 passes only if the line
+  gate is filtered too. `state()` there reads only `src/lib.rs`'s `DA:` records: with a second
+  file in the report a line number means a different line in each, and the unfiltered one
+  first read `ignored.rs`'s line 9 as `main_run`'s. Nothing but running the step against real
+  output showed it, so a new file in a fixture means running its job's assertion step.
 - **PR-paths workflow** (`pr-paths.yml`): a separate workflow so `pull_request` can be
   path-filtered (no coverage comment on a pull request that cannot change the action)
   while `push` is NOT, because every main commit must publish a baseline or a later
@@ -718,6 +728,15 @@ The action is a composite action with two phases:
     does not, so the job commits `delta-crate`'s base and head itself and passes the
     first as `base-ref`. Its numbers are then the job's own. Unlike the fat-mode crate
     its tests need only `cargo test`, because the recompute replays only `test-args`.
+  - R3 runs R1 with `llvm-cov-ignore-filename-regex`, so R1 is its control: `src/ignored.rs`
+    (committed unchanged in both commits, reached by nothing) is in both of R1's reports and
+    must be in neither of R3's, the baseline the recompute builds in the worktree and the
+    head's. They are two call sites, asserted apart: dropping the flag from the recompute's
+    report alone fails only the baseline checks. R1 leaves its worktree at `../base` and the
+    action does not remove it, so a second recompute in a job stops at `git worktree add`
+    ("already exists"): the job removes it before R3. An action run twice in one job after a
+    recompute would fail the same way (a follow-up; the action is unchanged on this).
+    `state()` there reads only `src/lib.rs`'s records, as in the fat-mode job.
   - The hit path cannot be shown before a baseline exists on `main`: the pull request
     that adds this workflow shows the miss path, the `push` run after it shows the
     publish, and the first later qualifying pull request shows the hit.
@@ -782,9 +801,8 @@ The action is a composite action with two phases:
     and the step fails with "unexpected argument '-s'". Integration scenario 8a's first
     pattern starts with `-` so that a return to two arguments fails it.
   - It is not passed to `cargo llvm-cov`: the fat-mode line gate and the summary count
-    every file, and the README says so. `cargo llvm-cov --ignore-filename-regex` matches
-    absolute paths, so the same string would mean something else there; give it an
-    input of its own if it is wanted.
+    every file unless `llvm-cov-ignore-filename-regex` (#2, next bullet) is set, and the
+    README says so. The same string would mean something else to cargo-llvm-cov.
   - Commas split the patterns (omni-dev's `value_delimiter`), so a pattern cannot hold
     one (`a{1,3}` fails as an invalid regex); omni-dev ignores an empty piece. Nothing
     else separates them and nothing is trimmed: a newline or a space is part of the
@@ -800,6 +818,55 @@ The action is a composite action with two phases:
     `ignore-filename-regex-flag` (9: 0.32.0 is stopped by the guard on a pull request
     only, 0.33.0 is its control), `pr-paths.yml` P5 and P6 for the comment and the
     patch gate, and `tests/guard-step.test.sh` for the probe and the floor.
+- **`llvm-cov-ignore-filename-regex`** (#2): the cargo-llvm-cov half of the filter, a second
+  input and not `ignore-filename-regex` passed to cargo as well. The issue's comment left
+  that open; decided on cargo-llvm-cov 0.9.1 with a throwaway crate, so it is not re-derived:
+  - cargo-llvm-cov builds `<user>|<its default ignores>` and hands it to **LLVM's POSIX
+    extended regex**, not Rust's. A pattern LLVM cannot compile (`(?i)GPU/`, `(?:a)`, a lazy
+    `.*?`, an empty alternative `a||b`, an unbalanced `)`) is ignored TOGETHER WITH the
+    defaults, with no error or warning: `tests/` (excluded by default) came back into the
+    report. Reusing `ignore-filename-regex` would have changed the fat-mode summary and gate
+    of anyone whose Rust-only pattern works today, on a minor release; an input that
+    defaults to empty changes nothing for them. Rejected: a "safe subset" check that skips
+    pieces (partial application), translating the comma list (`(?:...)`, the way to keep a
+    piece self-contained, is what LLVM cannot read), and validating the pattern in the action
+    (the only thing on the runner that compiles an LLVM regex is `llvm-cov`, which does not
+    say). The README says to check the summary.
+  - It also matches the ABSOLUTE path (#3 found that), takes ONE regex (the flag given
+    twice is an error; join with `|`), and an empty value is an error. So the action passes
+    it only when it is non-empty, verbatim, and never splits on commas (`{1,3}` is LLVM
+    syntax). As `--ignore-filename-regex=<value>` (cargo-llvm-cov accepts that for a value
+    that starts with `-` too), from `env:`, as `${VAR:+"--ignore-filename-regex=$VAR"}`: one
+    word when set, nothing when not.
+  - It goes to every `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line
+    gate, the recompute's), not to a `--no-report` run: the filter applies at report time.
+    It does not change when the merge happens (see "One profile merge"). It reaches the scripts
+    through `env:` like every input (#39), and the recompute copies it into an argument and
+    unsets it before the merge-base's tests run, so they do not see it.
+    `tests/llvm-cov-ignore-steps.test.sh` pins the argument at each of the five and scans
+    every step's whole block (so an inline `run:` counts, which `step_run` would refuse) for
+    `cargo llvm-cov report` calls, which must be those five, and for any other `cargo llvm-cov`
+    call, which must be `show-env`, `clean` or `--no-report`: a sixth report step, a
+    `cargo +nightly llvm-cov report`, a `cargo llvm-cov --lcov` or a `report` on the next line
+    fails it until it takes the filter. It also pins that the five run in fat mode only (as
+    text: no job sets the input in thin mode). Checked against mutations, each of which fails
+    it: the flag dropped from one step (the summary, the recompute), an unquoted expansion, the
+    flag and value as two arguments, the flag passed when empty, the input interpolated into a
+    script, the five new-step shapes above, a summary step without its fat-mode `if:`, the flag
+    on the `--no-report` build, commas turned into `|`.
+  - The head lcov is also what a push to `main` publishes, so the baseline is filtered from
+    then on. A baseline published before it was set is not, which is why the README says to
+    set `ignore-filename-regex` too: that one filters it at diff time. The recompute runs in
+    `../base`, not in the workspace, so a pattern that holds the workspace's path or the
+    checkout directory's name (`myrepo/src/gpu/`, or anything anchored on it) matches the head
+    and not the recomputed baseline, and the comment shows those files as removed. There is no
+    cheap fix: the paths are rewritten after llvm-cov has applied the filter, and nothing here
+    can evaluate an LLVM regex. It is documented, and R3 uses a fragment from inside the
+    repository.
+  - Fat mode only; in thin mode it is ignored, like the other fat-mode inputs, with no warning.
+  - Tests: the unit test above, `integration.yml` F5 (the filter, a gate of 53) and F6 (the
+    control without it, which fails at the gate) for the lcov, `codecov.json`, the summary and
+    the gate, and `pr-paths.yml` R3 for the recompute.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.

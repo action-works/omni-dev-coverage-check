@@ -12,7 +12,8 @@ name: PR paths
 #                 a miss, both are legitimate), the patch gate and its ordering,
 #                 and `ignore-filename-regex` reaching both the comment and the gate.
 #   recompute     a pull request, fat mode: the baseline rebuilt at the merge-base
-#                 in a git worktree.
+#                 in a git worktree, and `llvm-cov-ignore-filename-regex` reaching the
+#                 report that recompute builds.
 #
 # Why this is its own workflow and not more jobs in integration.yml:
 #   - `pull_request` is filtered to the paths below, so a pull request that cannot
@@ -735,10 +736,11 @@ jobs:
             echo "::error::Cargo.toml or src/ already exists at the repository root; the fixture would overwrite it"
             exit 1
           fi
-          mkdir -p src out/r1 out/r2
+          mkdir -p src out/r1 out/r2 out/r3
           cp tests/fixtures/delta-crate/Cargo.toml Cargo.toml
           cp tests/fixtures/delta-crate/lib.base.rs src/lib.rs
-          git add Cargo.toml src/lib.rs
+          cp tests/fixtures/delta-crate/ignored.rs src/ignored.rs
+          git add Cargo.toml src/lib.rs src/ignored.rs
           git -c user.name=integration-test -c user.email=integration-test@invalid \
             commit -q -m 'test: add the delta crate (base)'
           echo "base=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -788,11 +790,42 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/move-outputs.sh r2
 
+      # R1's recompute left its worktree at ../base, and the action does not remove it, so
+      # a second recompute in this job would stop at `git worktree add` ("already exists").
+      - name: Remove the worktree R1 left
+        run: git worktree remove --force ../base
+
+      # R1 again with `llvm-cov-ignore-filename-regex`, so R1 is its control: only the
+      # input differs. `src/ignored.rs` is in both commits and nothing reaches it, so the
+      # recompute builds it into R1's baseline, and the head report has it. The filter has
+      # to reach the report the recompute builds in the worktree as well as the head's,
+      # or the comparison would count the file on one side only. The worktree is a
+      # different directory from the workspace, which is why the pattern is a fragment.
+      - name: 'R3. Baseline recomputed with llvm-cov-ignore-filename-regex'
+        id: r3
+        uses: ./
+        continue-on-error: true
+        with:
+          base-ref: ${{ steps.history.outputs.base }}
+          baseline-ancestor-depth: 0
+          report: out/r3/coverage-head.lcov
+          fail-under-lines: ''
+          llvm-cov-ignore-filename-regex: 'src/ignored\.rs$'
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: pr-paths.yml
+
+      - name: Move R3 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh r3
+
       - name: Assert every outcome
         if: ${{ !cancelled() }}
         env:
           R1: ${{ steps.r1.outcome }}
           R2: ${{ steps.r2.outcome }}
+          R3: ${{ steps.r3.outcome }}
           R1_LINE_PERCENT: ${{ steps.r1.outputs.line-percent }}
           R2_LINE_PERCENT: ${{ steps.r2.outputs.line-percent }}
           VERSION: ${{ steps.r1.outputs.version }}
@@ -823,10 +856,13 @@ jobs:
             grep -n "pub fn $2(" "$1" | head -1 | cut -d: -f1
           }
           # Whether a function's declaration line is covered in an lcov report:
-          # covered, uncovered, or missing (no record for it).
+          # covered, uncovered, or missing (no record for it). Only src/lib.rs's records
+          # are read: the report has src/ignored.rs too, and a line number means a
+          # different line in each file.
           state() { # <lcov> <source> <function>
             awk -F'[:,]' -v line="$(line_of "$2" "$3")" '
-              $1 == "DA" && $2 == line { print ($3 > 0 ? "covered" : "uncovered"); found = 1 }
+              $1 == "SF" { in_lib = ($2 ~ /\/src\/lib\.rs$/) }
+              in_lib && $1 == "DA" && $2 == line { print ($3 > 0 ? "covered" : "uncovered"); found = 1 }
               END { if (!found) print "missing" }' "$1"
           }
 
@@ -837,6 +873,7 @@ jobs:
 
           check "R1. baseline recomputed at the merge-base" success "$R1"
           check "R2. same, without the recompute" success "$R2"
+          check "R3. recomputed with llvm-cov-ignore-filename-regex" success "$R3"
 
           # The recompute wrote the baseline, and wrote it for the base.
           assert "R1: the recompute wrote a baseline" test -s "$base"
@@ -890,6 +927,41 @@ jobs:
           check "R2: the line-percent output is empty without a baseline" "" "$R2_LINE_PERCENT"
           assert "R2: the patch is the same as R1's" \
             test "$(jq -c '.patch_coverage, .uncovered_new_lines' out/r2/coverage.json)" = "$(jq -c '.patch_coverage, .uncovered_new_lines' out/r1/coverage.json)"
+
+          # R3 differs from R1 only in the filter. R1 is the control: the file is in
+          # both of its reports, so a filter that did nothing leaves R3 looking like R1.
+          base3=out/r3/baseline/coverage-head.lcov
+          head3=out/r3/coverage-head.lcov
+          ignored_sf='^SF:.*/src/ignored\.rs$'
+          assert "R1 (control): the recomputed baseline holds src/ignored.rs" grep -q "$ignored_sf" "$base"
+          assert "R1 (control): the head report holds src/ignored.rs" grep -q "$ignored_sf" "$head"
+          assert "R3: the recompute wrote a baseline" test -s "$base3"
+          assert "R3: the recomputed baseline has no record for src/ignored.rs" \
+            test "$(grep -c "$ignored_sf" "$base3")" = 0
+          assert "R3: the head report has none either" test "$(grep -c "$ignored_sf" "$head3")" = 0
+          # Only the file was dropped, not the rest: the same functions, covered the same way.
+          assert "R3: the baseline still has src/lib.rs, at the workspace's path" \
+            grep -qxF "SF:$GITHUB_WORKSPACE/src/lib.rs" "$base3"
+          for fn in kept flips; do
+            check "R3: baseline: $fn is as in R1" "$(state "$base" "$base_src" "$fn")" "$(state "$base3" "$base_src" "$fn")"
+          done
+          for fn in kept flips added_covered added_uncovered; do
+            check "R3: head: $fn is as in R1" "$(state "$head" "$head_src" "$fn")" "$(state "$head3" "$head_src" "$fn")"
+          done
+          # The diff was rendered from the two filtered reports, and the filter moved the
+          # numbers: the file's uncovered lines are out of both totals, so R3's are higher.
+          before3="$(bash tests/lcov-percent.sh "$base3")"
+          after3="$(bash tests/lcov-percent.sh "$head3")"
+          # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
+          assert "R3: total_before is the filtered baseline's own coverage ($before3)" \
+            jq -e --argjson v "$before3" '((.project_delta.total_before - $v) | fabs) < 0.01' out/r3/coverage.json
+          # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
+          assert "R3: total_after is the filtered head report's coverage ($after3)" \
+            jq -e --argjson v "$after3" '((.project_delta.total_after - $v) | fabs) < 0.01' out/r3/coverage.json
+          assert "R3: the filtered baseline's coverage ($before3) is higher than R1's ($before)" \
+            awk -v a="$before" -v b="$before3" 'BEGIN { exit !(a != "" && b != "" && b > a) }'
+          assert "R3: the filtered head coverage ($after3) is higher than R1's ($after)" \
+            awk -v a="$after" -v b="$after3" 'BEGIN { exit !(a != "" && b != "" && b > a) }'
 
           bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
