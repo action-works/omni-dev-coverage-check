@@ -12,6 +12,12 @@
 # to `check_note`. That is what ties the wording the action writes to the wording the check
 # looks for: a change to either alone fails here and not on a runner.
 
+# Two helper sets meet here and are kept apart by shells: this file, and its parent shell, use
+# test-lib.sh (`ok`, `eq`, `has`, `pass`, ...). The snippets under test run in CHILD shells
+# (`lib` below) that source tests/assert-lib.sh and the library instead, because the library
+# calls assert-lib's `check` and `assert`. test-lib.sh has no `check` (its command checker is
+# `pass`, for this reason), and the two are never sourced into one shell.
+
 # The `bash -c` snippets below are single-quoted on purpose: they expand in the child shell.
 # shellcheck disable=SC2016
 set -uo pipefail
@@ -20,32 +26,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$ROOT/tests/baseline-lib.sh"
 ASSERT_LIB="$ROOT/tests/assert-lib.sh"
 ACTION="$ROOT/action.yml"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
-
-# eq <name> <expected> <actual>
-eq() {
-  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi
-}
-
-# has <name> <text> <fragment>: the text contains the fragment (a fixed string).
-has() {
-  if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "no '$3' in: $2"; fi
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+work_dir
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=step-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
 
 # --- the repository: c1 (oldest) .. c5 (newest) ---------------------------------------------
 
@@ -122,21 +110,7 @@ eq "note_for: plural" ", 7 commits before the merge-base, which has none." "$OUT
 
 # --- check_note, against the note the real diff step writes -----------------------------------
 
-step_run() { # <step name>
-  awk -v name="$1" '
-    $0 == "    - name: " name { in_step = 1; next }
-    in_step && /^    - name:/ { exit }
-    in_step && $0 == "      run: |" { in_run = 1; next }
-    in_run && /^        / { print substr($0, 9); next }
-    in_run && $0 == "" { print ""; next }
-    in_run { exit }
-  ' "$ACTION"
-}
-DIFF_SCRIPT="$(step_run 'Build coverage diff')"
-if [ -z "$DIFF_SCRIPT" ]; then
-  echo "FAIL - could not read the diff step out of action.yml"
-  exit 1
-fi
+DIFF_SCRIPT="$(step_run 'Build coverage diff')" || exit 1
 # The step reads its inputs from the environment, so there is nothing to fill in: an expression
 # left in the script would reach bash as literal text, with its output thrown away below.
 if [[ "$DIFF_SCRIPT" == *'${{'* ]]; then
@@ -277,6 +251,4 @@ held "held: it says what was expected and found" pass hit:c3:2 hit:c3:2 c3
 lib 'held_to_the_api S ci.yml coverage-baseline "$(git rev-parse c5)" "'"$WORK/found.lcov"'" "'"$WORK/snapshot"'"' "expected_baseline=$STUB" "FAKE_EXPECTED=$(answer hit:c3:2)"
 has "held: the notice names the commit found and how far back" "$OUT" "the lookup found the baseline for $(sha c3 | cut -c1-7) (2 back)"
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary
