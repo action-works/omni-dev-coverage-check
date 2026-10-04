@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Fails when a `run:` body of a file the action ships holds a `${{ }}` expression.
+# Fails when a `run:` body of a file it is given holds a `${{ }}` expression.
 #
 # Usage: check-run-expressions.sh [file...]
-#   With no arguments it scans action.yml, relative to the repository root.
+#   With no arguments it scans action.yml, relative to the repository root. test.yml gives
+#   it action.yml and every workflow in .github/workflows (#73): the workflows' own `run:`
+#   bodies run on `pull_request` and `push`, where a pull request's title or branch name is
+#   not a value to put in a script.
 # Exit status: 0 when no `run:` body holds an expression (or only allowlisted ones, and
 # every allowlist entry is still needed); 1 when one does, or an allowlist entry matches
 # nothing, with an `::error file=..,line=..` annotation per finding and the offending line
@@ -22,7 +25,9 @@
 # looked at: `if:`, `with:`, `env:`, `description:` and `default:` are meant to hold
 # expressions. It is a line scan, not a YAML parser. A step is the nearest list item at or
 # above the `run:` key, named by its `- name:` line or by a `name:` key at the same
-# indentation as the item's first key (a step with neither is unnamed). A `run:` key counts
+# indentation as the item's first key (a step with neither is unnamed); a list that a later
+# line at its own indentation or less has closed, such as a `schedule:` entry ahead of the
+# steps, is not the step. A `run:` key counts
 # wherever it is, even as an input under `with:` (a false positive is loud, a miss would not
 # be).
 #
@@ -34,7 +39,10 @@
 # is the step's name without quotes, the expression is what sits between `${{` and `}}`,
 # trimmed, and the reason may hold the separator. An entry that matches no finding fails the
 # check, so the list only shrinks: remove the entry when the expression goes. Never add one
-# for a value a caller supplies that is not meant to be shell.
+# for a value a caller supplies that is not meant to be shell. An entry is matched on the
+# step's name and the expression, not on the file: two steps of one name in different files
+# share it. Nothing needs one today, and a workflow that did (a trusted `matrix` value is
+# still passed through `env:`) should make the entry name its file first.
 set -euo pipefail
 
 ALLOWED=(
@@ -102,6 +110,14 @@ findings="$(awk '
       match($0, /^ */)
       if (RLENGTH > keycol) { report($0); next }
       inrun = 0
+    }
+    # A line that is no list item, comment or blank, and is not indented deeper than the
+    # last list item, closes that list: it was not a step. Without this a list ahead of the
+    # steps with a shallower dash (a `schedule:` entry at column 4, steps at column 6) stays
+    # "the step", every later step reads as a list nested in it, and none is named (#73).
+    if (stepdash >= 0 && $0 !~ /^[[:space:]]*(#|-[[:space:]]|$)/) {
+      match($0, /^ */)
+      if (RLENGTH <= stepdash) { stepdash = -1; step = "" }
     }
     if ($0 ~ /^[[:space:]]*-[[:space:]]/) {
       dash = index($0, "-") - 1

@@ -18,7 +18,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
 - `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
-- `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
+- `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` or of a workflow in `.github/workflows/` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `tests/llvm-cov-ignore-steps.test.sh` - Runs the five steps that run `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate and the recompute's report), read out of `action.yml`, against a stub `cargo`, and checks the one `--ignore-filename-regex=<value>` each gets, or none when the input is empty; it fails when another step runs `cargo llvm-cov report` (`test.yml` runs that)
 - `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
@@ -169,6 +169,34 @@ The action is a composite action with two phases:
   - The check's `ALLOWED` list (`step name :: expression :: reason`, separator ` :: ` because an
     expression often holds `||`) is empty and only shrinks: an entry that matches nothing fails
     it. Do not add one for a value a caller supplies.
+  - **The workflows are scanned too (#73)**: `test.yml` runs `bash tests/check-run-expressions.sh
+    action.yml .github/workflows/*.yml .github/workflows/*.yaml` after `shopt -s nullglob`
+    (GitHub reads both extensions, and without `nullglob` the empty `*.yaml` glob reaches the
+    check as a file that does not exist and it exits 2), with the allowlist still empty; the
+    no-argument default stays `action.yml`. Decided so it is not re-derived: the mechanism is
+    the same (the runner substitutes before the shell parses), and these workflows run on
+    `pull_request` and `push`, where `github.head_ref`, a pull request's title or a
+    `workflow_dispatch` input in a `run:` body is a command injection. A trusted value (a
+    `matrix` entry) is held to the rule too, because "no exceptions" is the rule with no list
+    to keep: pass it through `env:`. All five workflows were clean when this was decided (177
+    lines hold `${{`, none inside a `run:` body; the check's own report is the evidence), so it
+    changed nothing but the next pull request that puts one back. Rejected: scanning with
+    allowlist entries for matrix values (nothing needs one), and leaving the workflows out
+    (nothing but this note would then say it was deliberate). An entry is matched on the
+    step's name and the expression, not on the file, so two steps of one name in different
+    files would share it: if a workflow ever needs an entry, make it name its file first.
+    - The step attribution had to learn the workflows' layout. A list ahead of the steps with a
+      shallower dash than theirs (`integration.yml`'s weekly `schedule:` entry, dash at column
+      4, steps at column 6) used to stay "the step", so no finding in that file named one and
+      an allowlist entry could never have matched there. A line that is no list item, comment
+      or blank and is not indented deeper than the last list item now closes that list. Found
+      in review by planting in `integration.yml`, which `pr-paths.yml` (a `paths:` list at the
+      steps' own column) never showed.
+    - `check-run-expressions.test.sh` plants an expression in the first `run: |` body of a
+      copy of every workflow that has one and expects the line and the step named. It fails
+      if `e2e-sharded.yml`, `integration.yml` or `pr-paths.yml` has none to plant in, and
+      checks `test.yml` for both globs and `nullglob`. `commit-check.yml` has no `run:`, so it
+      is checked as committed only.
   - `setup-commands` and `extra-test-commands` are shell by design, so they are not allowlisted
     but run as `eval "$commands"` in the step's own shell: the same `-e -o pipefail`, the
     exported instrumentation env, one shell for every line. Rejected: `bash file` or `bash -c`
