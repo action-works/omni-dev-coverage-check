@@ -273,6 +273,9 @@ The merge-base worktree recompute runs only `test-args`, not these hooks (the
 gated suites/fixtures may not exist at an old fork point), and the normal path
 downloads a baseline that already includes their coverage.
 
+Both hooks are shell, evaluated in one `bash`: see
+[How input values reach the scripts](#how-input-values-reach-the-scripts).
+
 ## Inputs
 
 ### omni-dev install + cache
@@ -310,9 +313,9 @@ Linux runner can drop it, on `latest` or on `0.46.0` or later.
 | `run-coverage`        | Run `cargo-llvm-cov` to produce the head report. Set `false` for thin mode                 | `true`                |
 | `report`              | Path to the per-line head lcov (produced in fat mode, supplied in thin mode; with `shard-reports`, where the combined report is written) | `coverage-head.lcov`  |
 | `shard-reports`       | Thin mode: the per-shard lcov reports (paths or globs, one per line) to check and combine into `report`. Requires `run-coverage: false` | `''` |
-| `test-args`           | Arguments passed to `cargo test` / `cargo llvm-cov` under instrumentation                  | `--all-features --workspace` |
-| `setup-commands`      | Commands run under instrumentation BEFORE the test run, with profiling disabled (no coverage). Fetch fixtures the tests need (e.g. an ML model). One per line | `''` |
-| `extra-test-commands` | Extra instrumented `cargo test` invocations run AFTER the main run, contributing coverage. For `--ignored`/model-gated suites `test-args` can't reach. One per line | `''` |
+| `test-args`           | Arguments passed to `cargo test` / `cargo llvm-cov` under instrumentation. Split on whitespace: quotes and `$` are not interpreted | `--all-features --workspace` |
+| `setup-commands`      | Commands run under instrumentation BEFORE the test run, with profiling disabled (no coverage). Fetch fixtures the tests need (e.g. an ML model). One per line, evaluated as shell | `''` |
+| `extra-test-commands` | Extra instrumented `cargo test` invocations run AFTER the main run, contributing coverage. For `--ignored`/model-gated suites `test-args` can't reach. One per line, evaluated as shell | `''` |
 | `fail-under-lines`    | Overall line-coverage gate: `cargo llvm-cov report --fail-under-lines` in fat mode, `omni-dev coverage diff --fail-under-lines` in thin mode (needs an omni-dev release with the flag). Empty disables it | `30`                  |
 
 ### Diff / patch-coverage comment
@@ -337,7 +340,7 @@ Linux runner can drop it, on `latest` or on `0.46.0` or later.
 | `baseline-workflow`       | Workflow file the baseline artifact is published from (for the merge-base download)               | `ci.yml`            |
 | `baseline-ancestor-depth` | When the merge-base has no baseline, how many first-parent ancestors to try, nearest first        | `10`                |
 | `recompute-baseline`      | When no baseline is found, recompute coverage at the merge-base in a git worktree (fat mode only) | `true`              |
-| `worktree-system-deps`    | Space-separated apt packages to install before the worktree recompute (e.g. `libasound2-dev`)     | `''`                |
+| `worktree-system-deps`    | Space-separated apt packages to install before the worktree recompute (e.g. `libasound2-dev`). Split on whitespace: quotes and `$` are not interpreted | `''` |
 | `publish-baseline`        | On a push to `main`, publish this run's report as the baseline artifact                           | `true`              |
 
 ### Artifacts
@@ -476,6 +479,28 @@ drops those files from the diff instead:
   gate and the coverage summary still count every file. Nor does it change the baseline
   artifact (published as the raw report) or the codecov upload.
 - It needs omni-dev 0.33.0 or later; see [Requirements](#requirements).
+
+## How input values reach the scripts
+
+The runner replaces every `${{ }}` in a `run:` script with its value *before* the shell
+parses the script, so a value that holds shell syntax runs as shell. To keep that from
+happening, no script in `action.yml` holds an expression: each input a script reads reaches
+it as an environment variable and is read as `"$VAR"`, so a value is data, whatever it
+contains. `tests/check-run-expressions.sh` fails the build of this repository if one appears.
+
+Four inputs are not a plain value:
+
+- **`setup-commands` and `extra-test-commands` are shell, by design.** Each is evaluated with
+  `eval` in the step's own `bash` (`-e -o pipefail`), after the instrumentation environment is
+  loaded, so its lines share one shell: a variable set on one line is visible on the next, a
+  failing line stops the step, and `exit` ends it. The commands run exactly as written, so
+  **never wire an untrusted value into them**: a `workflow_dispatch` input, a pull-request
+  title or a branch name written into either becomes a command.
+- **`test-args` and `worktree-system-deps` are split into words on whitespace** (spaces, tabs
+  and newlines) and nothing more. Quotes are not removed, `$VAR` and `$(...)` are not expanded
+  and globs are not matched, so `test-args: --features "a b"` passes the two words `"a` and
+  `b"`. Write `--features a,b` instead; an argument that must contain a space or a `$` cannot
+  go through `test-args`.
 
 ## Requirements
 

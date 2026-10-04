@@ -14,9 +14,10 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `scripts/omni-dev-asset.sh` - Maps a runner's OS and architecture to the omni-dev release asset to download (`tests/omni-dev-asset.test.sh` tests it; `test.yml` runs that)
 - `scripts/find-baseline.sh` - Decides which run's baseline artifact a pull request downloads: the merge-base's, else the nearest first-parent ancestor's (`tests/find-baseline.test.sh` tests it against a stub `curl` and throwaway git repositories; `test.yml` runs that)
 - `tests/baseline-steps.test.sh` - Reads the lookup, download and diff steps out of `action.yml` and checks the wiring (the variables the script requires, the run id handed to the download, the comment's ancestor note) (`test.yml` runs that)
-- `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl` (`test.yml` runs that)
+- `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl`, with the variables the steps' `env:` blocks fill set directly (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
+- `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
 - `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the three step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
@@ -146,7 +147,42 @@ The action is a composite action with two phases:
   pre-test with `LLVM_PROFILE_FILE=/dev/null` (reuses the instrumented build,
   contributes no coverage); `extra-test-commands` runs post-test and DOES
   contribute. Both are skipped in the worktree recompute, so the merge-base stays
-  buildable at old fork points and only `test-args` defines that baseline.
+  buildable at old fork points and only `test-args` defines that baseline. Both are
+  shell and are run with `eval "$VAR"` in the step's own shell (see the #39 bullet).
+- **No expression in any `run:` body (#39)**: the runner replaces every `${{ }}` in a script
+  with its value before the shell parses it, so a value that held shell syntax ran as shell.
+  Every value a script reads now comes through the step's `env:` and is read as `"$VAR"`,
+  `runner.*`, `github.action_path` and step outputs included, so the rule has no exceptions to
+  keep a list of. `tests/check-run-expressions.sh` enforces it (a line scan: it reads every
+  `run:` body, comments and messages too, because the runner evaluates those; `if:`, `with:`
+  and `env:` are where expressions belong). Rules:
+  - A new step that needs a value adds it to `env:`. Name it for the input, upper-cased
+    (`REPORT`, `STRIP_PREFIX`); `BASE_SHA` is the merge-base commit, `BASE_REF` the `base-ref`
+    input. Not `RUNNER_*` or `GITHUB_*`: the runner reserves those names.
+  - The check's `ALLOWED` list (`step name|expression|reason`) is empty and only shrinks: an
+    entry that matches nothing fails it. Do not add one for a value a caller supplies.
+  - `setup-commands` and `extra-test-commands` are shell by design, so they are not allowlisted
+    but run as `eval "$SETUP_COMMANDS"` in the step's own shell: the same `-e -o pipefail`, the
+    exported instrumentation env, one shell for every line. Rejected: `bash file` or `bash -c`
+    (a child shell has neither `-e` nor `pipefail` unless re-added, and loses non-exported
+    state). `eval` does not make these two inputs safe (a value in them still runs as shell, as
+    before); it takes the runner's substitution out of the script text, and the README says never
+    to wire an untrusted value into either.
+  - `test-args` and `worktree-system-deps` are split on whitespace with
+    `read -r -d '' -a words <<<"$VAR" || true` and used as `"${words[@]}"`: no quote removal,
+    expansion or globbing. The `|| true` is needed because `read` returns non-zero at the end of
+    its input. This changed `test-args` for a caller who wrote shell quoting or `$VAR` in it
+    (`--features "a b"`); a newline in either now separates words, where it used to end the
+    command. Rejected: `eval "cargo test $TEST_ARGS"` (the hole itself) and a quote-aware
+    splitter (`xargs` differs between GNU and BSD, and bash 3.2 has no `mapfile`).
+  - The step tests (`platform-step`, `guard-step`, `resolve-version-step`) set the variables
+    and assert that each step's `env:` block fills them from the right place, and that the
+    script holds no expression: setting variables alone would pass if `env:` were wired wrong.
+  - Not covered by a unit test: the steps that run only on a pull request or a push
+    (merge-base, recompute, diff, gates, setup/extra/test commands). `integration.yml`,
+    `pr-paths.yml` and `e2e-sharded.yml` run them on a real runner. `apt-get install -y
+    "${words[@]}"` still takes a package name that starts with `-` as an option; that is not an
+    expression-evaluation hole and was left alone.
 - **Shard join**: `cargo llvm-cov` writes no newline after its final `end_of_record`,
   so a bare `cat` of shards glues records and a consumer can silently drop a file.
   `combine-shards.sh` always puts a newline between shards; keep that if you touch it.
@@ -252,8 +288,7 @@ The action is a composite action with two phases:
     The runner evaluates every `${{ }}` in a `run:` block, in a comment or a message, and a
     backslash does not escape one: a message that wrote the expression would show the masked
     token (`\***`) instead, and an empty `${{ }}` in a comment fails the step. The test fails if
-    the script holds any expression but `inputs.version`, which is still interpolated, as
-    inputs are in most steps of this file; that is how it is today, not a rule to copy.
+    the script holds any expression: the version reaches it through `env: VERSION` too (#39).
   - The token does reach curl's arguments (`-H "Authorization: Bearer ..."`); the environment only
     keeps it out of the script text. It is the job's own masked token, as in commit-check's step.
   - `curl` and `jq` each end in `|| true`: under `bash -e` a refused connection or a gateway's HTML
