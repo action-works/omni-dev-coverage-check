@@ -790,17 +790,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/move-outputs.sh r2
 
-      # R1's recompute left its worktree at ../base, and the action does not remove it, so
-      # a second recompute in this job would stop at `git worktree add` ("already exists").
-      - name: Remove the worktree R1 left
-        run: git worktree remove --force ../base
-
       # R1 again with `llvm-cov-ignore-filename-regex`, so R1 is its control: only the
       # input differs. `src/ignored.rs` is in both commits and nothing reaches it, so the
       # recompute builds it into R1's baseline, and the head report has it. The filter has
       # to reach the report the recompute builds in the worktree as well as the head's,
       # or the comparison would count the file on one side only. The worktree is a
       # different directory from the workspace, which is why the pattern is a fragment.
+      # It is also the second recompute of this job, which finds no worktree of R1's
+      # because the action removes its own when it ends (#78): nothing clears it between.
       - name: 'R3. Baseline recomputed with llvm-cov-ignore-filename-regex'
         id: r3
         uses: ./

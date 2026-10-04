@@ -19,6 +19,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/print-version-step.test.sh` - Runs the "Print omni-dev version" script read out of `action.yml` against a stub `omni-dev` that replays the captured loader output in `tests/fixtures/omni-dev-loader/` and a stub `getconf`: the glibc the binary needs, the one the runner has and the two ways out (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
+- `tests/recompute-worktree.test.sh` - Runs the "Compute baseline from merge-base (fallback)" script read out of `action.yml` with the real `git` in a throwaway repository against a stub `cargo` that can fail, and checks what is on disk afterwards: the `../base` worktree is gone after a recompute and after a failing one, a second recompute in the same workspace succeeds and writes the same baseline, a leftover worktree is cleared, and a plain directory named `base` is kept (`test.yml` runs that)
 - `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
 - `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` or of a workflow in `.github/workflows/` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
@@ -148,6 +149,41 @@ The action is a composite action with two phases:
     21 lookups per pull-request run, and none finds anything), and why the depth is a bound.
   - The recompute stays the last resort and runs only when nothing is in reach, so the
     `recompute` job of `pr-paths.yml` turns the walk off: its synthetic base has none.
+- **The recompute removes its worktree (#78)**: "Compute baseline from merge-base (fallback)"
+  builds at `../base` and removes it when the step ends, so a second run of the action in one job
+  after a recompute finds none (it used to stop at `git worktree add` with `'../base' already
+  exists`, which is what `pr-paths.yml` removed by hand between R1 and R3) and the merge-base's
+  whole build (`../base/target`) does not stay on the disk for the rest of the job. Rules, so they
+  are not re-derived:
+  - It is an `EXIT` trap, set right after the `git worktree add` succeeds, so it covers a
+    recompute that fails midway (the tests failed, `cargo` is missing) as well as one that works,
+    and removes only a worktree this run made. The step's own exit status is the trap's to leave
+    alone (`|| true`); a failed removal costs disk, not the run. The trap holds no variable:
+    the step drops its own (`REPORT`, `TEST_ARGS`, ...) before the merge-base's tests run.
+  - **A stale one is cleared before the add**: `git worktree remove --force ../base 2>/dev/null
+    || true`, then `git worktree prune`. A worktree an earlier run left (cancelled before this step
+    ended, on a reused runner) is registered and stops the add; so does a record whose directory
+    was wiped, which `prune` clears. `remove` only touches a worktree git knows, so a directory
+    that merely has the name `base` is kept, and the add then fails as it always did (decided: a
+    directory of someone else's is not the action's to delete, and the failure says
+    `already exists`). `prune` is repository-wide, but it drops only records whose directory is
+    already gone, which no checkout of a CI workspace needs. Rejected: removing after use only (a
+    cancelled run leaves it for the next),
+    and `rm -rf ../base` (it would delete that directory).
+  - The removal comes after the baseline is copied: the `sed` that rewrites the report's paths
+    reads `../base/<report>` first, and the step's last line is the `recomputed=true` output.
+  - `tests/recompute-worktree.test.sh` runs the step with the real `git` in a throwaway repository
+    and a stub `cargo`, and checks the disk: gone after a recompute and after a failing one, a
+    second recompute in the same workspace writes the same baseline, a registered leftover and a
+    record with no directory are cleared, a plain directory is kept (with its file) and nothing is
+    run, a downloaded baseline and refused `worktree-system-deps` end before any of it, and the
+    order of the lines (as text: git would refuse to remove a plain directory whichever came
+    first). It fails on the old step (20 cases) and was checked against mutations: no trap (11),
+    no stale clear (5), no prune (2), the trap before the add (1, the text), the removal at the end
+    only (4). `input-steps.test.sh`'s stub-git cases list the three new git calls.
+  - R3 of `pr-paths.yml` is the runner's test of it: the job's `Remove the worktree R1 left` step
+    is gone and R3 still has to pass as the job's second recompute. Not run on a runner when this
+    was written: that is the pull request's own `PR paths` run.
 - **`worktree-system-deps`** generalizes the one omni-dev-specific wrinkle from
   the original inline job (installing `libasound2-dev` before building old
   history); it installs nothing unless set.
@@ -1119,11 +1155,11 @@ The action is a composite action with two phases:
     (committed unchanged in both commits, reached by nothing) is in both of R1's reports and
     must be in neither of R3's, the baseline the recompute builds in the worktree and the
     head's. They are two call sites, asserted apart: dropping the flag from the recompute's
-    report alone fails only the baseline checks. R1 leaves its worktree at `../base` and the
-    action does not remove it, so a second recompute in a job stops at `git worktree add`
-    ("already exists"): the job removes it before R3. An action run twice in one job after a
-    recompute would fail the same way (a follow-up; the action is unchanged on this).
-    `state()` there reads only `src/lib.rs`'s records, as in the fat-mode job.
+    report alone fails only the baseline checks. R3 is the second recompute of the job: the
+    recompute removes its worktree when it ends (#78, below), so R1 leaves none at `../base` and
+    nothing clears it between (the job used to remove it by hand, and an action run twice in a
+    job after a recompute would have stopped at `git worktree add`). `state()` there reads only
+    `src/lib.rs`'s records, as in the fat-mode job.
   - The hit path cannot be shown before a baseline exists on `main`: the pull request
     that adds this workflow shows the miss path, the `push` run after it shows the
     publish, and the first later qualifying pull request shows the hit.

@@ -408,7 +408,8 @@ while the PR was open:
    merge-base in a git worktree and rewrite its absolute `SF:` paths to the workspace
    prefix so `omni-dev coverage diff` strips one prefix for both head and baseline.
    Use `worktree-system-deps` if building that historical commit needs system
-   packages (omni-dev passes `libasound2-dev`).
+   packages (omni-dev passes `libasound2-dev`). The worktree (`../base`, and the build in it)
+   is removed when the step ends, so the action can run again in the same job.
 4. **Publish** on `main` pushes: this run's lcov becomes the baseline future PRs
    download. In a sharded run that is the combined report.
 

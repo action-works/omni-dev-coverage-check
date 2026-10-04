@@ -58,6 +58,9 @@ jobs:
       - name: Test the input-reading steps of action.yml
         run: bash tests/input-steps.test.sh
 
+      - name: Test the merge-base worktree of the recompute step
+        run: bash tests/recompute-worktree.test.sh
+
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
 
