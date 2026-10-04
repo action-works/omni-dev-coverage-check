@@ -26,7 +26,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo (runs on `merge_group` too: `Validate Commit Messages` is a required check of the merge queue)
 - `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
-- `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
+- `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API (the job list and the log are each retried); `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place); `src/ignored.rs` is the file nothing reaches, which F5 excludes and F6 keeps
@@ -693,6 +693,28 @@ The action is a composite action with two phases:
     `--allow-escape-sequences` when `gh api --help` lists it (an older `gh` has
     neither). Detect it from captured help, not a `| grep -q` pipe: `grep -q` can
     exit first and `pipefail` then fails the pipeline.
+  - **The job list is looked at more than once, as the log is (#69).** `job-log.sh` lists
+    the run's jobs inside the same retry as the log read (`JOB_LOG_ATTEMPTS` times, 6, with
+    `JOB_LOG_DELAY` seconds between, 10) and tries again on a failed call, a body that is not
+    JSON, and a list with NO job of the name. A name found twice fails at the first look:
+    that is an ambiguity, not a list that is still filling in. Seen on run 37177411338
+    (PR #56): three re-runs of this job failed on the API reads and a full re-run passed,
+    never on an assertion (`gh: Server Error (HTTP 502)` twice; `0 jobs named ...` for jobs
+    that had passed in an earlier attempt and were not re-run, a different few each time).
+    The cause was not established. The likeliest reading is that the lookup ran in the first
+    seconds of a partial re-run and saw an incomplete list; afterwards the API listed all 15
+    jobs for every attempt. The retry covers that reading and was not shown to be enough: a
+    list that is still short after 50 seconds fails as before. What it costs is that a name
+    that is wrong (a renamed job) now fails after all the attempts, not at the first.
+    `tests/job-errors.test.sh` replays each of these on a fake `gh` (502, an HTML body, a list
+    without the job, the delay between looks) and was checked against a `job-log.sh` without
+    the retry (25 cases fail).
+  - **Re-run this job with the whole workflow, not alone** (`gh run rerun <id>`, not
+    `--failed` or `--job`): that is what passed in #69, and a partial re-run is where the
+    list came back short. This is the practice, not a proven fix.
+  - Not covered: the "Assert the deprecation warnings" step lists the jobs itself, once, with
+    no retry. A 502 there fails the step, and a list that came back short would make it read
+    fewer jobs, not fail.
   - It is the only job with `actions: read` (job-level `permissions` drops the rest,
     so it also lists `contents: read` for the checkout). Keep it that way.
   - It names the jobs it reads, including the thin-mode matrix versions and the
