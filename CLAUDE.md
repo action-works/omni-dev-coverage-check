@@ -107,19 +107,28 @@ The action is a composite action with two phases:
     yet `success` are not used even if they have uploaded; the walk is what covers the
     race (the `push` run unfinished, so the next ancestor is used instead of a rebuild).
   - A 404 for the workflow is a warned miss that ends the walk: the API knows a workflow
-    only once its file is on the default branch, and every candidate would 404 alike. Any
-    other non-2xx fails the step with the status and the API's message, as before: a
+    only once its file is on the default branch, and every candidate would 404 alike.
+    Transient statuses (no response, 429, 5xx) are tried three times. After that the FIRST
+    request failing is an error with the status and the API's message, as before: a
     permission or an outage must not read as "no baseline", or every pull request would
-    quietly pay for a rebuild. There is no retry (see #1 for the version lookup's).
+    quietly pay for a rebuild. A failure on a later request is a warned miss: the first one
+    worked, so the credentials do, the baseline is optional, and the walk makes many more
+    requests than the old single lookup, so one blip on the eleventh must not fail a pull
+    request. A runner with no `jq`, `curl` or `git` gets a warned miss that names it: without
+    `jq` the names encode to nothing and the request is a 404 that would read as "no such
+    workflow".
   - **On by default**, decided in #5: the issue proposed the walk as the behaviour and
     "at least an option" as the floor. It changes only a pull request whose merge-base
     has no baseline. To make exactness the default, change the default in `action.yml`
     (`baseline-steps.test.sh` pins `'10'`; `expected-baseline.sh` reads it from there).
   - omni-dev renders "Comparing merge-base -> head" and "vs main" and only displays
     `--base-sha`, so when the baseline is an ancestor's the diff step appends one line
-    naming its commit and distance (not when the download left no file). The patch is
-    unaffected: `--base-ref` stays the merge-base. `tests/baseline-lib.sh` pins the
-    wording against the real step.
+    naming its commit and distance. Not when there is no downloaded file, and not when the
+    recompute built it: the lookup can have found an ancestor's whose download left no file
+    under this report's name (it expired in between, or the report was renamed), and the
+    recompute's baseline is the merge-base's own, so it sets `recomputed` and the diff step
+    reads that. The patch is unaffected: `--base-ref` stays the merge-base.
+    `tests/baseline-lib.sh` pins the wording against the real step.
   - Each commit tried costs at least one API request, plus one per successful run it
     has; a full miss spends `depth + 1`. `GITHUB_TOKEN` has 1,000 an hour per
     repository, which is why `integration.yml` passes `baseline-ancestor-depth: 0` (about
@@ -477,13 +486,15 @@ The action is a composite action with two phases:
     caller does not.
   - A baseline hit is not assumed: it needs a published baseline for the merge-base,
     which the first pull request cannot have and a recent merge-base may still be
-    producing. The last step asks the Actions API what the lookup should find (`hit`,
-    `miss`, or `either` while a run is in progress; `tests/expected-baseline.sh`, which
-    walks the same first-parent ancestors through `gh` and not through the lookup's own
-    code) and the observed result must match, so both paths are tested whichever one a
-    run takes. On a hit the baseline's `TN:` must be the commit the API names (the
-    merge-base's own or the nearest ancestor's), the comment must carry the ancestor note
-    exactly when that is not the merge-base's, and the totals are recomputed from the
+    producing. `tests/expected-baseline.sh` (which walks the same first-parent ancestors
+    through `gh` and not through the lookup's own code) is asked before the scenarios and
+    again in the last step, and the lookup must land within the span of the two answers: a
+    baseline can be published while the job runs (the `push` run for the merge-base
+    finishing), so one answer taken at the end could expect a nearer commit than the lookup
+    could have seen. When nothing changed the answers agree and it is exact: the nearest
+    baseline, or a miss. Both paths are tested whichever one a run takes. On a hit the
+    baseline's `TN:` is the commit the lookup found, the comment must carry the ancestor
+    note exactly when that is not the merge-base's, and the totals are recomputed from the
     downloaded file, so the assertions survive edits to the fixture.
   - P7 and P8 make the walk deterministic. Their `base-ref` is a commit made with
     `git commit-tree` (a child of the merge-base with its tree, on no branch, which omni-dev

@@ -325,14 +325,14 @@ on the default `use-prebuilt-binary: 'true'` fails at the install step. So does 
 
 ### Merge-base baseline
 
-| Input                    | Description                                                                                     | Default            |
-|--------------------------|-------------------------------------------------------------------------------------------------|--------------------|
-| `baseline-artifact-name` | Name of the artifact holding the per-line baseline report                                      | `coverage-baseline`|
-| `baseline-workflow`      | Workflow file the baseline artifact is published from (for the merge-base download). One that does not exist yet is a miss with a warning, not a failure | `ci.yml` |
-| `baseline-ancestor-depth` | When the merge-base has no baseline, how many of its first-parent ancestors to try, nearest first, before giving up. `0` uses the merge-base's own only | `10`               |
-| `recompute-baseline`     | On a download miss, recompute coverage at the merge-base in a git worktree (fat mode only)     | `true`             |
-| `worktree-system-deps`   | Space-separated apt packages to install before the worktree recompute (e.g. `libasound2-dev`)  | `''`               |
-| `publish-baseline`       | On a push to `main`, publish this run's report as the baseline artifact                        | `true`             |
+| Input                     | Description                                                                                       | Default             |
+|---------------------------|---------------------------------------------------------------------------------------------------|---------------------|
+| `baseline-artifact-name`  | Name of the artifact holding the per-line baseline report                                         | `coverage-baseline` |
+| `baseline-workflow`       | Workflow file the baseline artifact is published from (for the merge-base download)               | `ci.yml`            |
+| `baseline-ancestor-depth` | When the merge-base has no baseline, how many first-parent ancestors to try, nearest first        | `10`                |
+| `recompute-baseline`      | When no baseline is found, recompute coverage at the merge-base in a git worktree (fat mode only) | `true`              |
+| `worktree-system-deps`    | Space-separated apt packages to install before the worktree recompute (e.g. `libasound2-dev`)     | `''`                |
+| `publish-baseline`        | On a push to `main`, publish this run's report as the baseline artifact                           | `true`              |
 
 ### Artifacts
 
