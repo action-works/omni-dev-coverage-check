@@ -16,14 +16,18 @@
 #     omni-dev's);
 #   - nothing else of the call changes, and no other cargo call gets the flag (the recompute's
 #     `--no-report` build, `show-env`).
-# A static check lists every step of action.yml whose script runs `cargo llvm-cov report` and
-# requires the list to be the five run here, each taking the value from `env:`, so a new report
-# step fails this test until it takes the filter too: a report that leaves it out measures files
-# the others do not, and nothing else notices.
+# A static check reads every step's code (its whole block, comments left out, so an inline
+# `run:` counts too) and requires the steps that run `cargo llvm-cov report` to be the five run
+# here, each taking the value from `env:` and running in fat mode only, and every other
+# `cargo llvm-cov` call to be `show-env`, `clean` or a `--no-report` run. So a new report step,
+# or a run that writes a report without saying `report` (`cargo llvm-cov --lcov`, a `report`
+# on the next line), fails this test until it takes the filter too: a report that leaves it out
+# measures files the others do not, and nothing else notices.
 #
 # What this does not reach: that the real cargo-llvm-cov honours the flag (the `fat-mode` job of
 # integration.yml checks that on a runner, and the `recompute` job of pr-paths.yml checks the
-# recompute's), and the steps' `if:` (the jobs do).
+# recompute's), and what a thin-mode run does (no job sets the input there; the five steps'
+# `if:` is pinned below as text, not run).
 
 # The `${{ ... }}` expressions below are literal text read out of action.yml, never meant to
 # expand, so single-quoting them is the point.
@@ -112,21 +116,15 @@ parse_log() {
   done <"$1"
 }
 
-# subst <text> <literal> <replacement>
-subst() {
-  local text=$1 pattern=$2
-  printf '%s' "${text//"$pattern"/$3}"
-}
-
 # expand <script>: the script with the expressions it holds given values, as the runner would.
 expand() {
-  local s=$1
-  s="$(subst "$s" '${{ inputs.report }}' "$REPORT_IN")"
-  s="$(subst "$s" '${{ inputs.fail-under-lines }}' "$FAIL_UNDER")"
-  s="$(subst "$s" '${{ inputs.test-args }}' "$TEST_ARGS")"
-  s="$(subst "$s" '${{ inputs.worktree-system-deps }}' '')"
-  s="$(subst "$s" '${{ steps.mb.outputs.sha }}' "$BASE_SHA")"
-  printf '%s\n' "$s"
+  local script=$1
+  script="${script//'${{ inputs.report }}'/$REPORT_IN}"
+  script="${script//'${{ inputs.fail-under-lines }}'/$FAIL_UNDER}"
+  script="${script//'${{ inputs.test-args }}'/$TEST_ARGS}"
+  script="${script//'${{ inputs.worktree-system-deps }}'/}"
+  script="${script//'${{ steps.mb.outputs.sha }}'/$BASE_SHA}"
+  printf '%s\n' "$script"
 }
 
 RUNS=0
@@ -217,17 +215,33 @@ has "recompute with a filter: its paths are the workspace's" \
 eq "recompute with a filter: said it recomputed" "recomputed=true" "$(cat "$RUN_DIR/output" 2>/dev/null)"
 
 # --- which steps run `cargo llvm-cov report`, and how they get the value ----------------------
-# A script's code, not its comments: several steps explain the others in their comments.
+# Each step's whole block, not its `run:` (an inline `run:` has none to read), and without its
+# full-line comments, since several steps explain the others in theirs. A `cargo llvm-cov` call
+# is `cargo`, an optional `+toolchain`, then `llvm-cov`.
+CARGO_LLVM_COV='cargo([[:space:]]+\+[^[:space:]]+)?[[:space:]]+llvm-cov'
 report_steps=''
+other_runs=''
 while IFS= read -r line; do
   step="${line#    - name: }"
-  if step_run "$step" 2>/dev/null | grep -v '^ *#' | grep -qF 'cargo llvm-cov report'; then
+  code="$(step_block "$step" | grep -v '^[[:space:]]*#')" || {
+    bad "read the step '$step'"
+    continue
+  }
+  if grep -Eq "$CARGO_LLVM_COV([[:space:]]+[^[:space:]]+)*[[:space:]]+report([[:space:]]|\$)" <<<"$code"; then
     report_steps+="$step"$'\n'
   fi
+  # Any other call: it must not write a report (`--no-report` says it does not).
+  while IFS= read -r call; do
+    case "$call" in
+    *show-env* | *clean* | *--no-report*) ;;
+    *) other_runs+="$step: ${call#"${call%%[![:space:]]*}"}"$'\n' ;;
+    esac
+  done < <(grep -E "$CARGO_LLVM_COV" <<<"$code" | grep -Ev "$CARGO_LLVM_COV([[:space:]]+[^[:space:]]+)*[[:space:]]+report([[:space:]]|\$)")
 done < <(grep -E '^    - name: ' "$ACTION")
 expected_steps="$(printf '%s\n' "${STEP_NAMES[@]}" | sort)"
 eq "the steps that run 'cargo llvm-cov report' are the five this test runs" \
   "$expected_steps" "$(printf '%s' "$report_steps" | sort)"
+eq "no other cargo llvm-cov call is one that could write a report" "" "$other_runs"
 
 for name in "${STEP_NAMES[@]}"; do
   block="$(step_block "$name")" || continue
@@ -235,6 +249,9 @@ for name in "${STEP_NAMES[@]}"; do
     '        LLVM_COV_IGNORE_FILENAME_REGEX: ${{ inputs.llvm-cov-ignore-filename-regex }}'
   lacks "$name: the script does not interpolate the input" "$(step_run "$name")" \
     'inputs.llvm-cov-ignore-filename-regex'
+  # Fat mode only: thin mode has no profile for cargo-llvm-cov to report on.
+  eq "$name: runs in fat mode only" 1 \
+    "$(grep -cE "^      if: .*inputs\.run-coverage == 'true'" <<<"$block")"
 done
 # Five wirings and nowhere else: not omni-dev's diffs (their filter is `ignore-filename-regex`,
 # a different syntax and a different path), and not a step that would then read it in thin mode.
