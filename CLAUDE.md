@@ -16,8 +16,10 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; a last job asserts the failure messages the scenarios logged
-- `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged, read through the Actions API (`tests/job-errors.test.sh` tests it against a fake `gh`; `test.yml` runs that)
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `deprecation-control` job logs an omni-dev deprecation warning on purpose; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
+- `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
+- `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
+- `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
 - `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, and the merge-base worktree recompute
@@ -179,7 +181,7 @@ The action is a composite action with two phases:
     log passes for the wrong reason.
   - Each check needs all its fragments in ONE message, so two errors cannot add up.
   - `gh` 2.97 and later refuse to print an API response that holds terminal escape
-    sequences, and a runner log is full of ANSI colour. `job-errors.sh` passes
+    sequences, and a runner log is full of ANSI colour. `job-log.sh` passes
     `--allow-escape-sequences` when `gh api --help` lists it (an older `gh` has
     neither). Detect it from captured help, not a `| grep -q` pipe: `grep -q` can
     exit first and `pipefail` then fails the pipeline.
@@ -192,16 +194,15 @@ The action is a composite action with two phases:
   - A scenario that exists for its message gets an assertion here; edit a message
     in `scripts/combine-shards.sh` or the guard in `action.yml` and this job
     names the fragment that went missing.
-- **Deprecated-flag check**: `tests/check-deprecated-flags.sh` (run by `test.yml` on
-  every pull request) fails when `action.yml` or `scripts/*.sh` passes omni-dev a flag
-  it has deprecated; today that is `--format` (use `-o/--output`). omni-dev keeps a
-  deprecated flag working and warns only at run time, and hides it from `--help`, so
-  the source is what gets checked. Rules:
-  - It finds only the flags in the list at the top of the script. When omni-dev
-    deprecates another, add a `flag|use instead` line (a plain long flag: anything
-    else is refused, not matched as a pattern); nothing discovers it. Reading
-    the run logs for `warning: ... is deprecated` would (#23, option 2), but that is
-    not built, and only pull-request runs reach the diff steps that would print one.
+- **Deprecated flags**: omni-dev keeps a deprecated flag working and warns only at run
+  time (`warning: --format is deprecated; use -o/--output instead`), and hides it from
+  `--help`, so two checks look for one, from two sides: the source for the flags it was
+  told about, and the logs for any. Rules:
+  - `tests/check-deprecated-flags.sh` (run by `test.yml` on every pull request) fails
+    when `action.yml` or `scripts/*.sh` passes omni-dev a flag in the list at the top of
+    the script; today that is `--format` (use `-o/--output`). When omni-dev deprecates
+    another, add a `flag|use instead` line (a plain long flag: anything else is
+    refused, not matched as a pattern); nothing else tells this check.
   - A hit is the flag as a whole word anywhere in the file, not only on the line that
     runs omni-dev: flags are collected in `args=(...)` and `omni-dev "${args[@]}"` runs
     later. `--report-format` is not a hit. Full-line `#` comments are skipped; nothing
@@ -211,6 +212,33 @@ The action is a composite action with two phases:
     asserts the copy differs and that every rewritten line is reported, so reworking
     those call sites fails the test instead of leaving a check that passes on
     fixtures and finds nothing in the real file.
+  - The `failure-messages` job's second step reads the logs with
+    `tests/job-deprecations.sh`: on a pull request none of the jobs that run the diffs
+    may have logged a deprecation warning (thin mode on `0.45.0` and `latest`, the
+    pre-flag omni-dev, `output-flag`'s `0.32.0`, fat mode). A new omni-dev deprecation
+    turning it red on an unrelated pull request is the check working, not a flake: stop
+    passing the flag and add it to the list above.
+  - A warning is a line that begins with `warning:` right after the runner's timestamp
+    and holds "deprecated". That leaves out the colour-coded echo of a step's script
+    (which can hold the same words), the runner's `##[warning]Node.js 20 is deprecated`
+    and node's `DeprecationWarning`, which every log carries. These shapes are from
+    real logs, and the test fixture holds one of each.
+  - An empty read proves nothing unless the steps ran, and a skipped step logs
+    nothing: a push log holds none of the diff steps' output. So each job read shows
+    with a file check that the comment and percentages diffs ran (`coverage.md`,
+    `coverage.json`), which is why the check is pull-request only. A job that stops at a
+    guard (`output-flag`'s `0.31.0`, the ARM64 job) is not read. A new job that runs the
+    diffs gets a file check and a place in the list.
+  - Nor does an empty read prove the reader can see one. The `deprecation-control` job
+    passes `--format` to omni-dev directly, on `latest`, and the job asserts the warning
+    is found on every event. If that fails, omni-dev either reworded the warning
+    (update `job-deprecations.sh`) or removed the flag (retire the control).
+  - The percentages diff in `action.yml` no longer sends stderr to `/dev/null`: that
+    hid its warning, which is how #14 missed that call site. The step still never
+    fails the build. Keep it that way.
+  - Only `integration.yml` is read. `pr-paths.yml` and `e2e-sharded.yml` run the same
+    action, so the same call sites, but their jobs run with the README's permissions,
+    not `actions: read`.
 - **Fat-mode integration job**: the action runs cargo at the workspace root and a
   caller cannot give a composite action's steps a working directory, so the job
   copies the fixture crate there (it refuses to run if a root `Cargo.toml` or `src/`
