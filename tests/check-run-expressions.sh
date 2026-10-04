@@ -20,29 +20,43 @@
 # item or not. That is a block scalar (`run: |`, `>`, `|-`, ...) or a value written after
 # `run:`, plus the lines under it indented deeper than the key. Nothing else in the file is
 # looked at: `if:`, `with:`, `env:`, `description:` and `default:` are meant to hold
-# expressions. It is a line scan, not a YAML parser: a step is known by its `- name:` line,
-# and a `run:` key counts wherever it is, even as an input under `with:` (a false positive
-# is loud, a miss would not be).
+# expressions. It is a line scan, not a YAML parser. A step is the nearest list item at or
+# above the `run:` key, named by its `- name:` line or by a `name:` key at the same
+# indentation as the item's first key (a step with neither is unnamed). A `run:` key counts
+# wherever it is, even as an input under `with:` (a false positive is loud, a miss would not
+# be).
 #
 # The allowlist is for an expression that must stay in a script. It is empty: the inputs
 # that are meant to be shell (`setup-commands`, `extra-test-commands`) are evaluated from
-# an environment variable instead (see action.yml). An entry is `step name|expression|
-# reason`, all three non-empty and the expression without a `|` in it; the step name is the
-# `- name:` text without its quotes and the expression is what sits between `${{` and `}}`,
-# trimmed. An entry that matches no finding fails the check, so the list only shrinks:
-# remove the entry when the expression goes. Never add one for a value a caller supplies
-# that is not meant to be shell.
+# an environment variable instead (see action.yml). An entry is `step name :: expression ::
+# reason`, with the separator ` :: ` (a space, two colons, a space) and all three parts
+# non-empty. The separator is not `|` because an expression often holds `||`. The step name
+# is the step's name without quotes, the expression is what sits between `${{` and `}}`,
+# trimmed, and the reason may hold the separator. An entry that matches no finding fails the
+# check, so the list only shrinks: remove the entry when the expression goes. Never add one
+# for a value a caller supplies that is not meant to be shell.
 set -euo pipefail
 
 ALLOWED=(
 )
 
+# parse_entry <entry>: sets a_step, a_expr and a_reason; fails when the entry is malformed.
+parse_entry() {
+  local rest
+  a_step="${1%% :: *}"
+  [ "$a_step" != "$1" ] || return 1
+  rest="${1#* :: }"
+  a_expr="${rest%% :: *}"
+  [ "$a_expr" != "$rest" ] || return 1
+  a_reason="${rest#* :: }"
+  [ -n "$a_step" ] && [ -n "$a_expr" ] && [ -n "$a_reason" ]
+}
+
 for entry in ${ALLOWED[@]+"${ALLOWED[@]}"}; do
-  IFS='|' read -r a_step a_expr a_reason <<<"$entry"
-  if [ -z "$a_step" ] || [ -z "$a_expr" ] || [ -z "$a_reason" ]; then
-    echo "::error::check-run-expressions: '${entry}' in ALLOWED is not 'step name|expression|reason' (all three non-empty)" >&2
+  parse_entry "$entry" || {
+    echo "::error::check-run-expressions: '${entry}' in ALLOWED is not 'step name :: expression :: reason' (all three non-empty)" >&2
     exit 2
-  fi
+  }
 done
 
 if [ "$#" -gt 0 ]; then
@@ -63,6 +77,13 @@ done
 # unit separator (not whitespace, so an empty step name stays an empty field).
 findings="$(awk '
   function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+  function nameval(line,    v) {
+    v = line
+    sub(/^[[:space:]]*(-[[:space:]]+)?name:/, "", v)
+    v = trim(v)
+    gsub("^[\"" SQ "]|[\"" SQ "]$", "", v)
+    return v
+  }
   function report(text,    rest, start, end, expr) {
     rest = text
     while ((start = index(rest, "${{")) > 0) {
@@ -74,7 +95,7 @@ findings="$(awk '
     }
   }
   BEGIN { SEP = sprintf("%c", 31); SQ = sprintf("%c", 39) }
-  FNR == 1 { inrun = 0; step = "" }
+  FNR == 1 { inrun = 0; step = ""; stepdash = -1 }
   {
     if (inrun) {
       if ($0 ~ /^[[:space:]]*$/) next
@@ -82,11 +103,18 @@ findings="$(awk '
       if (RLENGTH > keycol) { report($0); next }
       inrun = 0
     }
-    if ($0 ~ /^[[:space:]]*-[[:space:]]+name:/) {
-      step = $0
-      sub(/^[[:space:]]*-[[:space:]]+name:/, "", step)
-      step = trim(step)
-      gsub("^[\"" SQ "]|[\"" SQ "]$", "", step)
+    if ($0 ~ /^[[:space:]]*-[[:space:]]/) {
+      dash = index($0, "-") - 1
+      match($0, /^[[:space:]]*-[[:space:]]+/)
+      content = RLENGTH
+      if (stepdash < 0 || dash <= stepdash) {
+        # A new step, not a list nested inside the last one.
+        stepdash = dash; stepcol = content; step = ""
+        if ($0 ~ /^[[:space:]]*-[[:space:]]+name:/) step = nameval($0)
+      }
+    } else if (stepdash >= 0 && $0 ~ /^[[:space:]]*name:/) {
+      match($0, /^ */)
+      if (RLENGTH == stepcol) step = nameval($0)
     }
     if ($0 ~ /^[[:space:]]*(-[[:space:]]+)?run:([[:space:]]|$)/) {
       match($0, /run:/)
@@ -104,9 +132,7 @@ if [ -n "$findings" ]; then
     i=0
     for entry in ${ALLOWED[@]+"${ALLOWED[@]}"}; do
       i=$((i + 1))
-      a_step="${entry%%|*}"
-      rest="${entry#*|}"
-      a_expr="${rest%%|*}"
+      parse_entry "$entry"
       if [ "$a_step" = "$step" ] && [ "$a_expr" = "$expr" ]; then
         allowed=1
         used+="$i "
@@ -126,8 +152,8 @@ for entry in ${ALLOWED[@]+"${ALLOWED[@]}"}; do
   i=$((i + 1))
   case "$used" in *" $i "*) continue ;; esac
   status=1
-  rest="${entry#*|}"
-  echo "::error::check-run-expressions: ALLOWED entry '${entry%%|*}' for '${rest%%|*}' matches no expression in: ${files[*]}. Remove it from tests/check-run-expressions.sh (the list only shrinks)"
+  parse_entry "$entry"
+  echo "::error::check-run-expressions: ALLOWED entry '${a_step}' for '${a_expr}' matches no expression in: ${files[*]}. Remove it from tests/check-run-expressions.sh (the list only shrinks)"
 done
 
 if [ "$status" -eq 0 ]; then

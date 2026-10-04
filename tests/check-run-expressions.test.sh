@@ -264,6 +264,37 @@ run "$WORK/unnamed.yml"
 status_is "a step with no name: fails" 1
 lacks "a step with no name: no step is named" "(step"
 
+# A step is the nearest list item above the key: one that starts with another key, or has
+# no name, is not the previous step, so an allowlist entry cannot leak onto it.
+cat >"$WORK/attribution.yml" <<'EOF'
+steps:
+  - name: First
+    run: echo "${{ a }}"
+  - id: second
+    run: |
+      echo "${{ b }}"
+  - uses: some/action@v1
+    with:
+      paths:
+        - one
+        - name: nested
+      key: v
+  - id: fourth
+    name: Fourth step
+    run: echo "${{ d }}"
+  - id: fifth
+    with:
+      name: not-the-step-name
+    run: echo "${{ e }}"
+EOF
+run "$WORK/attribution.yml"
+status_is "attribution: fails" 1
+annotations "attribution: four findings" 4
+has "attribution: the named step is named" "line=3,title=Expression in a run: body::'\${{ a }}' is replaced by the runner before the shell parses the script (step 'First')"
+lacks "attribution: a step starting with another key is not the previous step" "'\${{ b }}' is replaced by the runner before the shell parses the script (step"
+has "attribution: a name: key later in the step names it" "'\${{ d }}' is replaced by the runner before the shell parses the script (step 'Fourth step')"
+lacks "attribution: a name: under with: does not name the step" "'\${{ e }}' is replaced by the runner before the shell parses the script (step"
+
 # --- a missing file is an error, not a pass ------------------------------------------------
 
 run "$WORK/no-such-file.yml"
@@ -289,7 +320,7 @@ steps:
       ${{ inputs.setup-commands }}
 EOF
 
-variant allowed "  'Setup commands|inputs.setup-commands|meant to be shell'"
+variant allowed "  'Setup commands :: inputs.setup-commands :: meant to be shell'"
 runs "$WORK/allowed.sh" "$WORK/shell-input.yml"
 status_is "an allowlisted expression in its step: passes" 0
 annotations "an allowlisted expression in its step: nothing reported" 0
@@ -328,21 +359,38 @@ has "an entry that matches nothing: says to remove it" "Remove it"
 annotations "an entry that matches nothing: no finding in the file itself" 0
 
 # Two entries, one used and one not: only the unused one is named.
-variant two "  'Other|inputs.gone|was removed'"
-variant_two_line="  'Setup commands|inputs.setup-commands|meant to be shell'"
+variant two "  'Other :: inputs.gone :: was removed'"
+variant_two_line="  'Setup commands :: inputs.setup-commands :: meant to be shell'"
 awk -v add="$variant_two_line" '{ print } !done && $0 == "ALLOWED=(" { print add; done = 1 }' "$WORK/two.sh" >"$WORK/two-entries.sh"
 runs "$WORK/two-entries.sh" "$WORK/shell-input.yml"
 status_is "two entries, one unused: fails" 1
 has "two entries, one unused: names the unused one" "ALLOWED entry 'Other' for 'inputs.gone'"
 lacks "two entries, one unused: not the used one" "ALLOWED entry 'Setup commands'"
 
-# An entry that is not 'step|expression|reason' would match wrongly or nothing at all.
-for entry in 'a|b' 'a|b|' 'a||c' '|b|c' 'abc' '||'; do
+# An entry that is not 'step :: expression :: reason' would match wrongly or nothing at all.
+# The last one is the old '|' form, which would read as a step name with no separator.
+for entry in 'abc' 'a :: b' 'a :: b :: ' ' :: b :: c' 'a ::  :: c' 'a|b|c'; do
   variant refused "  '$entry'"
   runs "$WORK/refused.sh" "$WORK/elsewhere.yml"
   status_is "allowlist entry '$entry': refused with exit 2" 2
-  has "allowlist entry '$entry': says why" "is not 'step name|expression|reason'"
+  has "allowlist entry '$entry': says why" "is not 'step name :: expression :: reason'"
 done
+
+# An expression with '||' in it is the common shape, and why the separator is not '|'. The
+# reason may hold the separator.
+cat >"$WORK/or.yml" <<'EOF'
+steps:
+  - name: Either
+    run: |
+      echo "${{ inputs.a || inputs.b }}"
+EOF
+variant either "  'Either :: inputs.a || inputs.b :: either one :: or both'"
+runs "$WORK/either.sh" "$WORK/or.yml"
+status_is "an allowlisted expression holding '||': passes" 0
+annotations "an allowlisted expression holding '||': nothing reported" 0
+run "$WORK/or.yml"
+status_is "the same without the entry: fails" 1
+has "the same without the entry: names the whole expression" "'\${{ inputs.a || inputs.b }}'"
 
 # --- the real file -------------------------------------------------------------------------
 
@@ -379,7 +427,7 @@ mutate() {
 }
 
 mutate report 's/"\$REPORT"/"${{ inputs.report }}"/g'
-mutate shell-input 's/eval "\$SETUP_COMMANDS"/${{ inputs.setup-commands }}/'
+mutate shell-input 's/eval "\$commands"/${{ inputs.setup-commands }}/'
 mutate platform 's/^        # A binary that cannot be had/        # A binary that cannot be had ${{ runner.os }}/'
 has "mutation platform: a comment in a body is found, and the step is named" "(step 'Determine platform and download URL')"
 
