@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The event a merge queue runs the required checks on (#76). `Shell scripts` is one of
+  # them, and without this it never reports for the queue's commit.
+  merge_group:
 
 jobs:
   scripts:
@@ -78,6 +81,12 @@ jobs:
 
       - name: Test check-run-expressions.sh
         run: bash tests/check-run-expressions.test.sh
+
+      # The merge queue's required checks (#76): the gate script, that `ci-gate` needs
+      # every job of integration.yml, and that the workflows a required check comes from
+      # run on `merge_group`.
+      - name: Test the merge queue's workflow wiring and ci-gate.sh
+        run: bash tests/merge-queue.test.sh
 
       # Not a lint of the scripts, but it needs no setup and belongs on every pull
       # request: it fails when action.yml (or a script it ships) passes omni-dev a
