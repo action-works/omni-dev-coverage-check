@@ -23,10 +23,17 @@
 # Exit status:
 #   0  a baseline was found, or none was (a miss is not a failure, and neither is a
 #      workflow the API does not know yet)
-#   1  the API failed in a way that says nothing about the baseline: a permission or
-#      an outage must not read as "there is none", or every pull request would quietly
-#      pay for a rebuild
+#   1  the API failed on the FIRST request, in a way that says nothing about the
+#      baseline: a permission or an outage must not read as "there is none", or every
+#      pull request would quietly pay for a rebuild
 #   2  a usage error
+#
+# A failure further into the walk is a warned miss instead: the first request worked, so
+# the credentials do, and what went wrong is transient (a rate limit, a server error).
+# The baseline is optional, and the walk makes many more requests than one lookup did, so
+# one blip on the eleventh must not fail a pull request. Transient statuses (no response,
+# 429, 5xx) are retried first, three attempts in all, FIND_BASELINE_RETRY_DELAY seconds
+# apart (default 2, times the attempt number).
 #
 # Candidates are BASE_REF and then its first-parent ancestors, nearest first. The first
 # one that has a baseline wins. A commit has one if the workflow ran for it, with
@@ -70,49 +77,78 @@ case "$depth" in
 esac
 # Forced to base 10, so that a leading zero is not read as octal.
 limit=$((10#$depth + 1))
+retry_delay="${FIND_BASELINE_RETRY_DELAY:-2}"
 
 API_BODY=""
 API_STATUS=""
-
-# api <path and query>: GET it. The body is left in API_BODY and the HTTP status in
-# API_STATUS (000 when there was no response). A transport failure is a status, not an
-# exit, so the caller says what it means.
-api() {
-  local response auth=()
-  if [ -n "${GH_TOKEN:-}" ]; then
-    auth=(-H "Authorization: Bearer $GH_TOKEN")
-  fi
-  # `${auth[@]+...}`: an empty array is an unbound variable to bash 3.2 (macOS) under -u.
-  response="$(curl -sS --max-time 60 ${auth[@]+"${auth[@]}"} \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    -w $'\n%{http_code}' "$api_url/$1")" || true
-  API_STATUS="${response##*$'\n'}"
-  API_BODY="${response%$'\n'*}"
-  case "$API_STATUS" in
-    [0-9][0-9][0-9]) ;;
-    *) API_STATUS=000 ;;
-  esac
-}
-
-# api_failed <what>: the API said something that is not an answer to the question.
-api_failed() {
-  local message
-  message="$(jq -r '.message // empty' <<<"$API_BODY" 2>/dev/null || true)"
-  if [ "$API_STATUS" = 000 ]; then
-    fail "Could not $1: no response from $api_url. Re-run the job."
-  fi
-  fail "Could not $1 (HTTP $API_STATUS${message:+: $message}). If this is a permission, the token needs to be able to read workflow runs and their artifacts."
-}
-
-urlencode() {
-  jq -rn --arg v "$1" '$v | @uri'
-}
 
 miss() { # <message>
   echo "::warning::$1"
   echo "found=false" >>"$out"
   exit 0
+}
+
+# Without these the requests are wrong, not absent: with no jq the names encode to nothing and
+# the request goes to `.../workflows//runs`, which is a 404 that would read as "no such
+# workflow". A runner without one still gets its comment, so this is a warned miss, and the
+# warning names the cause.
+for tool in git curl jq; do
+  command -v "$tool" >/dev/null 2>&1 ||
+    miss "$tool was not found on PATH, and the baseline lookup needs it. Continuing without a baseline."
+done
+
+# api <path and query>: GET it. The body is left in API_BODY and the HTTP status in
+# API_STATUS (000 when there was no response). A transport failure is a status, not an
+# exit, so the caller says what it means. Transient statuses are tried again.
+api() {
+  local response auth=() attempt=1
+  if [ -n "${GH_TOKEN:-}" ]; then
+    auth=(-H "Authorization: Bearer $GH_TOKEN")
+  fi
+  while :; do
+    # `${auth[@]+...}`: an empty array is an unbound variable to bash 3.2 (macOS) under -u.
+    response="$(curl -sS --max-time 60 ${auth[@]+"${auth[@]}"} \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -w $'\n%{http_code}' "$api_url/$1")" || true
+    API_STATUS="${response##*$'\n'}"
+    API_BODY="${response%$'\n'*}"
+    case "$API_STATUS" in
+      [0-9][0-9][0-9]) ;;
+      *) API_STATUS=000 ;;
+    esac
+    case "$API_STATUS" in
+      000 | 429 | 5[0-9][0-9])
+        [ "$attempt" -lt 3 ] || return 0
+        sleep "$((attempt * retry_delay))"
+        attempt=$((attempt + 1))
+        ;;
+      *) return 0 ;;
+    esac
+  done
+}
+
+# api_failed <what>: the API said something that is not an answer to the question. The first
+# request failing is an error. Any later one is a miss: see the header.
+api_failed() {
+  local detail message
+  message="$(jq -r '.message // empty' <<<"$API_BODY" 2>/dev/null || true)"
+  if [ "$API_STATUS" = 000 ]; then
+    detail="no response from $api_url"
+  else
+    detail="HTTP $API_STATUS${message:+: $message}"
+  fi
+  if [ "${distance:-0}" -gt 0 ]; then
+    miss "Could not $1 ($detail), after the merge-base itself was looked up. Continuing without a baseline."
+  fi
+  if [ "$API_STATUS" = 000 ]; then
+    fail "Could not $1: $detail. Re-run the job."
+  fi
+  fail "Could not $1 ($detail). If this is a permission, the token needs to be able to read workflow runs and their artifacts."
+}
+
+urlencode() {
+  jq -rn --arg v "$1" '$v | @uri'
 }
 
 plural() { # <n> <word>

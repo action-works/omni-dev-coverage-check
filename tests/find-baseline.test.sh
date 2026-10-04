@@ -81,6 +81,7 @@ cat >"$BIN/curl" <<'EOF'
 #   runs-<sha>.list        one JSON run per line      (GET .../workflows/<wf>/runs?head_sha=<sha>)
 #   artifacts-<id>.list    one JSON artifact per line (GET .../runs/<id>/artifacts)
 #   <that name>.status     an HTTP status to answer instead, with <name>.json as the body
+#   <that name>.sequence   statuses, one line per request, answered first (200: serve normally)
 #   workflow.status        the status every runs request is answered with (404: no such workflow)
 # The status goes after the body, on a line of its own, as the script asks with -w.
 args="$*"
@@ -109,6 +110,15 @@ case "$url" in
 esac
 status=200
 body=
+if [ -s "$FAKE/$key.sequence" ]; then
+  status="$(head -n1 "$FAKE/$key.sequence")"
+  tail -n +2 "$FAKE/$key.sequence" >"$FAKE/$key.sequence.next"
+  mv "$FAKE/$key.sequence.next" "$FAKE/$key.sequence"
+  if [ "$status" != 200 ]; then
+    printf '{"message":"stub: %s"}\n%s' "$status" "$status"
+    exit 0
+  fi
+fi
 if [ -f "$FAKE/$key.status" ]; then
   status="$(cat "$FAKE/$key.status")"
   [ ! -f "$FAKE/$key.json" ] || body="$(cat "$FAKE/$key.json")"
@@ -154,7 +164,14 @@ baseline_at() {
   artifact "$2" coverage-baseline
 }
 
-# fail_with <key> <status> [body]: answer one request with an HTTP status.
+# sequence <key> <status>...: answer the first requests for a key with these statuses, in order.
+sequence() {
+  local key="$1"
+  shift
+  printf '%s\n' "$@" >"$FAKE/$key.sequence"
+}
+
+# fail_with <key> <status> [body]: answer every request for a key with an HTTP status.
 fail_with() {
   echo "$2" >"$FAKE/$1.status"
   [ -z "${3:-}" ] || echo "$3" >"$FAKE/$1.json"
@@ -171,6 +188,7 @@ lookup() {
     cd "$REPO" && env PATH="$BIN:$PATH" GITHUB_OUTPUT="$WORK/output" GITHUB_REPOSITORY="$REPOSITORY" \
       GITHUB_API_URL=https://api.github.com BASELINE_WORKFLOW=ci.yml BASELINE_ARTIFACT=coverage-baseline \
       BASE_REF="$start" ANCESTOR_DEPTH="$depth" GH_TOKEN=tok FAKE="$FAKE" CURL_LOG="$CURL_LOG" \
+      FIND_BASELINE_RETRY_DELAY=0 \
       "$@" bash "$SCRIPT" 2>&1
   )"
   STATUS=$?
@@ -428,6 +446,108 @@ reset
 baseline_at c12 601
 lookup c12 10
 eq "a failure's control, the same lookup with a response: found" true "$(out found)"
+
+# --- transient errors are tried again --------------------------------------------------------
+
+reset
+baseline_at c12 901
+sequence "runs-$(sha c12)" 502 200
+lookup c12 10
+eq "retry: one 502 and then an answer: found" true "$(out found)"
+eq "retry: the retry is the same request again (502, then runs, then artifacts)" 3 "$(requests)"
+lacks "retry: no error for a blip" "$STDOUT" "::error::"
+
+for transient in 500 503 429 000; do
+  reset
+  baseline_at c12 901
+  if [ "$transient" = 000 ]; then
+    lookup c12 10 FAKE_CURL_EXIT=7
+  else
+    fail_with "runs-$(sha c12)" "$transient"
+    lookup c12 10
+  fi
+  eq "retry: $transient every time: gives up after 3 attempts, at the first request: an error" 1 "$STATUS"
+  eq "retry: $transient: three attempts, no more" 3 "$(requests)"
+done
+
+# What is not transient is not asked twice.
+for definite in 403 404 401 422; do
+  reset
+  baseline_at c12 901
+  fail_with "runs-$(sha c12)" "$definite" '{"message":"no"}'
+  lookup c12 10
+  eq "retry: $definite is an answer, so it is asked once" 1 "$(requests)"
+done
+
+# --- an error deeper in the walk is a miss, the first request's is an error ------------------------
+
+reset
+baseline_at c10 902
+lookup c12 10
+eq "deep: control, nothing wrong: the baseline 2 back is found" true "$(out found)"
+
+for deep in 500 403; do
+  reset
+  baseline_at c10 902
+  fail_with "runs-$(sha c11)" "$deep" '{"message":"stub failure"}'
+  lookup c12 10
+  eq "deep: HTTP $deep one commit back: the script succeeds" 0 "$STATUS"
+  eq "deep: HTTP $deep: it is a miss" false "$(out found)"
+  has "deep: HTTP $deep: the warning says what failed and when" "$STDOUT" \
+    "::warning::Could not list the runs of workflow 'ci.yml' (HTTP $deep: stub failure), after the merge-base itself was looked up. Continuing without a baseline."
+  lacks "deep: HTTP $deep: not an error" "$STDOUT" "::error::"
+done
+
+reset
+baseline_at c11 903
+fail_with artifacts-903 500
+lookup c12 10
+eq "deep: the artifacts of an ancestor's run failing: a miss, the merge-base's own request having worked" false "$(out found)"
+has "deep: and the warning names the run" "$STDOUT" "list the artifacts of run 903"
+reset
+baseline_at c12 903
+fail_with artifacts-903 500
+lookup c12 10
+eq "deep's contrast: the same failure on the merge-base's own run is an error" 1 "$STATUS"
+
+# No response at all, three times running, one commit back.
+reset
+baseline_at c10 905
+sequence "runs-$(sha c11)" 000 000 000
+lookup c12 10
+eq "deep: no response one commit back (after 3 attempts) is also a miss" 0 "$STATUS"
+eq "deep: no response: not found" false "$(out found)"
+has "deep: no response: the warning says so" "$STDOUT" "no response from https://api.github.com), after the merge-base itself was looked up"
+# ... but one lost response is retried and the walk goes on.
+reset
+baseline_at c10 905
+sequence "runs-$(sha c11)" 000
+lookup c12 10
+eq "deep's control: one lost response is retried, and the baseline 2 back is found" true "$(out found)"
+
+# --- a runner without a tool the lookup needs -----------------------------------------------------------
+
+# A PATH with git and the stub curl and nothing else: no jq.
+NOJQ="$WORK/nojq"
+mkdir "$NOJQ"
+ln -s "$(command -v git)" "$NOJQ/git"
+ln -s "$BIN/curl" "$NOJQ/curl"
+reset
+baseline_at c12 904
+: >"$WORK/output"
+STDOUT="$(
+  cd "$REPO" && env PATH="$NOJQ" GITHUB_OUTPUT="$WORK/output" GITHUB_REPOSITORY="$REPOSITORY" \
+    BASELINE_WORKFLOW=ci.yml BASELINE_ARTIFACT=coverage-baseline BASE_REF="$(sha c12)" ANCESTOR_DEPTH=3 \
+    FAKE="$FAKE" CURL_LOG="$CURL_LOG" "$(command -v bash)" "$SCRIPT" 2>&1
+)"
+STATUS=$?
+OUT="$(cat "$WORK/output")"
+eq "no jq: the script still succeeds" 0 "$STATUS"
+eq "no jq: it is a miss" false "$(out found)"
+has "no jq: the warning names the missing tool, not a missing workflow" "$STDOUT" \
+  "::warning::jq was not found on PATH, and the baseline lookup needs it. Continuing without a baseline."
+lacks "no jq: and does not blame the workflow" "$STDOUT" "was not found in"
+eq "no jq: it asked nothing of the API" 0 "$(requests)"
 
 # --- the commit to start from -----------------------------------------------------------------
 
