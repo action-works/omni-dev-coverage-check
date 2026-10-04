@@ -40,6 +40,9 @@ jobs:
       - name: Test expected-baseline.sh
         run: bash tests/expected-baseline.test.sh
 
+      - name: Test baseline-lib.sh
+        run: bash tests/baseline-lib.test.sh
+
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
 
