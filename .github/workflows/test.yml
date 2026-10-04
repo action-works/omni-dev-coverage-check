@@ -33,3 +33,12 @@ jobs:
 
       - name: Test prepare-shard-crate.sh
         run: bash tests/prepare-shard-crate.test.sh
+
+      - name: Test check-deprecated-flags.sh
+        run: bash tests/check-deprecated-flags.test.sh
+
+      # Not a lint of the scripts, but it needs no setup and belongs on every pull
+      # request: it fails when action.yml (or a script it ships) passes omni-dev a
+      # flag omni-dev has deprecated, before a major release removes it.
+      - name: Check the action passes no deprecated omni-dev flag
+        run: bash tests/check-deprecated-flags.sh
