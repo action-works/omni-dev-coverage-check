@@ -641,9 +641,19 @@ EOF
 has "workflow: check 1 asks for the fallback and the reason, in one warning" "$WORKFLOW_TEXT" \
   "            expect \"10: the fallback's warning names the API's reason\" \"\$warnings\" \\
               \"\$fallback\" \"(API: Bad credentials)\""
-has "workflow: check 2 asks for the reason and the fallback with its tag, in one warning" "$WORKFLOW_TEXT" \
-  "            expect \"10: the fallback's warning says the redirect answered, with the tag\" \"\$warnings\" \\
-              \"(API: Bad credentials)\" \"\$fallback\""
+has "workflow: check 2 asks for all three in one warning" "$WORKFLOW_TEXT" \
+  "            expect \"10: ONE warning holds the reason, the redirect answering and the way out\" \"\$warnings\" \\
+              \"(API: Bad credentials)\" \"\$fallback\" \"set 'version' to a release to skip the lookup\""
+# The structure round them: the reading is a condition (a failed read ends the step red, and a
+# failure under `bash -e` is not lost), and the else is what counts it.
+has "workflow: the warnings are read as a condition" "$WORKFLOW_TEXT" \
+  "          if warnings=\"\$(bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)')\"; then"
+has "workflow: a failed read is counted" "$WORKFLOW_TEXT" \
+  "set 'version' to a release to skip the lookup\"
+          else
+            status=1
+          fi
+"
 has "workflow: check 3 asks for the fallback and the way out, in one warning" "$WORKFLOW_TEXT" \
   "            expect \"10: the fallback's warning offers pinning 'version'\" \"\$warnings\" \\
               \"\$fallback\" \"set 'version' to a release to skip the lookup\""

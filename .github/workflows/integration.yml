@@ -958,7 +958,8 @@ jobs:
   # the API's "latest". (A second run of the action as the control would not do: with
   # the fallback it too would use the redirect whenever the API was failing.) That the
   # redirect, not the API, answered 10 is shown by the API refusing its token just
-  # before; the unit tests pin that the input reaches the step, and what the step logs.
+  # before, and by `failure-messages`, which reads the warning the step logs when the
+  # redirect answered (#61); the unit tests pin that the input reaches the step.
   # One install in this job, so no second omni-dev version can poison the cache. A
   # release published between the API query and the run fails the job on the two
   # differing; a re-run settles it.
@@ -1749,12 +1750,14 @@ jobs:
             exit 1
           fi
 
-  # Six of the scenarios above exist mainly for their message, which is what a
+  # Seven of the scenarios above exist mainly for their message, which is what a
   # user reads: a shard pattern that matches nothing must name the pattern, a
   # guard that finds no `--fail-under-lines`, `--output` or `--ignore-filename-regex`
   # must say how to fix it, a release with no asset for the runner's
-  # architecture must name the asset, and a `version` that names no release must
-  # name the input. A step cannot read its own job's log and a
+  # architecture must name the asset, a `version` that names no release must
+  # name the input, and the redirect fallback of `version: latest` (a warning, not an
+  # error, so read with job-warnings.sh) must say that the redirect answered and
+  # why. A step cannot read its own job's log and a
   # composite action's failing step exposes no output, so the outcome and file
   # checks above pin the step order, not the text. This job reads the finished
   # jobs' logs instead. It reads them for a second thing: on a pull request, the
@@ -1927,7 +1930,8 @@ jobs:
             fi
           fi
           # 10: with a token the API refuses, the resolve step logs one warning that
-          # says the redirect answered in its place (#61). The scenario's own checks
+          # says the redirect answered in its place (#61). The first and third checks
+          # say which part is missing; the second holds all three, which is the rule. The scenario's own checks
           # show the outcome (the API refused, the release equals the API's); this is
           # what shows that the redirect answered and not the API, which the outcome
           # alone does not. The job's log holds three `Attempt n/3` warnings that name
@@ -1940,8 +1944,8 @@ jobs:
           if warnings="$(bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)')"; then
             expect "10: the fallback's warning names the API's reason" "$warnings" \
               "$fallback" "(API: Bad credentials)"
-            expect "10: the fallback's warning says the redirect answered, with the tag" "$warnings" \
-              "(API: Bad credentials)" "$fallback"
+            expect "10: ONE warning holds the reason, the redirect answering and the way out" "$warnings" \
+              "(API: Bad credentials)" "$fallback" "set 'version' to a release to skip the lookup"
             expect "10: the fallback's warning offers pinning 'version'" "$warnings" \
               "$fallback" "set 'version' to a release to skip the lookup"
           else
