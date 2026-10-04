@@ -13,19 +13,9 @@ set -uo pipefail
 
 SHIM="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/llvm-tool-shim.sh"
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -63,15 +53,6 @@ run() {
   shift
   LLVM_SHIM_LOG="$log" "$work/shims/$tool" "$@" > /dev/null 2>&1
   status=$?
-}
-
-# eq <label> <expected> <actual>
-eq() {
-  if [ "$2" = "$3" ]; then
-    ok "$1"
-  else
-    bad "$1" "expected '$2', got '$3'"
-  fi
 }
 
 calls() { cat "$STUB_CALLS" 2>/dev/null; }
@@ -124,6 +105,4 @@ else
 fi
 eq "and the real tool is not run" "" "$(calls)"
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary

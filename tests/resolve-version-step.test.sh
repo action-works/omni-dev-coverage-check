@@ -27,34 +27,9 @@ ACTION="$ROOT/action.yml"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
-
-# eq <name> <expected> <actual>
-eq() {
-  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi
-}
-
-# has <name> <text> <fragment>: the text contains the fragment (a fixed string).
-has() {
-  if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "no '$3' in: $2"; fi
-}
-
-# lacks <name> <text> <fragment>
-lacks() {
-  if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "unexpected '$3' in: $2"; fi
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
 if ! command -v jq >/dev/null; then
   echo "FAIL - jq is not installed; the step needs it, as does this test"
@@ -470,6 +445,4 @@ rest="${RESOLVE//'${{ inputs.version }}'/}"
 # shellcheck disable=SC2016
 eq "script: the only expression is inputs.version" "" "$(grep -n -F '${{' <<<"$rest" || true)"
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary

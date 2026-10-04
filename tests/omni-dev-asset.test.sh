@@ -11,19 +11,9 @@ set -uo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/omni-dev-asset.sh"
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
 # asset <os> <arch> <expected asset>: the script prints exactly that and exits 0.
 asset() {
@@ -98,6 +88,4 @@ usage
 usage Linux
 usage Linux ARM64 extra
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary
