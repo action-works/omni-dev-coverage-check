@@ -202,6 +202,7 @@ has "  and says the event is unknown" "$ERR" "GITHUB_EVENT_NAME is not set"
 run pull_request 100 1 "$HASH_A" check ""
 eq "no value: exits 2, as a usage error" 2 "$STATUS"
 has "  and says what it needed" "$ERR" "omni-dev-cache-hit output"
+has "  and names its own mode" "$ERR" "::error::install-cache.sh: check needs"
 eq "  and prints nothing on stdout" "" "$OUT"
 
 run pull_request 100 1 "$HASH_A" check
@@ -247,6 +248,7 @@ eq "the same hit on a pull request: check accepts it" 0 "$STATUS"
 run pull_request 100 1 "$HASH_A" check-fresh ""
 eq "check-fresh, no value: exits 2, as a usage error" 2 "$STATUS"
 has "  and says what it needed" "$ERR" "omni-dev-cache-hit output"
+has "  and names its own mode" "$ERR" "check-fresh needs"
 eq "  and prints nothing on stdout" "" "$OUT"
 run pull_request 100 1 "$HASH_A" check-fresh
 eq "check-fresh, no argument: exits 2" 2 "$STATUS"
@@ -369,10 +371,22 @@ PIN_JOB="$(awk '
   in_job { print }
 ' "$WORKFLOW")"
 pass "integration.yml: found the version-pin job" test -n "$PIN_JOB"
-has "version-pin: the checking step reads the install's omni-dev-cache-hit output" "$PIN_JOB" \
-  "CACHE_HIT: \${{ steps.pin.outputs.omni-dev-cache-hit }}"
-has "version-pin: it calls check-fresh, and a failure is counted" "$PIN_JOB" \
-  'bash tests/install-cache.sh check-fresh "$CACHE_HIT" || status=1'
+# The checking step, on its own: a substring match on the whole job would pass for a call
+# that is commented out, runs after the step has ended, or sits in another step.
+PIN_ASSERT="$(awk '
+  /^      - name: Assert the outcome$/ { printing = 1; print; next }
+  printing && /^      - name:/ { exit }
+  printing { print }
+' <<<"$PIN_JOB")"
+pass "integration.yml: found the version-pin checking step" test -n "$PIN_ASSERT"
+has "version-pin: the checking step reads the install's omni-dev-cache-hit output" "$PIN_ASSERT" \
+  "          CACHE_HIT: \${{ steps.pin.outputs.omni-dev-cache-hit }}"
+CALL='          bash tests/install-cache.sh check-fresh "$CACHE_HIT" || status=1'
+eq "version-pin: the checking step calls check-fresh once, as a command, and a failure is counted" 1 \
+  "$(grep -cxF -- "$CALL" <<<"$PIN_ASSERT")"
+CALL_AT="$(grep -nxF -- "$CALL" <<<"$PIN_ASSERT" | head -n1 | cut -d: -f1)"
+EXIT_AT="$(grep -nxF -- '          exit "$status"' <<<"$PIN_ASSERT" | head -n1 | cut -d: -f1)"
+pass "version-pin: the call comes before the step's exit" test "${CALL_AT:-999999}" -lt "${EXIT_AT:-0}"
 # Its key is unique to the run on every event, which is the premise of check-fresh. A prefix
 # that did not hold the run would make a hit possible, and `check-fresh` would then be wrong
 # about an event it does not look at.

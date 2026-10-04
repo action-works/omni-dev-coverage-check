@@ -106,10 +106,11 @@ prefix() {
 # check <omni-dev-cache-hit> [fresh]: `fresh` says the job's prefix is unique to the run on every
 # event, so a hit is wrong whatever the event is.
 check() {
-  local hit="${1:-}" fresh="${2:-}"
+  local hit="${1:-}" fresh="${2:-}" mode=check
+  [ -z "$fresh" ] || mode=check-fresh
   if [ -z "$hit" ]; then
     # Matching an empty value against everything would pass whatever the action did.
-    err "check needs the action's omni-dev-cache-hit output; got none. Did the scenario fail, so that it exposed no outputs?"
+    err "$mode needs the action's omni-dev-cache-hit output; got none. Did the scenario fail, so that it exposed no outputs?"
     return 2
   fi
   case "$hit" in
