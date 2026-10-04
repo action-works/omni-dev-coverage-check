@@ -14,6 +14,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `scripts/omni-dev-asset.sh` - Maps a runner's OS and architecture to the omni-dev release asset to download (`tests/omni-dev-asset.test.sh` tests it; `test.yml` runs that)
 - `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl` (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` with chosen help text, and against the real help in `tests/fixtures/omni-dev-help/` (`test.yml` runs that)
+- `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses and a stub `sleep` (`test.yml` runs that)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
@@ -109,6 +110,25 @@ The action is a composite action with two phases:
   never gets an ARM64 asset), with 5b as its control. The ARM64 install that succeeds
   needs a release carrying the asset (#20), and until then nothing checks the ARM64 asset's
   name against a real release.
+- **Version resolution (#1)**: `version: latest` costs one call to the GitHub API
+  (`.../repos/rust-works/omni-dev/releases/latest`); a pinned version makes none. Made
+  unauthenticated from a shared runner address it hit the 60/hr limit and failed the whole job,
+  so the step sends `github-token` (default `github.token`, 1000/hr) and tries three times,
+  sleeping 3s then 6s (none after the last) before one error that names the input. Rules:
+  - The token reaches the script through `env: GH_TOKEN`, never as an expression in the script.
+    The runner evaluates every `${{ }}` in a `run:` block, in a comment or a message, and a
+    backslash does not escape one: a message that wrote the expression would show the masked
+    token (`\***`) instead, and an empty `${{ }}` in a comment fails the step. The test fails if
+    the script holds any expression but `inputs.version`.
+  - The token does reach curl's arguments (`-H "Authorization: Bearer ..."`); the environment only
+    keeps it out of the script text. It is the job's own masked token, as in commit-check's step.
+  - `curl` and `jq` each end in `|| true`: under `bash -e` a refused connection or a gateway's HTML
+    error page would otherwise end the step with a bare exit code before the retry or the message.
+    The test scripts each shape (curl failing, a body that is not JSON, JSON with no `tag_name`).
+  - The release-asset downloads stay unauthenticated on purpose. They are `github.com/.../releases/
+    download/` URLs, not API calls, so the limit in #1 does not apply to them, and curl drops
+    `Authorization` on the redirect to the asset CDN: the header would only send the token somewhere
+    it buys nothing.
 - **No first-class shard mode (decided in #24)**: there is no `mode: shard` / `mode: report`,
   and none should be built until a real adopter has a sharded workflow on this action and
   names what was awkward. The README's sharded example, kept honest by `e2e-sharded.yml`, is
