@@ -2,13 +2,13 @@ name: Integration
 
 # Runs the action itself (`uses: ./`) on a real runner on every change: in thin
 # mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
-# `ignore-filename-regex`, and the `--output` floor a pull request needs), and in
-# fat mode against a fixture crate (the instrumented test run, the three report
+# `ignore-filename-regex`, the `--output` floor a pull request needs, and the
+# `version` input's empty, `v` and `V` spellings), and in fat mode against a fixture crate (the instrumented test run, the three report
 # outputs and the one profile merge they share, the fat-mode line gate,
 # `setup-commands`/`extra-test-commands`, `llvm-cov-ignore-filename-regex`). Each
 # scenario's outcome is asserted
 # at the end of its job; the scenarios are `continue-on-error` so one regression
-# does not hide the rest. What the five scenarios that exist for their message
+# does not hide the rest. What the six scenarios that exist for their message
 # said is asserted by the last job, which reads the finished jobs' logs through
 # the API. On a pull request it also asserts that none of the jobs that ran the
 # pull-request steps logged an omni-dev deprecation warning, and a control job
@@ -982,6 +982,122 @@ jobs:
       - name: Leave nothing for the cache to save
         run: rm -f "$HOME/.cargo/bin/omni-dev"
 
+  # The `version` input when it names no release, or names one with a capital V (#51).
+  # tests/resolve-version-step.test.sh runs the step's script on each value; this runs
+  # them through the action on a runner, which is what shows that a workflow's empty
+  # `version` reaches the script as an empty string and is not swapped for the input's
+  # `latest` default (a swap would make 12a install omni-dev and succeed, and fail here).
+  #
+  # Thin mode with the line gate off, so nothing but the install is in play. 12a and 12b
+  # must stop at the resolve step, before the shards are combined: a missing combined
+  # report shows where. 12c differs from them in `version` alone, so it is their control,
+  # and it is the capital V's decision (accepted) run on a runner: the outputs are the
+  # lowercase-v spelling's and the binary is that release's. It installs 0.45.0, the
+  # release the thin-mode job's first leg installs, so the two write the same cache key
+  # by design; each is its own job, so neither poisons the other.
+  version-input:
+    name: Version input
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write fixtures
+        run: |
+          mkdir shards out
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
+          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
+
+      - name: '12a. An empty version'
+        id: empty
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ''
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/empty.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: '12b. A version that is only a v'
+        id: lone-v
+        uses: ./
+        continue-on-error: true
+        with:
+          version: v
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/lone-v.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: '12c. A release number with a capital V'
+        id: capital-v
+        uses: ./
+        continue-on-error: true
+        with:
+          version: V0.45.0
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/capital-v.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Assert the outcomes
+        env:
+          EMPTY: ${{ steps.empty.outcome }}
+          LONE_V: ${{ steps.lone-v.outcome }}
+          CAPITAL_V: ${{ steps.capital-v.outcome }}
+          # The action's outputs, not the pin: they are what a caller reads, and the
+          # strip is what this scenario is about. Empty if 12c failed, which the
+          # checks below then report.
+          VERSION: ${{ steps.capital-v.outputs.version }}
+          RELEASE_TAG: ${{ steps.capital-v.outputs.release-tag }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected '$2', got '$3'"
+              status=1
+            fi
+          }
+          assert() { # <label> <command...>
+            local label="$1"
+            shift
+            if "$@" > /dev/null 2>&1; then
+              echo "ok   - $label"
+            else
+              echo "::error::$label"
+              status=1
+            fi
+          }
+
+          check "12a. an empty version fails the action" failure "$EMPTY"
+          # Stopped at the resolve step: before the shards were combined.
+          assert "12a: stopped before the shards were combined" test ! -e out/empty.lcov
+
+          check "12b. a version that is only a v fails the action" failure "$LONE_V"
+          assert "12b: stopped before the shards were combined" test ! -e out/lone-v.lcov
+
+          check "12c. a capital V is accepted" success "$CAPITAL_V"
+          assert "12c: got past the install: the shards were combined" test -s out/capital-v.lcov
+          check "12c: the version output has no V" 0.45.0 "$VERSION"
+          check "12c: the release-tag output has a lowercase v" v0.45.0 "$RELEASE_TAG"
+
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          exit "$status"
+
   fat-mode:
     name: Fat mode (fixture crate)
     runs-on: ubuntu-latest
@@ -1429,11 +1545,12 @@ jobs:
             exit 1
           fi
 
-  # Five of the scenarios above exist mainly for their message, which is what a
+  # Six of the scenarios above exist mainly for their message, which is what a
   # user reads: a shard pattern that matches nothing must name the pattern, a
   # guard that finds no `--fail-under-lines`, `--output` or `--ignore-filename-regex`
-  # must say how to fix it, and a release with no asset for the runner's
-  # architecture must name the asset. A step cannot read its own job's log and a
+  # must say how to fix it, a release with no asset for the runner's
+  # architecture must name the asset, and a `version` that names no release must
+  # name the input. A step cannot read its own job's log and a
   # composite action's failing step exposes no output, so the outcome and file
   # checks above pin the step order, not the text. This job reads the finished
   # jobs' logs instead. It reads them for a second thing: on a pull request, the
@@ -1453,6 +1570,7 @@ jobs:
       - ignore-filename-regex-flag
       - latest-redirect
       - version-pin
+      - version-input
       - fat-mode
       - deprecation-control
     runs-on: ubuntu-latest
@@ -1581,6 +1699,28 @@ jobs:
             else
               status=1
             fi
+          fi
+          # 12: a version that names no release is refused by the resolve step, whose one
+          # message names the input, quotes what it got and offers both ways out. Every
+          # check holds the message's own first words and the value it quotes, so each is
+          # about its own scenario's message: 12a's is empty and 12b's is `v`. Both run on
+          # every event. The job name is the one `version-input` sets above.
+          refused="The 'version' input names no release"
+          if errors="$(bash tests/job-errors.sh 'Version input')"; then
+            expect "12a: an empty version is refused, and the message quotes it" "$errors" \
+              "$refused" "(got '')"
+            expect "12b: a version that is only a v is refused, and the message quotes it" "$errors" \
+              "$refused" "(got 'v')"
+            expect "12a: the message offers a release number" "$errors" \
+              "$refused" "(got '')" "a release number such as 0.45.0"
+            expect "12b: the message offers a release number" "$errors" \
+              "$refused" "(got 'v')" "a release number such as 0.45.0"
+            expect "12a: the message offers 'latest'" "$errors" \
+              "$refused" "(got '')" "or to 'latest'"
+            expect "12b: the message offers 'latest'" "$errors" \
+              "$refused" "(got 'v')" "or to 'latest'"
+          else
+            status=1
           fi
           exit "$status"
 
