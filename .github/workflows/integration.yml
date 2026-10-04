@@ -8,8 +8,10 @@ name: Integration
 # asserted at the end of its job; the scenarios are `continue-on-error` so one
 # regression does not hide the rest. What the four scenarios that exist for their
 # message said is asserted by the last job, which reads the finished jobs' logs
-# through the API. One job runs on an ARM64 Linux runner, to show that the
-# pre-built binary is chosen by architecture.
+# through the API. On a pull request it also asserts that none of the jobs that
+# ran the pull-request steps logged an omni-dev deprecation warning, and a control
+# job that logs one on purpose shows that reading can find it. One job runs on an
+# ARM64 Linux runner, to show that the pre-built binary is chosen by architecture.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -26,6 +28,13 @@ name: Integration
 #     log. The log also echoes every step's script, which holds the same message
 #     text whether or not the step ran it, so a grep of the whole log would pass
 #     for the wrong reason. tests/job-errors.sh does the reading.
+#   - A deprecation warning is read from the lines a program printed (`warning:`
+#     right after the timestamp), for the same reason: the echo of a script can hold
+#     the words. tests/job-deprecations.sh does the reading. It can speak only for the
+#     steps a job ran, and a skipped step logs nothing, so each job it reads also
+#     shows, with a file check, that the pull-request steps ran: an empty read of a
+#     job that skipped them would prove nothing. The control job is the other half:
+#     a read that finds nothing anywhere would pass every one of those checks.
 
 on:
   push:
@@ -167,6 +176,18 @@ jobs:
             status=1
           fi
 
+          # On a pull request 1 to 3 render the diff twice, for the comment and for
+          # the percentages, and the failure-messages job reads this job's log for
+          # a deprecation warning from either. The files show the steps ran: a
+          # skipped step logs nothing, so a log without a warning proves nothing
+          # about a step that did not run.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            if [ ! -s coverage.md ] || ! jq -e 'type == "object"' coverage.json > /dev/null 2>&1; then
+              echo "::error::the pull-request diffs did not both run (coverage.md, coverage.json), so this job's log says nothing about deprecated flags"
+              status=1
+            fi
+          fi
+
           # The binary on PATH is the version that was resolved. A cache entry
           # holding another version's binary fails here.
           if ! omni-dev --version | grep -qF "$VERSION"; then
@@ -247,6 +268,15 @@ jobs:
           if [ ! -s out/nogate.lcov ]; then
             echo "::error::5b did not combine the shards"
             status=1
+          fi
+
+          # 5b is the one scenario here that gets past the guard, so on a pull
+          # request it renders the diffs. See the thin-mode job for why the files.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            if [ ! -s coverage.md ] || ! jq -e 'type == "object"' coverage.json > /dev/null 2>&1; then
+              echo "::error::the pull-request diffs did not both run (coverage.md, coverage.json), so this job's log says nothing about deprecated flags"
+              status=1
+            fi
           fi
 
           if ! omni-dev --version | grep -qF "$OLD_OMNI_DEV"; then
@@ -633,6 +663,10 @@ jobs:
             total="$(awk '/^TOTAL/ { print $10 }' out/f1/coverage-summary.txt)"
             assert "F1: the pull-request comment reports the run's total ($total)" \
               grep -qF "Total: **$total**" out/f1/coverage.md
+            # The other diff, which the failure-messages job reads this job's log
+            # for a deprecation warning from. The comment's file shows the first ran.
+            assert "F1: the percentages were rendered with -o json" \
+              jq -e 'type == "object"' out/f1/coverage.json
           else
             assert "F1: no diff rendered outside a pull request" test ! -e out/f1/coverage.md
           fi
@@ -645,19 +679,65 @@ jobs:
           fi
           exit "$status"
 
+  # The control for the deprecation check in `failure-messages` (#23). No other job
+  # should log an omni-dev deprecation warning, and a reader that cannot see one
+  # reports the same empty result. This job logs one on purpose: it calls omni-dev
+  # directly with the flag the action no longer passes, and the action is here only
+  # to install omni-dev (it passes `-o`). It differs from a scenario in that call and
+  # nothing else.
+  # `latest`, so that if omni-dev rewords the warning or removes the flag, this is
+  # where it shows, and the message there says what to do. `|| rc=$?` because a
+  # removed flag is an error, and what to say about it is the reader's, below.
+  deprecation-control:
+    name: Deprecation warning (control)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write fixtures
+        run: printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nend_of_record' "$GITHUB_WORKSPACE" > single.lcov
+
+      - name: 'D1. Install omni-dev through the action'
+        uses: ./
+        with:
+          version: latest
+          run-coverage: false
+          report: single.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: 'D2. Pass the deprecated flag to omni-dev directly'
+        run: |
+          rc=0
+          omni-dev coverage diff --report single.lcov --base-ref HEAD --format json > /dev/null || rc=$?
+          echo "omni-dev exited $rc"
+
   # Four of the scenarios above exist mainly for their message, which is what a
   # user reads: a shard pattern that matches nothing must name the pattern, a
   # guard that finds no `--fail-under-lines` or no `--output` must say how to fix
   # it, and a release with no asset for the runner's architecture must name the
   # asset. A step cannot read its own job's log and a composite action's failing
   # step exposes no output, so the outcome and file checks above pin the step
-  # order, not the text. This job reads the finished jobs' logs instead.
+  # order, not the text. This job reads the finished jobs' logs instead. It reads
+  # them for a second thing: on a pull request, the jobs that ran the diffs must
+  # not have logged an omni-dev deprecation warning, and the control job must have.
   failure-messages:
     name: Failure messages
     # Skipped when a scenario job is red: the run is red already, and a scenario
     # that did not run as intended would only add "message missing" errors that
     # bury the cause.
-    needs: [thin-mode, thin-mode-old-omni-dev, arm64-release-without-asset, output-flag]
+    needs:
+      - thin-mode
+      - thin-mode-old-omni-dev
+      - arm64-release-without-asset
+      - output-flag
+      - fat-mode
+      - deprecation-control
     runs-on: ubuntu-latest
     # The only job here with `actions: read`, which reading a job's log needs.
     # `contents: read` is the checkout: a job-level `permissions` drops the rest.
@@ -757,5 +837,65 @@ jobs:
             else
               status=1
             fi
+          fi
+          exit "$status"
+
+      # What omni-dev says about a flag the action passes, read from the same logs.
+      # The control runs on every event; the absence checks on a pull request only,
+      # because the diffs they are about run on a pull request alone. Each job named
+      # below shows with a file check, in its own assertion step, that they did. The
+      # job names are the ones above; keep them in step with the matrices.
+      - name: Assert the deprecation warnings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=0
+
+          # The control passes the deprecated flag on purpose, so its log holds the
+          # warning. Finding none means the reader cannot see a warning, or omni-dev
+          # no longer prints this one, and then every check below would pass for
+          # nothing. The warning is matched on the flag and what to use instead, not
+          # on its wording, so a reworded message that still names both passes.
+          control='Deprecation warning (control)'
+          if lines="$(bash tests/job-deprecations.sh "$control")"; then
+            matching="$(grep -F -- '--format' <<<"$lines" || true)"
+            if grep -qF -- '-o/--output' <<<"$matching"; then
+              echo "ok   - control: the warning for the flag it passes on purpose is found"
+            else
+              echo "::error::control: no deprecation warning names '--format' and '-o/--output' in '$control'. If omni-dev reworded it, update tests/job-deprecations.sh; if it removed the flag, retire this control."
+              echo "the job logged:"
+              if [ -n "$lines" ]; then
+                while IFS= read -r line; do echo "  $line"; done <<<"$lines"
+              else
+                echo "  (no deprecation lines)"
+              fi
+              status=1
+            fi
+          else
+            status=1
+          fi
+
+          # Every job that runs the diffs on a pull request. A job that stops at a
+          # guard (output-flag 0.31.0, the ARM64 job) never gets there, so it is not
+          # read.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            for job in \
+              'Thin mode (omni-dev 0.45.0)' \
+              'Thin mode (omni-dev latest)' \
+              'Thin mode (omni-dev without --fail-under-lines)' \
+              'Output flag (omni-dev 0.32.0)' \
+              'Fat mode (fixture crate)'; do
+              if lines="$(bash tests/job-deprecations.sh "$job")"; then
+                if [ -z "$lines" ]; then
+                  echo "ok   - $job: no deprecation warning"
+                else
+                  echo "::error::$job logged a deprecation warning, so action.yml passes omni-dev a flag it has deprecated:"
+                  while IFS= read -r line; do echo "  $line"; done <<<"$lines"
+                  status=1
+                fi
+              else
+                status=1
+              fi
+            done
           fi
           exit "$status"
