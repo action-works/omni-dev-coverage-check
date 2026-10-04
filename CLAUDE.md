@@ -25,6 +25,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
 - `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally (`tests/prepare-shard-crate.test.sh` tests it; `test.yml` runs that)
 - `tests/assert-lib.sh` - Assertion helpers the `e2e-sharded.yml` checking steps source (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
+- `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `.github/pull_request_template.md` - PR template
 
@@ -114,6 +115,24 @@ The action is a composite action with two phases:
   - A scenario that exists for its message gets an assertion here; edit a message
     in `scripts/combine-shards.sh` or the guard in `action.yml` and this job
     names the fragment that went missing.
+- **Deprecated-flag check**: `tests/check-deprecated-flags.sh` (run by `test.yml` on
+  every pull request) fails when `action.yml` or `scripts/*.sh` passes omni-dev a flag
+  it has deprecated; today that is `--format` (use `-o/--output`). omni-dev keeps a
+  deprecated flag working and warns only at run time, and hides it from `--help`, so
+  the source is what gets checked. Rules:
+  - It finds only the flags in the list at the top of the script. When omni-dev
+    deprecates another, add a `flag|use instead` line; nothing discovers it. Reading
+    the run logs for `warning: ... is deprecated` would (#23, option 2), but that is
+    not built, and only pull-request runs reach the diff steps that would print one.
+  - A hit is the flag as a whole word anywhere in the file, not only on the line that
+    runs omni-dev: flags are collected in `args=(...)` and `omni-dev "${args[@]}"` runs
+    later. `--report-format` is not a hit. Full-line `#` comments are skipped; nothing
+    else is, echoed text included, so do not spell a deprecated flag in a message, and
+    write another command's `--format` another way (`git log --pretty=format:`).
+  - The test rewrites the real `action.yml`'s `-o` call sites back to `--format`,
+    asserts the copy differs and that every rewritten line is reported, so reworking
+    those call sites fails the test instead of leaving a check that passes on
+    fixtures and finds nothing in the real file.
 - **Fat-mode integration job**: the action runs cargo at the workspace root and a
   caller cannot give a composite action's steps a working directory, so the job
   copies the fixture crate there (it refuses to run if a root `Cargo.toml` or `src/`
