@@ -82,6 +82,10 @@ inputs:
     description: 'Override the path prefix stripped from report file paths to make them repo-relative'
     required: false
     default: ''
+  ignore-filename-regex:
+    description: 'Exclude files whose repo-relative path matches any of these regexes (comma-separated, so a pattern cannot contain a comma) from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Matched after strip-prefix; unanchored, same semantics as cargo llvm-cov --ignore-filename-regex. Needs omni-dev 0.33.0 or later. Empty disables'
+    required: false
+    default: ''
   report-format:
     description: 'Format of the head report: auto, lcov, llvm-cov-json, or cobertura (auto-detected by default)'
     required: false
@@ -332,16 +336,20 @@ runs:
       # step. Fail with the fix instead, and before any coverage run. It runs only
       # when a flag is needed: a push in fat mode calls no `omni-dev coverage` at
       # all, so an old pin keeps working there.
-      #   --output            every pull request (the comment and the patch gate): 0.32.0
-      #   --fail-under-lines  thin mode with the line gate on
+      #   --output                every pull request (the comment and the patch gate): 0.32.0
+      #   --fail-under-lines      thin mode with the line gate on
+      #   --ignore-filename-regex the `ignore-filename-regex` input set, wherever a diff
+      #                           runs (a pull request, or thin mode with the line gate): 0.33.0
       # The `if:` is the union of these needs and the script re-derives each one, so
       # a new flag goes in both places or it is skipped here or checked for nothing.
+      # The last need is a subset of the other two, so it adds nothing to the `if:`.
       if: github.event_name == 'pull_request' || (inputs.run-coverage != 'true' && inputs.fail-under-lines != '')
       shell: bash
       env:
         EVENT_NAME: ${{ github.event_name }}
         RUN_COVERAGE: ${{ inputs.run-coverage }}
         FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}
+        IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
       run: |
         # Capture first: `grep -q` closing the pipe early would SIGPIPE omni-dev,
         # and under `pipefail` that fails the step even when grep matched. A failing
@@ -368,6 +376,15 @@ runs:
         # with `comment: false`.
         if [ "$EVENT_NAME" = 'pull_request' ] && ! has_flag --output; then
           echo "::error::$found has no 'coverage diff --output', which the pull-request comment and the patch gate use. It needs omni-dev 0.32.0 or later: set 'version' to 0.32.0 or later, or to 'latest'."
+          status=1
+        fi
+        # Passed wherever a diff runs: the comment and the patch gate on a pull request,
+        # the line gate in thin mode on any event. Not on a fat-mode push, which runs no
+        # omni-dev diff, so an old pin keeps working there with the input set.
+        if [ -n "$IGNORE_FILENAME_REGEX" ] \
+          && { [ "$EVENT_NAME" = 'pull_request' ] || { [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ]; }; } \
+          && ! has_flag --ignore-filename-regex; then
+          echo "::error::$found has no 'coverage diff --ignore-filename-regex', which the 'ignore-filename-regex' input passes. It needs omni-dev 0.33.0 or later: set 'version' to 0.33.0 or later, or to 'latest', or set 'ignore-filename-regex' to an empty string."
           status=1
         fi
         exit "$status"
@@ -568,6 +585,7 @@ runs:
         BASE_SHA: ${{ steps.mb.outputs.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit
+        IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
       run: |
         REPORT_BASENAME="$(basename "${{ inputs.report }}")"
         args=(coverage diff
@@ -586,6 +604,11 @@ runs:
         fi
         if [ -n "${{ inputs.strip-prefix }}" ]; then
           args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        fi
+        # Read from the environment, not interpolated into the script like the values
+        # around it: a regex is full of `\`, `$` and quotes that bash would reinterpret.
+        if [ -n "$IGNORE_FILENAME_REGEX" ]; then
+          args+=(--ignore-filename-regex "$IGNORE_FILENAME_REGEX")
         fi
         if [ -n "${{ inputs.report-format }}" ]; then
           args+=(--report-format "${{ inputs.report-format }}")
@@ -641,6 +664,8 @@ runs:
     - name: Enforce patch-coverage gate
       if: github.event_name == 'pull_request' && inputs.fail-under-patch != ''
       shell: bash
+      env:
+        IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
       run: |
         REPORT_BASENAME="$(basename "${{ inputs.report }}")"
         args=(coverage diff
@@ -649,9 +674,14 @@ runs:
           --fail-under-patch "${{ inputs.fail-under-patch }}"
           -o json)
         # Mirror the parse-affecting flags from the comment diff so the gated
-        # percentage matches what the comment reported.
+        # percentage matches what the comment reported. Leaving one out is not a
+        # harmless omission: `--ignore-filename-regex` changes the denominator, so
+        # the gate would measure files the comment does not show.
         if [ -n "${{ inputs.strip-prefix }}" ]; then
           args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        fi
+        if [ -n "$IGNORE_FILENAME_REGEX" ]; then
+          args+=(--ignore-filename-regex "$IGNORE_FILENAME_REGEX")
         fi
         if [ -n "${{ inputs.report-format }}" ]; then
           args+=(--report-format "${{ inputs.report-format }}")
@@ -676,6 +706,7 @@ runs:
       shell: bash
       env:
         BASE_REF: ${{ steps.mb.outputs.sha }}
+        IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
       run: |
         # On a push there is no merge-base (the step is skipped): HEAD..HEAD is an
         # empty diff, which is all a head-only gate needs.
@@ -685,9 +716,13 @@ runs:
           --fail-under-lines "${{ inputs.fail-under-lines }}"
           -o json)
         # Mirror the parse-affecting flags from the comment diff so the gated
-        # percentage is the one the comment reported.
+        # percentage is the one the comment reported. omni-dev gates on the head
+        # report AFTER `--ignore-filename-regex`, so this one needs it too.
         if [ -n "${{ inputs.strip-prefix }}" ]; then
           args+=(--strip-prefix "${{ inputs.strip-prefix }}")
+        fi
+        if [ -n "$IGNORE_FILENAME_REGEX" ]; then
+          args+=(--ignore-filename-regex "$IGNORE_FILENAME_REGEX")
         fi
         if [ -n "${{ inputs.report-format }}" ]; then
           args+=(--report-format "${{ inputs.report-format }}")
