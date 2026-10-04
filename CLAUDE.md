@@ -424,7 +424,7 @@ The action is a composite action with two phases:
     The script cannot say whether a workflow's `version: ''` reaches it or the input's default applies
     instead; the `version-input` job of `integration.yml` shows it on a runner.
   - **The value's shape (#72, #75)**: after the strip and the empty check, and before either output is
-    written, the value must be made only of letters, digits and `. + - * ^ ~ < > = ,` and spaces, or the
+    written, the value must be made only of letters, digits and `. + - * ^ ~ < > =` and spaces, or the
     step fails with one `::error::` that names the input and quotes what it got, with each non-printable
     character shown as `?` and cut at 60 characters, so a newline in it cannot start another workflow
     command. It is an allowlist in a `case`, with the letters spelled out and not ranged, because a range
@@ -440,12 +440,20 @@ The action is a composite action with two phases:
     a backtick, `; | &`, control characters, non-ASCII). No working value changed. Not taken from #75: its
     refusal of a space, because a requirement is written `>= 0.45`. It sits after the `latest` branch as the
     strip does, so an API `tag_name` is held to it too (the redirect fallback was already stricter).
-    A comma is allowed because cargo takes a range; whether the rest of the job can use such a value is not
-    checked here. `tests/resolve-version-step.test.sh` has a case per refused shape (each must fail, write
-    nothing, make no request and log one line) and per accepted spelling, and was checked against the check
-    removed, `/`, `?` and `%` allowed, `^`, `+`, an uppercase letter and the space missing, the message not
-    sanitised or cut short, a refusal that does not stop, and the stripped value quoted in place of the
-    given one. Not run on a runner: no `integration.yml` scenario sends a hostile `version` (the
+    A comma is refused, though cargo takes a range with one (`>=0.45, <0.47`): the value is part of the
+    "Cache omni-dev binary" key and `actions/cache` throws on a key with a comma in it (`checkKey` in the
+    toolkit, read from its source and not seen on a runner), so such a range could never get past the next
+    step. The review of this change found that; it is now refused here with the clearer message, and `>= 0.45`
+    (a space, no comma) still passes. `checkKey` also throws on a key over 512 characters, which this step
+    does not check: a value that long still fails later, at the cache step, as before.
+    `tests/resolve-version-step.test.sh` has a case per refused shape (each must fail, write nothing, make
+    no request and log one line) and per accepted spelling, and one loop over every character 0x01-0x7f
+    that appends it to a release and asserts the step accepts exactly the 72 that the allowlist names (the
+    expected set is built from character codes, not from the step's own list). Before that loop a typo in
+    the 62-letter-and-digit literal, or an extra `$ : @ _ ! [ ] { } ( )`, passed the suite. It was checked
+    against the check removed, `/`, `?`, `%` and `,` allowed, `^`, `+`, an uppercase letter, a lowercase
+    letter, a digit and the space missing, the message not sanitised or cut short, a refusal that does not
+    stop, and the stripped value quoted in place of the given one. Not run on a runner: no `integration.yml` scenario sends a hostile `version` (the
     `version-input` job sends the empty and the lone `v`).
   - The release-asset downloads stay unauthenticated on purpose. They are `github.com/.../releases/
     download/` URLs, not API calls, so the limit in #1 does not apply to them, and curl drops

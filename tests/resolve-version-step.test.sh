@@ -242,7 +242,8 @@ has "latest resolving to a lone v: it logs the refusal" "$LOG" "::error::The 've
 # one message, write NOTHING (a refusal that still wrote `version=` would pass an exit
 # status check), and make no request. The message shows the value with what is not
 # printable replaced, so a newline in it cannot start a second workflow command, and cuts
-# a long one short. The allowlist is letters, digits and . + - * ^ ~ < > = , space.
+# a long one short. The allowlist is letters, digits and . + - * ^ ~ < > = space. Not a comma:
+# the cache key holds the value and actions/cache refuses a key with a comma in it.
 expect_bad_char() { # <name> <version as the script sees it> <value the message quotes>
   run_resolve "$2" "$TOKEN" '{"tag_name":"v9.9.9"}'
   eq "$1: the step fails" 1 "$STATUS"
@@ -285,6 +286,8 @@ expect_bad_char "a semicolon" '0.45.0;id' '0.45.0;id'
 expect_bad_char "a pipe" '0.45.0|id' '0.45.0|id'
 expect_bad_char "an ampersand" '0.45.0&id' '0.45.0&id'
 expect_bad_char "a backslash" '0.45.0\n' '0.45.0\n'
+expect_bad_char "a comma in a range" '>=0.45,<0.47' '>=0.45,<0.47'
+expect_bad_char "a comma between releases" '0.45.0,0.46.0' '0.45.0,0.46.0'
 long="$(printf 'x/%.0s' {1..40})"
 expect_bad_char "a long value is cut short" "$long" "${long:0:60}..."
 
@@ -317,7 +320,34 @@ accepts "a tilde requirement" '~0.45.1' '~0.45.1'
 accepts "a comparison" '>=0.45' '>=0.45'
 accepts "an exact requirement" '=0.45.0' '=0.45.0'
 accepts "a wildcard" '0.45.*' '0.45.*'
-accepts "a range, with a comma and spaces" '>= 0.45, < 0.47' '>= 0.45, < 0.47'
+accepts "a comparison with a space" '>= 0.45' '>= 0.45'
+
+# Every character, one at a time, appended to a release: the step must accept exactly the
+# allowlist and refuse the rest. The expected set is built from character codes here and
+# not from the step's own list, so a typo in that list (a letter or a digit missing, a
+# character that should be refused let through) shows. A value with a newline or a tab goes
+# in as one character like the others. 0x00 cannot be in an environment variable, and the
+# bytes above 0x7f depend on the locale, so they are left to the case for a non-ASCII letter.
+accepted_codes=0 wrong_codes=""
+for code in $(seq 1 127); do
+  printf -v char '%b' "\x$(printf '%02x' "$code")"
+  run_resolve "0.45.0$char" "$TOKEN"
+  want=1
+  if { [ "$code" -ge 48 ] && [ "$code" -le 57 ]; } || { [ "$code" -ge 65 ] && [ "$code" -le 90 ]; } ||
+    { [ "$code" -ge 97 ] && [ "$code" -le 122 ]; }; then
+    want=0
+  fi
+  # space * + - . < = > ^ ~
+  case "$code" in 32 | 42 | 43 | 45 | 46 | 60 | 61 | 62 | 94 | 126) want=0 ;; esac
+  [ "$STATUS" -ne 0 ] || accepted_codes=$((accepted_codes + 1))
+  if { [ "$want" -eq 0 ] && [ "$STATUS" -ne 0 ]; } || { [ "$want" -eq 1 ] && [ "$STATUS" -ne 1 ]; }; then
+    wrong_codes+=" $code"
+  fi
+  # A refusal writes nothing, whatever the character.
+  if [ "$STATUS" -ne 0 ] && [ -n "$OUT" ]; then wrong_codes+=" $code(wrote-output)"; fi
+done
+eq "every character 0x01-0x7f: each is accepted or refused as the allowlist says" "" "$wrong_codes"
+eq "every character 0x01-0x7f: 72 are accepted (62 letters and digits, space * + - . < = > ^ ~)" 72 "$accepted_codes"
 
 # The check sits after the `latest` branch, as the strip does, so a tag the API gave is
 # held to it too. GitHub publishes no such tag; this pins where the check sits.
