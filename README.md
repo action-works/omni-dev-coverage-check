@@ -317,6 +317,7 @@ Linux runner can drop it, on `latest` or on `0.46.0` or later.
 | `setup-commands`      | Commands run under instrumentation BEFORE the test run, with profiling disabled (no coverage). Fetch fixtures the tests need (e.g. an ML model). One per line, evaluated as shell | `''` |
 | `extra-test-commands` | Extra instrumented `cargo test` invocations run AFTER the main run, contributing coverage. For `--ignored`/model-gated suites `test-args` can't reach. One per line, evaluated as shell | `''` |
 | `fail-under-lines`    | Overall line-coverage gate: `cargo llvm-cov report --fail-under-lines` in fat mode, `omni-dev coverage diff --fail-under-lines` in thin mode (needs an omni-dev release with the flag). Empty disables it | `30`                  |
+| `llvm-cov-ignore-filename-regex` | Fat mode only. ONE regex passed as `--ignore-filename-regex` to every `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate, the recompute): LLVM syntax, matched against the absolute path, so write an unanchored fragment. Set `ignore-filename-regex` too. [Details](#excluding-files-ci-cannot-measure) | `''` |
 
 ### Diff / patch-coverage comment
 
@@ -444,14 +445,30 @@ posts when a gate fails:
 ## Excluding files CI cannot measure
 
 Code a CI runner cannot execute (a GPU path, a backend gated to one platform) shows
-near-zero coverage and reads as a regression in the comment. `ignore-filename-regex`
-drops those files from the diff instead:
+near-zero coverage and reads as a regression in the comment. Two inputs drop those files,
+because two programs compute coverage here and they do not read a pattern alike:
+
+| Input                            | Filters                                                                                                                                         | Pattern                                       |
+|----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------|
+| `ignore-filename-regex`          | `omni-dev coverage diff`: the comment, the `patch-percent` / `line-percent` outputs, the patch gate and the thin-mode line gate                 | Rust regexes, comma-separated, on the repo-relative path |
+| `llvm-cov-ignore-filename-regex` | `cargo llvm-cov report`, fat mode only: the head lcov, `codecov.json`, the summary, the `fail-under-lines` gate and the merge-base recompute     | ONE LLVM (POSIX extended) regex, on the absolute path |
+
+**Set both** in fat mode. For an unanchored path fragment, the usual case, the string is the
+same:
 
 ```yaml
 - uses: action-works/omni-dev-coverage-check@v1
   with:
-    ignore-filename-regex: 'src/voice/backends/voxtral_mlx/,src/gpu/'
+    ignore-filename-regex: 'src/voice/backends/voxtral_mlx/'
+    llvm-cov-ignore-filename-regex: 'src/voice/backends/voxtral_mlx/'
 ```
+
+In thin mode there is no `cargo llvm-cov` in the action, so only `ignore-filename-regex`
+applies and the other is ignored: filter when you build the lcov
+(`cargo llvm-cov report --ignore-filename-regex ...`) if the files should also leave the
+report you upload elsewhere.
+
+### `ignore-filename-regex`: the comment, the patch gate, thin mode
 
 - The value is a list of regexes on one line, separated by commas, each matched against
   a file's repo-relative path (after `strip-prefix`) and unanchored, so `src/gpu/`
@@ -476,9 +493,34 @@ drops those files from the diff instead:
   line of the report, the thin-mode line gate fails with "no executable lines". Check
   the comment when a pattern is broad.
 - It does not reach what `cargo-llvm-cov` computes: in fat mode the `fail-under-lines`
-  gate and the coverage summary still count every file. Nor does it change the baseline
-  artifact (published as the raw report) or the codecov upload.
+  gate, the coverage summary, `codecov.json` and the report a push to `main` publishes as
+  the baseline still count every file unless `llvm-cov-ignore-filename-regex` is set too.
 - It needs omni-dev 0.33.0 or later; see [Requirements](#requirements).
+
+### `llvm-cov-ignore-filename-regex`: the summary and the fat-mode gate
+
+- Passed as `--ignore-filename-regex=<value>` to every `cargo llvm-cov report` the action
+  runs: the head lcov (which is also the baseline a push to `main` publishes), `codecov.json`
+  (so the codecov upload), the summary, the `fail-under-lines` gate, and the report of the
+  merge-base recompute, so a recomputed baseline is filtered like the head. Empty passes
+  nothing.
+- It is `cargo-llvm-cov`'s own filter, so not `ignore-filename-regex`'s rules. **One** regex,
+  passed as it is: a comma is part of it (`a{1,3}` is fine) and several patterns are
+  joined with `|` (`src/gpu/|-sys/`). It is matched against the **absolute** path, so write a
+  fragment of the path such as `src/gpu/`: `^src/gpu/` matches nothing, and the file stays in
+  the summary as it was. The recompute builds in a worktree next to the workspace, a different
+  directory, so a pattern anchored on the workspace's path would match the head and not the
+  baseline.
+- The syntax is LLVM's POSIX extended regex, not Rust's. **A pattern LLVM cannot compile is
+  ignored silently, together with `cargo-llvm-cov`'s own default exclusions** (a `(?i)` flag,
+  `(?:…)`, a lazy `.*?`, an empty alternative as in `a||b`, an unbalanced `)`): nothing fails,
+  the file stays in, and files that are excluded by default, `tests/` for one, appear in the
+  report. Look at the summary the first time you set it: the files should be gone and no new
+  ones should have appeared.
+- Setting only this one filters the head and not a baseline that was published before it was
+  set, so the comment would show the files as removed. `ignore-filename-regex` filters that
+  baseline when the diff is computed, which is why both are set.
+- Checked on cargo-llvm-cov 0.9.1; the action installs the newest.
 
 ## How input values reach the scripts
 

@@ -58,6 +58,10 @@ inputs:
     description: 'Overall line-coverage gate. Fat mode uses `cargo llvm-cov report --fail-under-lines`; thin mode uses `omni-dev coverage diff --fail-under-lines`, which reads the lcov itself, so its figure can differ slightly from llvm-cov''s and needs an omni-dev release that has the flag. Empty disables the gate'
     required: false
     default: '30'
+  llvm-cov-ignore-filename-regex:
+    description: 'Fat mode only. Exclude files from what cargo-llvm-cov computes: passed as --ignore-filename-regex to every `cargo llvm-cov report` the action runs (the head lcov, codecov.json, the summary, the `fail-under-lines` gate) and to the one in the merge-base recompute. It is cargo-llvm-cov''s own filter, so not `ignore-filename-regex`''s rules: ONE regex (join several with |; a comma is part of it), in LLVM''s POSIX extended syntax, matched against the ABSOLUTE path, so write a fragment such as src/gpu/ and not an anchored ^src/gpu/. A pattern LLVM cannot compile (a (?i) flag, (?:...), a lazy .*?, an empty alternative) is ignored silently TOGETHER WITH cargo-llvm-cov''s default exclusions, so check the summary after setting it. Set `ignore-filename-regex` too: that one filters a baseline published before this was set. Empty disables'
+    required: false
+    default: ''
 
   # ---------------------------------------------------------------------------
   # Diff / patch-coverage comment (omni-dev coverage diff)
@@ -83,7 +87,7 @@ inputs:
     required: false
     default: ''
   ignore-filename-regex:
-    description: 'Exclude files whose repo-relative path matches any of these regexes from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Separate patterns with commas on one line: a newline or a space is part of a pattern, and a pattern cannot contain a comma. Matched after strip-prefix and unanchored, like cargo llvm-cov --ignore-filename-regex except that it sees the repo-relative path, not the absolute one. Needs omni-dev 0.33.0 or later. Empty disables'
+    description: 'Exclude files whose repo-relative path matches any of these regexes from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Separate patterns with commas on one line: a newline or a space is part of a pattern, and a pattern cannot contain a comma. Matched after strip-prefix and unanchored, like cargo llvm-cov --ignore-filename-regex except that it sees the repo-relative path, not the absolute one, and takes Rust regex syntax, not LLVM''s. It does not reach what cargo-llvm-cov computes in fat mode (the summary, the `fail-under-lines` gate): `llvm-cov-ignore-filename-regex` does. Needs omni-dev 0.33.0 or later. Empty disables'
     required: false
     default: ''
   report-format:
@@ -563,10 +567,17 @@ runs:
       shell: bash
       env:
         REPORT: ${{ inputs.report }}
+        LLVM_COV_IGNORE_FILENAME_REGEX: ${{ inputs.llvm-cov-ignore-filename-regex }}
       run: |
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        cargo llvm-cov report --lcov --output-path "$REPORT"
+        # The filter (every `cargo llvm-cov report` here takes it) is read from the
+        # environment, not interpolated into the script: a regex is full of `\`, `$` and
+        # quotes that bash would reinterpret. `${VAR:+...}` is one word when it is set and
+        # nothing when it is not (cargo-llvm-cov rejects an empty value), and it is passed as
+        # `--flag=value` so a pattern that starts with `-` is not read as a flag.
+        cargo llvm-cov report --lcov --output-path "$REPORT" \
+          ${LLVM_COV_IGNORE_FILENAME_REGEX:+"--ignore-filename-regex=$LLVM_COV_IGNORE_FILENAME_REGEX"}
 
     - name: Remove merged raw coverage profiles
       # The lcov step merged them into one profile, so they have done their job.
@@ -588,10 +599,13 @@ runs:
       # Reads the profile the lcov step merged.
       if: inputs.run-coverage == 'true'
       shell: bash
+      env:
+        LLVM_COV_IGNORE_FILENAME_REGEX: ${{ inputs.llvm-cov-ignore-filename-regex }}
       run: |
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        cargo llvm-cov report --codecov --output-path codecov.json
+        cargo llvm-cov report --codecov --output-path codecov.json \
+          ${LLVM_COV_IGNORE_FILENAME_REGEX:+"--ignore-filename-regex=$LLVM_COV_IGNORE_FILENAME_REGEX"}
 
     - name: Build coverage summary
       # Full per-file summary: appended to the run's Summary tab and published as
@@ -599,10 +613,14 @@ runs:
       # profile the lcov step merged.
       if: inputs.run-coverage == 'true'
       shell: bash
+      env:
+        LLVM_COV_IGNORE_FILENAME_REGEX: ${{ inputs.llvm-cov-ignore-filename-regex }}
       run: |
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        cargo llvm-cov report --summary-only | tee coverage-summary.txt
+        cargo llvm-cov report --summary-only \
+          ${LLVM_COV_IGNORE_FILENAME_REGEX:+"--ignore-filename-regex=$LLVM_COV_IGNORE_FILENAME_REGEX"} \
+          | tee coverage-summary.txt
         {
           echo '## Coverage'
           echo '```'
@@ -693,6 +711,7 @@ runs:
         WORKTREE_SYSTEM_DEPS: ${{ inputs.worktree-system-deps }}
         TEST_ARGS: ${{ inputs.test-args }}
         BASE_SHA: ${{ steps.mb.outputs.sha }}
+        LLVM_COV_IGNORE_FILENAME_REGEX: ${{ inputs.llvm-cov-ignore-filename-regex }}
       run: |
         REPORT_BASENAME="$(basename "$REPORT")"
         if [ -f "baseline/$REPORT_BASENAME" ]; then
@@ -725,10 +744,19 @@ runs:
           sudo apt-get update && sudo apt-get install -y "${system_deps[@]}"
         fi
         git worktree add ../base "$BASE_SHA"
-        # The merge-base's tests run next: they should not see the action's variables.
-        unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA
+        # The baseline is filtered like the head report, or the comparison would count
+        # files on one side only. The worktree is another directory than the workspace, so
+        # a pattern that holds the workspace's path or its directory's name would match the
+        # head and not this.
+        ignore=()
+        if [ -n "$LLVM_COV_IGNORE_FILENAME_REGEX" ]; then
+          ignore=("--ignore-filename-regex=$LLVM_COV_IGNORE_FILENAME_REGEX")
+        fi
+        # The merge-base's tests run next: they should not see the action's variables, the
+        # filter's included, which is why it was copied into `ignore` first.
+        unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA LLVM_COV_IGNORE_FILENAME_REGEX
         ( cd ../base && cargo llvm-cov "${test_args[@]}" --no-report \
-            && cargo llvm-cov report --lcov --output-path "$REPORT_BASENAME" )
+            && cargo llvm-cov report --lcov --output-path "$REPORT_BASENAME" "${ignore[@]}" )
         mkdir -p baseline
         # Rewrite the worktree's absolute SF paths to the main workspace prefix so
         # `omni-dev coverage diff` strips one prefix for both head and baseline.
@@ -885,11 +913,15 @@ runs:
       shell: bash
       env:
         FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}
+        LLVM_COV_IGNORE_FILENAME_REGEX: ${{ inputs.llvm-cov-ignore-filename-regex }}
       run: |
         # Reads the profile the lcov step merged; it does not merge again.
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        cargo llvm-cov report --summary-only --fail-under-lines "$FAIL_UNDER_LINES"
+        # The filter changes the denominator, so a gate that left it out would measure files
+        # the summary no longer shows.
+        cargo llvm-cov report --summary-only --fail-under-lines "$FAIL_UNDER_LINES" \
+          ${LLVM_COV_IGNORE_FILENAME_REGEX:+"--ignore-filename-regex=$LLVM_COV_IGNORE_FILENAME_REGEX"}
 
     - name: Enforce line-coverage gate (thin mode)
       # No profile data here for `cargo llvm-cov report`, so the gate reads the
