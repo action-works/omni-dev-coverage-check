@@ -11,6 +11,17 @@
 #
 # The script runs under `env -i`: on a runner the tests themselves run with
 # GITHUB_EVENT_NAME and GITHUB_RUN_ID set, and a case must set what it is about.
+#
+# The last cases read action.yml and integration.yml themselves, because a script that
+# is right does nothing if the workflow does not use it, and the hash is only as good
+# as the files it covers: the action exposes the output the check reads, the install
+# steps run nothing the hash does not cover, and every scenario of `thin-mode` takes
+# the prefix. A rename, a new scenario or a new install script fails here, by name.
+
+# The `${{ ... }}` expressions and shell lines matched below are literal text read out of
+# the workflow, never meant to expand, so single-quoting them is the point.
+# shellcheck disable=SC2016
+
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,6 +32,12 @@ trap 'rm -rf "$WORK"' EXIT
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=step-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
+
+ACTION="$ROOT/action.yml"
+WORKFLOW="$ROOT/.github/workflows/integration.yml"
 
 # hashFiles gives 64 hex characters. A and B differ in their first 16.
 HASH_A=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -180,5 +197,79 @@ run pull_request 100 1 "$HASH_A" prefix extra
 eq "prefix with an argument: exits 2" 2 "$STATUS"
 run pull_request 100 1 "$HASH_A" check true false
 eq "check with two arguments: exits 2" 2 "$STATUS"
+
+# --- wiring: the action exposes what the check reads --------------------------------
+
+CACHE_STEP="$(step_block 'Cache omni-dev binary')" || exit 1
+has "action.yml: the cache step has the id the output reads" "$CACHE_STEP" "id: cache-omni-dev"
+
+OUTPUT_BLOCK="$(awk '
+  /^outputs:/ { in_outputs = 1; next }
+  in_outputs && /^  omni-dev-cache-hit:/ { printing = 1; print; next }
+  printing && /^  [A-Za-z]/ { exit }
+  printing { print }
+' "$ACTION")"
+has "action.yml: it exposes omni-dev-cache-hit" "$OUTPUT_BLOCK" "omni-dev-cache-hit:"
+# `actions/cache` can leave its own output empty on a miss; the comparison reads that as false.
+has "action.yml: ... as the cache step's hit, true only for 'true'" "$OUTPUT_BLOCK" \
+  "value: \${{ steps.cache-omni-dev.outputs.cache-hit == 'true' }}"
+
+# --- wiring: the hash covers the install code ----------------------------------------
+
+THIN="$(awk '
+  /^  thin-mode:$/ { in_job = 1; next }
+  in_job && /^  [A-Za-z0-9_-]+:$/ { exit }
+  in_job { print }
+' "$WORKFLOW")"
+pass "integration.yml: found the thin-mode job" test -n "$THIN"
+
+HASH_EXPR="$(grep -o "hashFiles([^)]*)" <<<"$THIN" | sort -u)"
+eq "thin-mode hashes action.yml and scripts/*.sh, and nothing else" \
+  "hashFiles('action.yml', 'scripts/*.sh')" "$HASH_EXPR"
+
+# The install is the steps from the version to the printed version. Whatever they run
+# from the action's directory has to be a file the hash covers, or a change to it is
+# cached over again. (A script written by hand into the list is the maintenance this
+# check replaces.)
+INSTALL_STEPS="$(awk '
+  /^    - name: Resolve omni-dev version$/ { printing = 1 }
+  /^    - name: Print omni-dev version$/ { printing = 0 }
+  printing { print }
+' "$ACTION")"
+pass "action.yml: found the install steps" test -n "$INSTALL_STEPS"
+
+RUN_FROM_ACTION="$(grep -o 'ACTION_PATH/[^" ]*' <<<"$INSTALL_STEPS" | sort -u)"
+has "the install steps run the asset script from the action's directory" "$RUN_FROM_ACTION" "ACTION_PATH/scripts/omni-dev-asset.sh"
+while IFS= read -r ref; do
+  [ -n "$ref" ] || continue
+  case "${ref#ACTION_PATH/}" in
+    scripts/*.sh) ok "the install runs ${ref#ACTION_PATH/}, which scripts/*.sh covers" ;;
+    *) bad "the install runs ${ref#ACTION_PATH/}, which the hash of action.yml and scripts/*.sh does not cover" \
+      "add its path to hashFiles in thin-mode and to HASH_EXPR here" ;;
+  esac
+done <<<"$RUN_FROM_ACTION"
+
+# --- wiring: every scenario of thin-mode takes the prefix and the job checks -----------
+
+SCENARIOS="$(grep -c '^        uses: \./$' <<<"$THIN")"
+PREFIXED="$(grep -c '^          cache-prefix: \${{ steps.install-cache.outputs.prefix }}$' <<<"$THIN")"
+pass "thin-mode runs the action at least once" test "$SCENARIOS" -ge 1
+eq "every scenario of thin-mode passes the prefix ($SCENARIOS of them)" "$SCENARIOS" "$PREFIXED"
+
+# The prefix is a step output: read before it is written, it is empty, and an empty
+# prefix is the default key, which hits.
+PREFIX_AT="$(grep -n '^        id: install-cache$' <<<"$THIN" | head -n1 | cut -d: -f1)"
+FIRST_USE_AT="$(grep -n '^        uses: \./$' <<<"$THIN" | head -n1 | cut -d: -f1)"
+pass "the prefix step is in thin-mode" test -n "$PREFIX_AT"
+pass "the prefix step runs before the first scenario" test "${PREFIX_AT:-999999}" -lt "${FIRST_USE_AT:-0}"
+
+has "the prefix step takes the hash through env" "$THIN" \
+  "INSTALL_CODE_HASH: \${{ hashFiles('action.yml', 'scripts/*.sh') }}"
+has "the prefix is taken as an assignment, so a failure ends the step" "$THIN" \
+  'prefix="$(bash tests/install-cache.sh prefix)"'
+has "the checking step reads the output of the first scenario" "$THIN" \
+  "CACHE_HIT: \${{ steps.s1.outputs.omni-dev-cache-hit }}"
+has "the checking step calls check, and a failure is counted" "$THIN" \
+  'bash tests/install-cache.sh check "$CACHE_HIT" || status=1'
 
 summary

@@ -30,6 +30,18 @@ name: Integration
 #     exactly the version the job pinned. `arm64-release-without-asset` installs
 #     nothing and `deprecation-control` has one install and asserts no outcome, so
 #     neither calls it.
+#   - A job that exists to run the install does not run on a cached binary. A hit on
+#     `actions/cache` restores ~/.cargo/bin/omni-dev and skips the platform and download
+#     steps, and the key holds the version, not the action's code, so such a job would
+#     pass on a binary an earlier run installed, whatever a change did to the install.
+#     `thin-mode` (every leg) puts a prefix in front of the key (tests/install-cache.sh):
+#     a hash of action.yml and scripts/*.sh on a pull request and a push, so that a change
+#     to the install code installs and unchanged code reuses the entry, and the run and
+#     the attempt on the weekly run and a manual one, so those install every time. Its
+#     checking step reads the action's `omni-dev-cache-hit` output, logs which it was,
+#     and fails when a run that cannot have an entry hit one. `version-pin` forces the
+#     install on every event with a key of its own. The other jobs exist for something
+#     else, and the cache is useful to them.
 #   - Every scenario expected to fail has a control that differs in exactly one
 #     input and must succeed, plus a file check showing where the action stopped.
 #     `outcome == failure` alone also holds when the install breaks.
@@ -88,10 +100,19 @@ jobs:
   # reaches ARM64 too. The x86_64 legs keep the names they always had; the ARM64 ones add
   # `, ARM64`, which is what `failure-messages` looks them up by.
   #
-  # The install runs only when `actions/cache` misses: a hit restores ~/.cargo/bin/omni-dev
-  # and skips "Download pre-built binary". That is so for every leg, and nothing here keys
-  # the cache to the action's code, so the download and the archive layout are exercised
-  # on the first run for a version (a new release, an evicted entry) and not on each run.
+  # Every leg runs the install when the install code changes, and on the weekly and manual
+  # runs, instead of trusting `actions/cache` (#66): a hit restores ~/.cargo/bin/omni-dev and
+  # skips "Download pre-built binary", and the default key holds the version, not the
+  # action's code. So the asset's name, the archive layout and the binary are held to a
+  # real release when it matters, and not only on the first run for a version. The first
+  # step chooses the `cache-prefix` (see tests/install-cache.sh) and the last reads
+  # `omni-dev-cache-hit` to say which happened. On a pull request and a push a hit is the
+  # unchanged-code case and is logged; on the weekly and manual runs it fails.
+  #
+  # What that costs: the four scenarios of a leg each miss on the first run for a prefix,
+  # because the entry is saved in the post step, so omni-dev is installed four times and
+  # three of the four saves log `Unable to reserve cache`. The weekly and manual runs each
+  # write an entry per leg that nothing restores (9-18 MB, evicted when unused).
   thin-mode:
     name: Thin mode (omni-dev ${{ matrix.omni-dev }}${{ matrix.arch == 'ARM64' && ', ARM64' || '' }})
     runs-on: ${{ matrix.runner }}
@@ -114,6 +135,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The key of the omni-dev cache is the version, not the action's code, so this job
+      # chooses a prefix that makes it install when the code changes (tests/install-cache.sh
+      # says how, by event). The script is called as an assignment: inside an `echo` its
+      # failure would be lost under `bash -e`. `hashFiles` is an expression, so the hash
+      # arrives through `env`.
+      - name: Choose the omni-dev cache prefix
+        id: install-cache
+        env:
+          INSTALL_CODE_HASH: ${{ hashFiles('action.yml', 'scripts/*.sh') }}
+        run: |
+          prefix="$(bash tests/install-cache.sh prefix)"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "omni-dev cache prefix: $prefix"
+
       # Real llvm-cov shape: no newline after the final end_of_record. Each shard
       # alone covers 2 of 4 lines (50%); their union covers 3 of 4 (75%), so a gate
       # of 70 passes only if the shards were merged.
@@ -130,6 +165,7 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
+          cache-prefix: ${{ steps.install-cache.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/s1.lcov
@@ -146,6 +182,7 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
+          cache-prefix: ${{ steps.install-cache.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/s2.lcov
@@ -162,6 +199,7 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
+          cache-prefix: ${{ steps.install-cache.outputs.prefix }}
           run-coverage: false
           report: single.lcov
           fail-under-lines: 90
@@ -177,6 +215,7 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
+          cache-prefix: ${{ steps.install-cache.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/missing-*.lcov
           report: out/s4.lcov
@@ -194,6 +233,7 @@ jobs:
           S3: ${{ steps.s3.outcome }}
           S4: ${{ steps.s4.outcome }}
           VERSION: ${{ steps.s1.outputs.version }}
+          CACHE_HIT: ${{ steps.s1.outputs.omni-dev-cache-hit }}
           ARCH: ${{ runner.arch }}
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
@@ -221,6 +261,11 @@ jobs:
             echo "::error::this leg is for $EXPECTED_ARCH but ran on runner.arch $ARCH, uname -m $(uname -m)"
             status=1
           fi
+
+          # The install ran, or the log says it did not and why (tests/install-cache.sh). s1
+          # is the first scenario: it sees the cache as the job found it, since the entry
+          # is saved in the post step, and a scenario that failed exposes no outputs.
+          bash tests/install-cache.sh check "$CACHE_HIT" || status=1
 
           check "1. sharded, gate below the union" success "$S1"
           check "2. sharded, gate above the union" failure "$S2"
@@ -863,7 +908,7 @@ jobs:
   #
   # Only a run that reaches the download can see that, and the platform and download
   # steps are skipped on a cache hit. Left on the default key, which is the one the
-  # thin-mode job's 0.45.0 leg saves and a `v0.45.0` pin resolves to, this job would hit
+  # ignore-filename-regex job's 0.45.0 leg saves and a `v0.45.0` pin resolves to, this job would hit
   # the cache after the first run on `main` and check only the outputs. So each leg
   # builds its key from the run, the attempt and its own pin (`cache-prefix`): it cannot
   # exist, and the install runs every time. The assertion step checks that it did, and
