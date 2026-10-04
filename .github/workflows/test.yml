@@ -64,6 +64,9 @@ jobs:
       - name: Test assert-omni-dev-version.sh
         run: bash tests/assert-omni-dev-version.test.sh
 
+      - name: Test install-cache.sh
+        run: bash tests/install-cache.test.sh
+
       - name: Test llvm-tool-shim.sh
         run: bash tests/llvm-tool-shim.test.sh
 
