@@ -18,12 +18,11 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$DIR/job-errors.sh"
 DEPRECATIONS="$DIR/job-deprecations.sh"
 LOG="$DIR/job-log.sh"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+work_dir
 
 # A fresh directory per case, with the fake gh and an empty set of jobs.
 fresh() {

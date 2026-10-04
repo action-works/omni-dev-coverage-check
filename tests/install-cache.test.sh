@@ -26,12 +26,11 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/tests/install-cache.sh"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+work_dir
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=step-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"

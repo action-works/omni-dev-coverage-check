@@ -18,6 +18,8 @@
 set -uo pipefail
 
 LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test-lib.sh"
+# Its own scratch directory and trap, not `work_dir`: this is the test that shows `work_dir`
+# works, so its cleanup does not stand on it.
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -225,6 +227,65 @@ verdict "fail: a command that is not found fails, and does not count as one that
   "FAIL - not found" "no command to run: 'no-such-command-for-test-lib'"
 run 'greet() { return 1; }; fail "a function" greet; pass "a builtin" test 1 -eq 1; summary'
 verdict "pass and fail: a function and a builtin are commands" 0 "2 passed, 0 failed"
+
+# --- work_dir: the scratch directory a test makes and removes ----------------------------
+
+# The first line a snippet prints is its $WORK. The directory must be there while the test
+# runs and gone after it ends, however it ends, and the test's own status must be kept.
+# gone <name>: the path on the first line of the last run's output is a non-empty path that
+# no longer exists (an empty path would pass a bare `test ! -e`).
+gone() {
+  local dir
+  dir="$(sed -n 1p <<<"$OUT")"
+  if [ -n "$dir" ] && [ ! -e "$dir" ]; then ok "$1"; else bad "$1" "'$dir' should be a path that is gone"; fi
+}
+
+run 'work_dir; echo "$WORK"; [ -d "$WORK" ] && echo existed; touch "$WORK/f" && echo writable; ok made; summary'
+verdict "work_dir: a test that passes exits 0, with a directory it could use" 0 "existed" "writable" "ok   - made"
+gone "work_dir: the directory is removed when a passing test ends"
+
+run 'work_dir; echo "$WORK"; mkdir "$WORK/deep" && touch "$WORK/deep/f"; bad nope; summary'
+verdict "work_dir: a test that fails keeps its failing status" 1 "FAIL - nope"
+gone "work_dir: the directory, and what is in it, is removed when a failing test ends"
+
+run 'work_dir; echo "$WORK"; exit 3'
+verdict "work_dir: an exit in the middle keeps its status" 3
+gone "work_dir: the directory is removed after an exit in the middle"
+
+# Each call makes its own directory, empty. A fixed path would pass every case above.
+run 'work_dir; echo "$WORK"; ls -A "$WORK" | wc -l'
+first="$(sed -n 1p <<<"$OUT")"
+run 'work_dir; echo "$WORK"; ls -A "$WORK" | wc -l'
+second="$(sed -n 1p <<<"$OUT")"
+if [ -n "$first" ] && [ -n "$second" ] && [ "$first" != "$second" ]; then
+  ok "work_dir: two tests get two directories"
+else
+  bad "work_dir: two tests get two directories" "'$first' and '$second'"
+fi
+eq "work_dir: the directory starts empty" 0 "$(tail -n 1 <<<"$OUT" | tr -d ' ')"
+
+# A path with a space in it is removed whole: the trap quotes $WORK. mktemp is a function
+# that makes such a path, since macOS's mktemp -d ignores TMPDIR and cannot be pointed at one.
+export SPACE_ROOT="$WORK"
+run 'mktemp() { mkdir "$SPACE_ROOT/a dir with spaces" && echo "$SPACE_ROOT/a dir with spaces"; }; work_dir; echo "$WORK"; touch "$WORK/f"'
+verdict "work_dir: a directory with spaces in its name is made" 0 "a dir with spaces"
+gone "work_dir: and is removed whole, not word by word"
+
+# More cleanup than the directory: the test sets its own trap afterwards and removes
+# "$WORK" in it too, as the comment on work_dir says.
+run 'work_dir; echo "$WORK"; trap "echo extra-cleanup; rm -rf \"\$WORK\"" EXIT; ok x; summary'
+verdict "work_dir: a test's own trap, set afterwards, runs" 0 "extra-cleanup"
+gone "work_dir: and that trap removes the directory"
+
+# No directory, no test: carrying on with an empty $WORK would write under /. The failure is
+# a function that shadows mktemp, since whether a bad TMPDIR fails it depends on the
+# platform (GNU honours it, macOS does not).
+run 'mktemp() { return 1; }; work_dir; echo carried-on'
+verdict "work_dir: a directory that cannot be made ends the test, with the reason" 1 \
+  "cannot create a temporary directory" "!carried-on"
+
+run 'trap -p EXIT; echo end'
+verdict "sourcing the library sets no EXIT trap" 0 "end" "!trap --"
 
 # --- the counters are shared by every helper ---------------------------------------------
 

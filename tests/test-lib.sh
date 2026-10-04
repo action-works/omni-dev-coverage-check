@@ -26,9 +26,27 @@
 # Not here, on purpose: tests/assert-lib.sh is a different helper set (the e2e
 # workflow's `check <label> <expected> <actual>`), and sourcing both would make `check`
 # mean two things. That is why the command checker below is `pass`.
+#
+# `work_dir` is the one helper that is not a case: the scratch directory nearly every test
+# makes and removes. It is called by the test, after sourcing, and sets nothing by itself:
+# sourcing the library installs no trap.
 
 passed=0
 failed=0
+
+# work_dir: sets $WORK to a new temporary directory, and removes it when the test exits,
+# whichever way it does (the end of the file, `exit`, a failed `summary`). Call it once,
+# before the test sets an EXIT trap of its own: `trap` replaces, it does not add, and the
+# directory this makes is removed only by the trap it installs. A test that needs more
+# cleanup sets its own trap afterwards and removes "$WORK" in it too. If the directory
+# cannot be made it ends the test: carrying on with an empty $WORK would write under /.
+work_dir() {
+  WORK="$(mktemp -d)" || {
+    echo "cannot create a temporary directory (mktemp -d failed)" >&2
+    exit 1
+  }
+  trap 'rm -rf "$WORK"' EXIT
+}
 
 ok() {
   passed=$((passed + 1))

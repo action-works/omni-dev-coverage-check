@@ -14,8 +14,6 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/tests/prepare-shard-crate.sh"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 # Hermetic: the script's commit must not depend on, or be altered by, the
 # caller's git configuration (a signing key, a hook path).
@@ -24,6 +22,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+work_dir
 
 # repo: a fresh repository on `main`, holding the real fixture crate, with
 # origin/main pointing at its one commit. Prints its path.
