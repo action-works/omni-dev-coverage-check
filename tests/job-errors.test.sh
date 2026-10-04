@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests for tests/job-errors.sh. Plain bash, no framework:
+# Tests for tests/job-errors.sh and tests/job-deprecations.sh, which pick their
+# lines out of the log that tests/job-log.sh reads. Plain bash, no framework:
 #   tests/job-errors.test.sh
 # Exits non-zero if any case fails.
 #
@@ -13,7 +14,10 @@
 # shellcheck disable=SC2016
 set -uo pipefail
 
-SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/job-errors.sh"
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="$DIR/job-errors.sh"
+DEPRECATIONS="$DIR/job-deprecations.sh"
+LOG="$DIR/job-log.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -127,15 +131,28 @@ add_job() {
   : >"$dir/logs/$id"
 }
 
-# run_errors <dir> <job name> [VAR=value...]: runs the script, capturing stdout in
-# $OUT, stderr in $ERR and the exit status in $STATUS.
+# run_script <script> <dir> <job name> [VAR=value...]: runs a script, capturing
+# stdout in $OUT, stderr in $ERR and the exit status in $STATUS.
+run_script() {
+  local script=$1 dir=$2 name=$3
+  shift 3
+  OUT="$(env -i PATH="$dir/bin:$PATH" FAKE_DIR="$dir" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=42 \
+    JOB_LOG_DELAY=0 "$@" bash "$script" "$name" 2>"$dir/stderr")"
+  STATUS=$?
+  ERR="$(cat "$dir/stderr")"
+}
+
+# run_errors, run_deprecations <dir> <job name> [VAR=value...]
 run_errors() {
   local dir=$1 name=$2
   shift 2
-  OUT="$(env -i PATH="$dir/bin:$PATH" FAKE_DIR="$dir" GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=42 \
-    JOB_LOG_DELAY=0 "$@" bash "$SCRIPT" "$name" 2>"$dir/stderr")"
-  STATUS=$?
-  ERR="$(cat "$dir/stderr")"
+  run_script "$SCRIPT" "$dir" "$name" "$@"
+}
+
+run_deprecations() {
+  local dir=$1 name=$2
+  shift 2
+  run_script "$DEPRECATIONS" "$dir" "$name" "$@"
 }
 
 # The log of a job that ran the guard and the shard combine, and failed them
@@ -236,6 +253,92 @@ equals "after exactly the attempts it was given" 3 "$(cat "$d/log-reads")"
 check "and says which job" grep -q "could not read the log of job 'Job' (302) after 3 attempts" <<<"$ERR"
 check "and why, in gh's own words" grep -q "after 3 attempts: gh: Not Found (HTTP 404)" <<<"$ERR"
 equals "and prints no messages" "" "$OUT"
+
+# --- reading the deprecation warnings -----------------------------------------
+
+ESC=$'\033'
+WARN_FLAG='warning: --format is deprecated; use -o/--output instead'
+WARN_FN='warning: use of deprecated function `old`: use `new`'
+WARN_CAPITAL='warning: Deprecated: the --foo spelling is going away'
+WARN_UPPER='warning: --old is DEPRECATED and will be removed'
+WARN_NOUN='warning: deprecation of --bar: use --baz instead'
+
+# The shape of a real log (the one in #14 held ten of the first line, and every log
+# holds the node and runner notices): the echo of a step's script that holds the
+# same words as the warning, the warning itself as a program printed it, notices
+# that are about the actions' runtime, and warnings that are not deprecations.
+deprecation_log() {
+  printf '\357\273\277%s\n' "2026-10-04T00:59:19.1Z Current runner version: '2.329.0'"
+  printf '%s\n' \
+    "2026-10-04T00:59:22.4Z ${ESC}[36;1m# the warning reads: warning: --format is deprecated${ESC}[0m" \
+    "2026-10-04T00:59:22.4Z ${ESC}[36;1mecho \"$WARN_FLAG\"${ESC}[0m" \
+    '2026-10-04T00:59:22.5Z ##[endgroup]' \
+    "2026-10-04T00:59:22.6Z $WARN_FLAG" \
+    '2026-10-04T00:59:23.0Z (node:2301) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.' \
+    '2026-10-04T00:59:23.1Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4' \
+    '2026-10-04T00:59:23.2Z warning: unused variable: `x`' \
+    "2026-10-04T00:59:23.3Z $WARN_FN" \
+    '2026-10-04T00:59:23.4Z error: a removed flag is no longer deprecated, it is gone' \
+    "2026-10-04T00:59:23.5Z $WARN_CAPITAL" \
+    "2026-10-04T00:59:23.6Z $WARN_UPPER" \
+    "2026-10-04T00:59:23.7Z $WARN_NOUN"
+}
+
+d=$(fresh)
+add_job "$d" 401 'Thin mode (omni-dev latest)'
+deprecation_log >"$d/logs/401"
+run_deprecations "$d" 'Thin mode (omni-dev latest)'
+check "deprecations: reads a job's log" test "$STATUS" -eq 0
+equals "deprecations: prints the warnings a program logged, without their timestamp" \
+  "$WARN_FLAG
+$WARN_FN
+$WARN_CAPITAL
+$WARN_UPPER
+$WARN_NOUN" "$OUT"
+check "deprecations: not the echoed script, which holds the same words" \
+  bash -c '! grep -qF "echo" <<<"$1"' _ "$OUT"
+check "deprecations: not the runner's or node's own notice" \
+  bash -c '! grep -qE "Node.js 20|punycode" <<<"$1"' _ "$OUT"
+check "deprecations: not a warning that is not about a deprecation" \
+  bash -c '! grep -qF "unused variable" <<<"$1"' _ "$OUT"
+check "fixture: the log does echo the warning's words outside a warning line" \
+  grep -qF "echo \"$WARN_FLAG\"" "$d/logs/401"
+check "fixture: the log does hold the runner's and node's deprecation notices" \
+  bash -c 'grep -qF "##[warning]Node.js 20 is deprecated" "$1" && grep -qF "DeprecationWarning" "$1"' _ "$d/logs/401"
+
+printf '%s\r\n' "2026-10-04T00:59:22.6Z $WARN_FLAG" >"$d/logs/401"
+run_deprecations "$d" 'Thin mode (omni-dev latest)'
+equals "deprecations: strips carriage returns" "$WARN_FLAG" "$OUT"
+
+printf '%s\n' "2026-10-04T00:59:22.6Z warning: unused variable: \`x\`" >"$d/logs/401"
+run_deprecations "$d" 'Thin mode (omni-dev latest)'
+check "deprecations: a log without one is not a failure" test "$STATUS" -eq 0
+equals "deprecations: a log without one prints nothing" "" "$OUT"
+
+# The plumbing is job-log.sh's, shared with job-errors.sh and tested above for it;
+# these show the new script fails the same way, with no warnings printed.
+run_deprecations "$d" 'No such job'
+check "deprecations: a missing job fails the script" test "$STATUS" -ne 0
+check "deprecations: and is named" grep -q "0 jobs named 'No such job'" <<<"$ERR"
+equals "deprecations: and prints nothing" "" "$OUT"
+
+d=$(fresh)
+add_job "$d" 402 'Job'
+deprecation_log >"$d/logs/402"
+run_deprecations "$d" 'Job' FAKE_FAIL_FIRST=99 JOB_LOG_ATTEMPTS=2
+check "deprecations: a log that is never readable fails the script" test "$STATUS" -ne 0
+check "deprecations: and says so" grep -q "could not read the log of job 'Job' (402) after 2 attempts" <<<"$ERR"
+equals "deprecations: and prints nothing" "" "$OUT"
+
+# --- the log itself -----------------------------------------------------------
+
+d=$(fresh)
+add_job "$d" 501 'Job'
+deprecation_log >"$d/logs/501"
+run_script "$LOG" "$d" 'Job'
+check "job-log: reads a job's log" test "$STATUS" -eq 0
+equals "job-log: prints every line, carriage returns removed, nothing filtered" \
+  "$(tr -d '\r' <"$d/logs/501")" "$OUT"
 
 echo
 echo "$passed passed, $failed failed"

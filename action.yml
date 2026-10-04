@@ -11,7 +11,7 @@ inputs:
   # omni-dev install + cache (mirrors action-works/omni-dev-commit-check)
   # ---------------------------------------------------------------------------
   version:
-    description: 'omni-dev version to install (e.g., 0.15.0, latest)'
+    description: 'omni-dev version to install (e.g., 0.45.0, latest)'
     required: false
     default: 'latest'
   github-token:
@@ -576,8 +576,10 @@ runs:
         omni-dev "${args[@]}" -o markdown > coverage.md
         echo "comment-path=coverage.md" >> "$GITHUB_OUTPUT"
 
-        # Machine-readable percentages (best-effort; never fail the build).
-        if omni-dev "${args[@]}" -o json > coverage.json 2>/dev/null; then
+        # Machine-readable percentages (best-effort; never fail the build). stderr
+        # stays on the log: it is where omni-dev prints a deprecation warning, and
+        # the integration workflow reads those from the job logs (#23).
+        if omni-dev "${args[@]}" -o json > coverage.json; then
           PATCH=$(jq -r '.patch_coverage.percent // empty' coverage.json 2>/dev/null || echo "")
           LINE=$(jq -r '.project_delta.total_after // empty' coverage.json 2>/dev/null || echo "")
           echo "patch-percent=$PATCH" >> "$GITHUB_OUTPUT"

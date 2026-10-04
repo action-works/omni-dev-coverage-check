@@ -266,7 +266,7 @@ downloads a baseline that already includes their coverage.
 
 | Input                 | Description                                                                                             | Default               |
 |-----------------------|--------------------------------------------------------------------------------------------------------|-----------------------|
-| `version`             | omni-dev version to install (e.g. `0.15.0`, `latest`)                                                   | `latest`              |
+| `version`             | omni-dev version to install (e.g. `0.45.0`, `latest`)                                                   | `latest`              |
 | `github-token`        | Token authenticating the GitHub API call that resolves `version: latest` (1000/hr vs 60/hr unauthed)   | `${{ github.token }}` |
 | `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source                             | `true`                |
 | `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
@@ -380,13 +380,14 @@ posts when a gate fails:
 - Thin mode's line gate and `shard-reports` need an omni-dev release that has
   `coverage diff --fail-under-lines` (the first after v0.44.0). With `version: latest`
   that is automatic once it is released; if you pin `version`, pin one that has it.
-- The pull-request comment and the patch gate pass `-o/--output` to `omni-dev coverage
-  diff`, which needs omni-dev 0.32.0 or later (its predecessor `--format` is deprecated
-  and due to be removed in a future major). With `version: latest` that is automatic; if
-  you pin `version`, pin 0.32.0 or later. On a pull request, in either mode, an older
-  omni-dev stops the action before the coverage run with a message that names the
-  version it found and the 0.32.0 floor, rather than clap's bare `unexpected argument
-  '-o'` from the comment step. Other events are unaffected.
+- The pull-request comment, the patch gate and the thin-mode line gate pass
+  `-o/--output` to `omni-dev coverage diff`, which needs omni-dev 0.32.0 or later (its
+  predecessor `--format` is deprecated and due to be removed in a future major). With
+  `version: latest` that is automatic; if you pin `version`, pin 0.32.0 or later. On a
+  pull request, in either mode, an older omni-dev stops the action before the coverage
+  run with a message that names the version it found and the 0.32.0 floor, rather than
+  clap's bare `unexpected argument '-o'` from the comment step. Other events are
+  unaffected.
 
 ## Example: pinned version, codecov upload, and a patch gate
 
