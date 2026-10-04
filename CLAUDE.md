@@ -24,8 +24,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
 - `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the four step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
-- `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
+- `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo (runs on `merge_group` too: `Validate Commit Messages` is a required check of the merge queue)
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
@@ -44,6 +44,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
 - `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
 - `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run and attempt on `schedule` and `workflow_dispatch`, and the leg in both) and checks the action's `omni-dev-cache-hit` output (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
+- `tests/ci-gate.sh` - What the `ci-gate` job of `integration.yml` runs: fails unless every job it needs finished `success`, from `toJSON(needs)` in `$NEEDS`
+- `tests/merge-queue.test.sh` - Tests `ci-gate.sh`, and reads the workflows to check what the merge queue relies on: `ci-gate` needs every job of `integration.yml` and runs `always()`, `merge_group` is a trigger of the three workflows a required check comes from and of neither path-filtered one, and the required checks' names are still the jobs' names (`test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `tests/fixtures/omni-dev-probe/` - What the real releases either side of each guard floor (and 0.28.0, which has no `coverage`) answered to the guard's probe, one `<version>/<flag>.txt` each: `exit=<status>`, then the output (`tests/guard-step.test.sh` replays them)
 - `.github/pull_request_template.md` - PR template
@@ -938,6 +940,78 @@ The action is a composite action with two phases:
   - Tests: the unit test above, `integration.yml` F5 (the filter, a gate of 53) and F6 (the
     control without it, which fails at the gate) for the lcov, `codecov.json`, the summary and
     the gate, and `pr-paths.yml` R3 for the recompute.
+- **Merge queue (#76)**: `main` is meant to merge through a GitHub merge queue, so a pull request is
+  tested against the `main` it lands on and not the one it branched from (several touch
+  `action.yml` and `integration.yml` at once). The workflow side is in the repository. The ruleset is
+  not, and until it exists there is no queue: it is created in the settings, after `ci-gate` is on
+  `main` (a required check can only be selected once it has run), from the payload in #76. Rules, so
+  they are not re-derived:
+  - **Required checks are exactly three**: `Validate Commit Messages` (`commit-check.yml`),
+    `Shell scripts` (`test.yml`) and `ci-gate` (`integration.yml`). **Never require `PR paths` or
+    `E2E sharded`, and never add `merge_group` to them.** They are path-filtered, so a required one
+    would wait forever on a pull request that touches none of its paths, and `merge_group` has no
+    `paths:` filter, so they would run unfiltered on every merge. The ruleset selects a check by its
+    job's `name:`, so renaming one of the three breaks the queue silently.
+  - **`merge_group:` on those three workflows** is what makes a required check report for the
+    queue's commit. Without it the pull request waits forever, and nothing else shows it until the
+    ruleset exists. `tests/merge-queue.test.sh` checks the trigger on the three, its absence on the
+    two, and the three names.
+  - **`ci-gate` is the one Integration check, not the twenty-odd job names** (a matrix change renames
+    them). `failure-messages` is skipped when a scenario fails, and GitHub counts a skipped required
+    check as passing, so requiring only that job would let a red pull request through. `ci-gate`
+    `needs` every other job in the file, runs `if: always()` so it is red rather than skipped, and
+    `tests/ci-gate.sh` reads `toJSON(needs)` from `env:` (no expression in the script, #39).
+    - It is red unless every result is `success`: `skipped` and `cancelled` too. The issue said
+      `failure` or `cancelled`; skipped is added on purpose. No job of `integration.yml` has an `if:`,
+      so a skipped job is always downstream of a failure and this adds no red today, and a job
+      skipped on purpose later turns it red with the job named, where a pass would hide it. The
+      reverse hole is `continue-on-error: true` on a job, which reports a red job as `success`: so
+      `tests/merge-queue.test.sh` fails on a job-level `if:` or `continue-on-error:` in any job the
+      gate needs (a step-level one is fine, and the scenarios use it).
+    - An empty or malformed `needs` is refused (exit 2), not passed: a gate over no jobs is how a
+      deleted `needs:` would go unnoticed. It also fails closed on its own tooling: the job list is
+      captured with its status checked, not read from a process substitution, because a `jq` that died
+      there left a loop over nothing, which counted no failure and passed a red job (found in review;
+      the test runs the script with a `jq` that dies after its first call).
+    - **A new job in `integration.yml` goes in `ci-gate`'s `needs`**, or nothing waits for it.
+      `tests/merge-queue.test.sh` fails until it does, and for a name in `needs` that is no job.
+      Its readers are awk over the layout the file has (a block list under `needs:`, a block under
+      `on:`) and refuse a flow-style one rather than read it as empty.
+  - **A `merge_group` run is a `push` run that publishes no baseline.** Every event test in
+    `integration.yml` and `action.yml` is `pull_request` or `push` to `main`, so the queue's commit
+    gets the whole suite, the coverage and the overall line gate, and no comment, merge-base, patch
+    gate or baseline publish. The uploads have no event condition and do run: `upload-artifacts`, and
+    `codecov`, whose `fail_ci_if_error: true` would eject a pull request on a codecov outage. The
+    README tells a caller how to turn the latter off for the event. The baseline lookup does not filter by event and looks in every
+    successful run of a commit, so the `merge_group` run, which shares its head SHA with the `push`
+    run that publishes the baseline, cannot hide it (the shadowing case of `tests/find-baseline.test.sh` is that shape: a newer run with no artifact in front of an older one that has it; the event itself is not exercised). Commit
+    Check on the queue's ref has `GITHUB_BASE_REF` empty and a ref other than `main`, so
+    omni-dev-commit-check passes no range and does not take `skip-on-main`; omni-dev lints
+    `origin/main..HEAD`, and a queue-style `Merge pull request #N` commit on top of a conventional one
+    linted clean locally (omni-dev 0.45.0). The concurrency groups key on `github.ref` and
+    `cancel-in-progress` is for `pull_request` only, so queue runs do not cancel each other.
+  - **Ruleset settings** (applied by hand): merge method `MERGE`, because the baseline walk relies on
+    the first-parent commits of `main` being merged pull requests, each with its own baseline;
+    `max_entries_to_merge: 1` and `min_entries_to_merge: 1`, because a group of N would land as N
+    first-parent commits but only one `push` run, at the tip, so N-1 would have no baseline and the
+    delta would no longer be attributable to the pull request alone (expected, not verified; grouping
+    buys nothing with a CI of 1 to 2 minutes); `max_entries_to_build: 5`, `grouping_strategy:
+    ALLGREEN`, `check_response_timeout_minutes: 30`, `min_entries_to_merge_wait_minutes: 0`; and a
+    bypass for the admin role, so a red `main` can still be fixed.
+  - **Decided in #76: the `latest` jobs gate.** After each omni-dev release every `version: latest` job
+    is red for about 6 to 10 minutes (#64), and `ci-gate` needs them, so a queued pull request is
+    ejected in that window and has to be enqueued again. Leaving them out would mean restructuring
+    `failure-messages` and `ci-gate`; #64 is the real fix. The same goes for anything else that reads
+    live state: `latest-redirect`, and `deprecation-control` (an omni-dev that removes `--format` or
+    rewords clap's message turns it red with no pull request at fault). Merges then wait for the
+    cause to be fixed, or for the admin bypass, which is what it is for. Each merge also runs Test, Commit Check and
+    Integration a second time, about 2 minutes of latency, and the cache entries a queue ref saves are
+    never restored by anyone (a queue entry has its own ref), so each merge adds a few that age out.
+  - **Not verified** (the first queue run is the real test): plan eligibility, which came from secondary
+    sources (merge queue is available for a public repository owned by an organization, including on
+    the Free plan, and not at all for one owned by a personal account, so moving the repository
+    would end it); whether `allow_auto_merge: false` affects `gh pr merge` entering the queue; that a
+    group of N lands as N first-parent commits; and everything on a real runner.
 - **Gate ordering**: the comment-building diff is run WITHOUT `--fail-under-patch`
   so a failing gate never blocks the comment; the gate is enforced by a separate
   diff invocation after the comment step.

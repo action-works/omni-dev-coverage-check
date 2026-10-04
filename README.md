@@ -421,7 +421,8 @@ publishes) cannot hide the run that has it. Runs from forks are ignored.
   artifact. If the `push` run for the merge-base has not finished, the next ancestor's
   baseline is used instead of rebuilding.
 - **Cost.** Each commit tried costs at least one GitHub API request, plus one for each
-  successful run it has, so a lookup that finds nothing spends `baseline-ancestor-depth + 1`.
+  successful run it has (under a merge queue that includes the queue's own run), so a lookup
+  that finds nothing spends `baseline-ancestor-depth + 1` at the least.
   On github.com the workflow token allows 1,000 requests an hour per repository.
 
 ### When the baseline is an ancestor's
@@ -450,6 +451,50 @@ posts when a gate fails:
   differ slightly from llvm-cov's figure. Thin mode gates on every event, a push
   included. **If you used thin mode before this input applied to it, the default
   now gates you at 30%;** set `fail-under-lines: ''` to keep the old behaviour.
+
+## Merge queues
+
+If a merge queue requires the check that runs this action, add `merge_group:` to that
+workflow's `on:`. A required check reports for the queue's commit only when its workflow runs
+on that event; without it the pull request waits forever.
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+```
+
+On a `merge_group` run the action does the coverage run and the overall line gate
+(`fail-under-lines`), so a drop below it ejects the pull request from the queue. It does not
+post the comment, apply `fail-under-patch` or publish a baseline: those steps run on a
+`pull_request`, and on a `push` to `main`. The baseline for the merged commit is published by
+the `push` run after the merge. The queue's run has the same head SHA and no baseline, which the
+lookup copes with (see [What counts as a baseline](#what-counts-as-a-baseline)).
+
+The uploads have no event condition and run on the queue's commit too. With `codecov: true`
+that commit is uploaded as well as the `push` run's, and because a failed upload fails the
+step, a codecov outage on the queue's run ejects the pull request. To upload on the other
+events only, set `codecov: ${{ github.event_name != 'merge_group' }}`.
+
+Set the queue's group size to 1 (`max_entries_to_merge` and `min_entries_to_merge`). The
+baseline lookup expects each pull request to land as one first-parent commit of `main` with a
+`push` run of its own. A larger group lands several commits from one push, which runs for the
+tip only, so the others would have no baseline of their own; the ancestor walk would still find
+the nearest one, but the delta would then include the neighbouring pull requests' changes.
+
+A queue also lands pull requests on `main` back to back, so a workflow-wide `concurrency` group
+on `refs/heads/main` that cancels in-progress runs, or replaces a pending one, can drop the
+`push` run that would have published a baseline. Give a `push` a group of its own, as this
+repository's `pr-paths.yml` does:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
 
 ## Excluding files CI cannot measure
 

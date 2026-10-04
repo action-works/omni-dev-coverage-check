@@ -10,7 +10,7 @@ name: Integration
 # scenario's outcome is asserted
 # at the end of its job; the scenarios are `continue-on-error` so one regression
 # does not hide the rest. What the six scenarios that exist for their message
-# said is asserted by the last job, which reads the finished jobs' logs through
+# said is asserted by `failure-messages`, which reads the finished jobs' logs through
 # the API. On a pull request it also asserts that none of the jobs that ran the
 # pull-request steps logged an omni-dev deprecation warning, and a control job
 # that logs one on purpose shows that reading can find it. To show that the pre-built
@@ -68,12 +68,24 @@ name: Integration
 #     shows, with a file check, that the pull-request steps ran: an empty read of a
 #     job that skipped them would prove nothing. The control job is the other half:
 #     a read that finds nothing anywhere would pass every one of those checks.
+#
+# The merge queue on `main` (#76) requires one check from this workflow, `ci-gate`, which
+# is the last job: it needs every other job here and is red unless each succeeded. The
+# jobs are not required one by one because a matrix change renames them, and
+# `failure-messages` is skipped when a scenario fails, which GitHub counts as passing.
+# A new job goes in `ci-gate`'s `needs`; tests/merge-queue.test.sh fails until it does.
+# A `merge_group` run takes every branch a `push` takes (nothing here tests for it), so
+# the queue's commit gets the whole suite and nothing is published or commented.
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  # The event a merge queue runs the required checks on. Without it `ci-gate` never
+  # reports for the queue's commit and the pull request waits forever. It has no
+  # `paths:` filter, which this workflow does not use either.
+  merge_group:
   schedule:
     - cron: '17 6 * * 1' # weekly: notice a bad omni-dev release without waiting for a PR
   workflow_dispatch:
@@ -1859,3 +1871,36 @@ jobs:
             done <<<"$names"
           fi
           exit "$status"
+
+  # The one check of this workflow that the merge queue's ruleset requires (#76). It
+  # fails unless every job above succeeded, `skipped` included: GitHub counts a skipped
+  # required check as passing, and `failure-messages` is skipped whenever a scenario
+  # fails, so requiring only that job would let a red pull request through. `always()`
+  # so it runs, and is red, when a job it needs failed. The results reach
+  # tests/ci-gate.sh through `env:`, not as an expression in the script (#39).
+  # `needs` names every other job in the file: tests/merge-queue.test.sh fails when one
+  # is missing, since a job left out would be a job nothing waits for.
+  ci-gate:
+    name: ci-gate
+    needs:
+      - thin-mode
+      - thin-mode-old-omni-dev
+      - arm64-release-without-asset
+      - output-flag
+      - ignore-filename-regex
+      - ignore-filename-regex-flag
+      - latest-redirect
+      - version-pin
+      - version-input
+      - fat-mode
+      - deprecation-control
+      - failure-messages
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail unless every job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: bash tests/ci-gate.sh
