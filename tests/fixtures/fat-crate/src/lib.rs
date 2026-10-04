@@ -3,6 +3,9 @@
 //! Each function below is reached by a different part of the coverage run, so
 //! the report shows which parts of the action contributed coverage.
 
+/// Code nothing reaches, in a file of its own: what `llvm-cov-ignore-filename-regex` excludes.
+pub mod ignored;
+
 /// Reached by the main `cargo test` run.
 pub fn main_run() -> u32 {
     1 + 1

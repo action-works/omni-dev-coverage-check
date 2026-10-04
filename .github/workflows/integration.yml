@@ -5,7 +5,8 @@ name: Integration
 # `ignore-filename-regex`, and the `--output` floor a pull request needs), and in
 # fat mode against a fixture crate (the instrumented test run, the three report
 # outputs and the one profile merge they share, the fat-mode line gate,
-# `setup-commands`/`extra-test-commands`). Each scenario's outcome is asserted
+# `setup-commands`/`extra-test-commands`, `llvm-cov-ignore-filename-regex`). Each
+# scenario's outcome is asserted
 # at the end of its job; the scenarios are `continue-on-error` so one regression
 # does not hide the rest. What the five scenarios that exist for their message
 # said is asserted by the last job, which reads the finished jobs' logs through
@@ -1021,9 +1022,11 @@ jobs:
             echo "LLVM_SHIM_LOG=$PWD/llvm-profdata-merges.txt"
           } >> "$GITHUB_ENV"
 
-      # The full configuration. The fixture covers 14 of 24 lines (58.3%) with
-      # everything, and 8 of 24 (33.3%) without the extra command, so the gates of
-      # 40 and 80 sit well either side of it. `setup-ran.txt` is what the main
+      # The full configuration. The fixture covers 14 of 29 lines (48.3%) with
+      # everything, and 8 of 29 (27.6%) without the extra command, so the gates of
+      # 40 and 80 sit well either side of it. (Five of the 29 lines are
+      # `src/ignored.rs`, which nothing reaches: without it it is 14 of 24, 58.3%,
+      # which F5 and F6 are about.) `setup-ran.txt` is what the main
       # test needs, so it fails unless setup ran first. The setup test runs with
       # profiling off, so `setup_only` must stay uncovered; the extra test is
       # profiled, so `extra_only` must be covered. `recompute-baseline` is off
@@ -1075,7 +1078,7 @@ jobs:
         run: bash tests/move-outputs.sh f2
 
       # Control for F1: no extra command, so `extra_only` must now be uncovered.
-      # The gate is off because 33.3% is under 40.
+      # The gate is off because 27.6% is under 40.
       - name: 'F3. Without extra-test-commands'
         id: f3
         uses: ./
@@ -1118,12 +1121,67 @@ jobs:
         if: always()
         run: bash tests/move-outputs.sh f4
 
+      # F5 and F6 are about `llvm-cov-ignore-filename-regex`. `src/ignored.rs` is
+      # reached by nothing: 5 of the 29 lines and none of the 14 covered, so the
+      # fixture is at 48.3% with it and 58.3% without. The gate of 53 sits between
+      # the two (4.7 under one, 5.3 over the other), so F5 passes only if the line
+      # gate itself is filtered. The pattern has a `\` and a `$`, which have to
+      # reach cargo-llvm-cov as they are, and matches the ABSOLUTE path.
+      - name: 'F5. The filter leaves the unreachable file out of every report'
+        id: f5
+        uses: ./
+        continue-on-error: true
+        with:
+          report: out/f5.lcov
+          fail-under-lines: 53
+          llvm-cov-ignore-filename-regex: 'src/ignored\.rs$'
+          setup-commands: |
+            echo ready > setup-ran.txt
+            cargo test -- --ignored --exact tests::setup_only_works
+          extra-test-commands: cargo test -- --ignored --exact tests::extra_only_works
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          recompute-baseline: false
+          baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
+
+      - name: Move F5 outputs aside
+        if: always()
+        run: bash tests/move-outputs.sh f5
+
+      # Control for F5: only the filter is off, so the same run is under the gate,
+      # and fails there with every report written.
+      - name: 'F6. Same, without the filter'
+        id: f6
+        uses: ./
+        continue-on-error: true
+        with:
+          report: out/f6.lcov
+          fail-under-lines: 53
+          setup-commands: |
+            echo ready > setup-ran.txt
+            cargo test -- --ignored --exact tests::setup_only_works
+          extra-test-commands: cargo test -- --ignored --exact tests::extra_only_works
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          recompute-baseline: false
+          baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
+
+      - name: Move F6 outputs aside
+        if: always()
+        run: bash tests/move-outputs.sh f6
+
       - name: Assert every outcome
         env:
           F1: ${{ steps.f1.outcome }}
           F2: ${{ steps.f2.outcome }}
           F3: ${{ steps.f3.outcome }}
           F4: ${{ steps.f4.outcome }}
+          F5: ${{ steps.f5.outcome }}
+          F6: ${{ steps.f6.outcome }}
           VERSION: ${{ steps.f1.outputs.version }}
         run: |
           status=0
@@ -1148,11 +1206,14 @@ jobs:
           # Whether a function's declaration line is covered in an lcov report:
           # covered, uncovered, or missing (no record for it). The line comes from
           # the fixture because the FN records carry hash-suffixed mangled names.
+          # Only src/lib.rs's records are read: the report has src/ignored.rs too,
+          # and a line number means a different line in each file.
           state() { # <lcov> <function>
             local line
             line="$(grep -n "pub fn $2(" src/lib.rs | head -1 | cut -d: -f1)"
             awk -F'[:,]' -v line="$line" '
-              $1 == "DA" && $2 == line { print ($3 > 0 ? "covered" : "uncovered"); found = 1 }
+              $1 == "SF" { in_lib = ($2 ~ /\/src\/lib\.rs$/) }
+              in_lib && $1 == "DA" && $2 == line { print ($3 > 0 ? "covered" : "uncovered"); found = 1 }
               END { if (!found) print "missing" }' "$1"
           }
           # The same for codecov.json, which keeps each line's hits as "hit/total".
@@ -1167,10 +1228,32 @@ jobs:
                 else "uncovered" end' "$1"
           }
 
+          # Both figures are numbers, and the first is under the second: a figure that
+          # is missing (an empty summary, a report that was not written) must not pass.
+          # Both are run through `assert`, which shellcheck does not see as a call.
+          # shellcheck disable=SC2329
+          lt() { # <a> <b>
+            [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ && "$2" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+              && awk -v a="$1" -v b="$2" 'BEGIN { exit !(a < b) }'
+          }
+          # The same percentage to within rounding: llvm-cov and lcov-percent.sh can
+          # round a value that ends in a 5 to different neighbours.
+          # shellcheck disable=SC2329
+          near() { # <a> <b>
+            [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ && "$2" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+              && awk -v a="$1" -v b="$2" 'BEGIN { d = a - b; exit !(d < 0.02 && d > -0.02) }'
+          }
+          # The summary's line coverage, without the `%`.
+          summary_total() { # <coverage-summary.txt>
+            awk '/^TOTAL/ { sub("%", "", $10); print $10 }' "$1"
+          }
+
           check "F1. full configuration, gate below the coverage" success "$F1"
           check "F2. same, gate above the coverage" failure "$F2"
           check "F3. without extra-test-commands" success "$F3"
           check "F4. without setup-commands" failure "$F4"
+          check "F5. the filter, gate between the filtered and the unfiltered coverage" success "$F5"
+          check "F6. same, without the filter" failure "$F6"
 
           # F1: the three outputs exist and are well formed.
           assert "F1: codecov.json names src/lib.rs" \
@@ -1229,6 +1312,44 @@ jobs:
           check "F3: merged once, without the gate" 1 "$(merges out/f3/llvm-profdata-merges.txt)"
           check "F4: nothing merged before the failing test" 0 "$(merges out/f4/llvm-profdata-merges.txt)"
 
+          # F5: `src/ignored.rs` is out of every report the action wrote and `src/lib.rs`
+          # is not, so the filter reached the lcov, codecov.json and the summary, and
+          # kept the rest. A run of the same fixture without it is F6, below.
+          assert "F5: the lcov has no record for src/ignored.rs" \
+            test "$(grep -c '^SF:.*/src/ignored\.rs$' out/f5.lcov)" = 0
+          assert "F5: the lcov still has src/lib.rs" grep -q '^SF:.*/src/lib\.rs$' out/f5.lcov
+          assert "F5: codecov.json does not name src/ignored.rs" \
+            jq -e '.coverage | keys | any(endswith("/src/ignored.rs")) | not' out/f5/codecov.json
+          assert "F5: codecov.json still names src/lib.rs" \
+            jq -e '.coverage | keys | any(endswith("/src/lib.rs"))' out/f5/codecov.json
+          assert "F5: the summary has no row for ignored.rs" \
+            test "$(grep -c 'ignored\.rs' out/f5/coverage-summary.txt)" = 0
+          assert "F5: the summary has a TOTAL row" grep -q '^TOTAL' out/f5/coverage-summary.txt
+          # The files that stayed were measured as in F1: only a file was dropped, not
+          # coverage.
+          for fn in main_run extra_only setup_only never; do
+            check "F5: $fn is as in F1" "$(state out/f1.lcov "$fn")" "$(state out/f5.lcov "$fn")"
+          done
+          total5="$(summary_total out/f5/coverage-summary.txt)"
+          total6="$(summary_total out/f6/coverage-summary.txt)"
+          assert "F5: the summary's total ($total5) is the filtered lcov's ($(bash tests/lcov-percent.sh out/f5.lcov))" \
+            near "$total5" "$(bash tests/lcov-percent.sh out/f5.lcov)"
+          # The gate is what decided F5, and the filter reached it: the unfiltered
+          # figure (F6's) is under 53, so only a filtered gate can pass.
+          assert "F5: the filtered total ($total5) is over the gate of 53" lt 53 "$total5"
+          assert "F6: the unfiltered total ($total6) is under the gate of 53" lt "$total6" 53
+          check "F5: the raw profiles were merged once" 1 "$(merges out/f5/llvm-profdata-merges.txt)"
+
+          # F6 stops at the gate, after every report is written, and keeps the file.
+          assert "F6: stopped at the gate: lcov written" test -s out/f6.lcov
+          assert "F6: stopped at the gate: codecov.json written" test -s out/f6/codecov.json
+          assert "F6: stopped at the gate: summary written" test -s out/f6/coverage-summary.txt
+          assert "F6: the lcov has a record for src/ignored.rs" grep -q '^SF:.*/src/ignored\.rs$' out/f6.lcov
+          assert "F6: codecov.json names src/ignored.rs" \
+            jq -e '.coverage | keys | any(endswith("/src/ignored.rs"))' out/f6/codecov.json
+          assert "F6: the summary has a row for ignored.rs" grep -q 'ignored\.rs' out/f6/coverage-summary.txt
+          check "F6: the raw profiles were merged once" 1 "$(merges out/f6/llvm-profdata-merges.txt)"
+
           # The comment is built on pull requests only. Its total is the report's
           # own total, so it shows the diff was rendered from F1's report.
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
@@ -1239,8 +1360,13 @@ jobs:
             # for a deprecation warning from. The comment's file shows the first ran.
             assert "F1: the percentages were rendered with -o json" \
               jq -e 'type == "object"' out/f1/coverage.json
+            # F5's comment is rendered from the filtered report, so it carries the
+            # filtered total, which F1's (48.3%) is not.
+            assert "F5: the pull-request comment reports the filtered total ($total5%)" \
+              grep -qF "Total: **$total5%**" out/f5/coverage.md
           else
             assert "F1: no diff rendered outside a pull request" test ! -e out/f1/coverage.md
+            assert "F5: no diff rendered outside a pull request" test ! -e out/f5/coverage.md
           fi
 
           # The binary on PATH is the version that was resolved. A cache entry

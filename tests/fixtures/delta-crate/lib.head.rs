@@ -6,6 +6,9 @@
 //! them. Unlike the fat-mode crate, its tests need nothing but `cargo test`,
 //! because the recompute replays only `test-args`.
 
+/// Code nothing reaches, in a file of its own: what `llvm-cov-ignore-filename-regex` excludes.
+pub mod ignored;
+
 /// Covered at the base and at the head.
 pub fn kept() -> u32 {
     1 + 1
