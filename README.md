@@ -271,6 +271,11 @@ downloads a baseline that already includes their coverage.
 | `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source                             | `true`                |
 | `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
 
+`version: latest` makes one call to the GitHub API to find the newest release. It sends `github-token` and tries
+three times (waiting 3s, then 6s) before the step fails, so the 60-requests-an-hour limit on unauthenticated calls
+from a shared runner address does not fail the job. It needs no configuration: the token defaults to the workflow's.
+A pinned `version` makes no API call.
+
 The pre-built binary is chosen from the runner's OS and architecture: Linux x64, macOS ARM64 and Windows today,
 and Linux ARM64 from the first omni-dev release that publishes `omni-dev-linux-arm64.tar.gz` (built since
 [rust-works/omni-dev#2116](https://github.com/rust-works/omni-dev/issues/2116)). Until then an ARM64 Linux runner

@@ -174,10 +174,19 @@ runs:
       run: |
         VERSION="${{ inputs.version }}"
         if [ "$VERSION" = "latest" ]; then
+          # The jq calls below end in `|| true` and send stderr away, so a runner
+          # with no jq would be retried three times and reported as a rate limit.
+          if ! command -v jq >/dev/null; then
+            echo "::error::jq is required to resolve 'version: latest' and was not found on PATH. Install it, or set 'version' to a release to skip the lookup."
+            exit 1
+          fi
           # Authenticate the API call so it draws on the 1000/hr authenticated
           # rate limit rather than the 60/hr unauthenticated, shared-runner-IP
-          # limit that intermittently fails this step. The token is passed via
-          # the environment, so it never appears in the command line.
+          # limit that intermittently fails this step. The token comes in through
+          # the environment, not as an expression in this script, so the runner
+          # never writes it into the script text. It does reach curl's arguments.
+          # Keep expressions out of this script's comments and messages too: the
+          # runner evaluates every one it finds, escaped or not.
           auth=()
           if [ -n "$GH_TOKEN" ]; then
             auth=(-H "Authorization: Bearer $GH_TOKEN")
@@ -185,6 +194,7 @@ runs:
           RELEASE_TAG=""
           for attempt in 1 2 3; do
             response=$(curl -sS \
+              --connect-timeout 10 --max-time 30 \
               "${auth[@]}" \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -196,7 +206,7 @@ runs:
             if [ "$attempt" -lt 3 ]; then sleep $((attempt * 3)); fi
           done
           if [ -z "$RELEASE_TAG" ]; then
-            echo "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts. If this is a rate limit, ensure a github-token is available (it defaults to \${{ github.token }})."
+            echo "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts. If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
             exit 1
           fi
           VERSION="${RELEASE_TAG#v}"
