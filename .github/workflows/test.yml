@@ -97,6 +97,9 @@ jobs:
       # The runner replaces every expression in a `run:` body with its value before the
       # shell parses the script, so a value that holds shell syntax runs as shell (#39).
       # Values reach a script through `env:`. This fails when a new expression appears in
-      # a body of action.yml, before a caller's untrusted value can reach one.
-      - name: Check no run body of the action holds an expression
-        run: bash tests/check-run-expressions.sh
+      # a body of action.yml, before a caller's untrusted value can reach one, and in a body
+      # of this repository's own workflows (#73), which run on `pull_request` and `push`:
+      # `github.head_ref`, a pull request's title or a `workflow_dispatch` input written
+      # into a `run:` body would be a command injection there.
+      - name: Check no run body of the action or a workflow holds an expression
+        run: bash tests/check-run-expressions.sh action.yml .github/workflows/*.yml

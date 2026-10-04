@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Fails when a `run:` body of a file the action ships holds a `${{ }}` expression.
+# Fails when a `run:` body of a file it is given holds a `${{ }}` expression.
 #
 # Usage: check-run-expressions.sh [file...]
-#   With no arguments it scans action.yml, relative to the repository root.
+#   With no arguments it scans action.yml, relative to the repository root. test.yml gives
+#   it action.yml and every workflow in .github/workflows (#73): the workflows' own `run:`
+#   bodies run on `pull_request` and `push`, where a pull request's title or branch name is
+#   not a value to put in a script.
 # Exit status: 0 when no `run:` body holds an expression (or only allowlisted ones, and
 # every allowlist entry is still needed); 1 when one does, or an allowlist entry matches
 # nothing, with an `::error file=..,line=..` annotation per finding and the offending line
@@ -34,7 +37,10 @@
 # is the step's name without quotes, the expression is what sits between `${{` and `}}`,
 # trimmed, and the reason may hold the separator. An entry that matches no finding fails the
 # check, so the list only shrinks: remove the entry when the expression goes. Never add one
-# for a value a caller supplies that is not meant to be shell.
+# for a value a caller supplies that is not meant to be shell. An entry is matched on the
+# step's name and the expression, not on the file: two steps of one name in different files
+# share it. Nothing needs one today, and a workflow that did (a trusted `matrix` value is
+# still passed through `env:`) should make the entry name its file first.
 set -euo pipefail
 
 ALLOWED=(

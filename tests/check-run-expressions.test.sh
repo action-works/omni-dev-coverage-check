@@ -392,6 +392,47 @@ run "$WORK/or.yml"
 status_is "the same without the entry: fails" 1
 has "the same without the entry: names the whole expression" "'\${{ inputs.a || inputs.b }}'"
 
+# --- the workflows (#73) -------------------------------------------------------------------
+
+# test.yml runs the check over every workflow of the repository as well as action.yml.
+# They hold the steps one level deeper than action.yml does, so what matters is that an
+# expression in one of THEIR `run:` bodies is found, with the line and the step named.
+# The line and the step are read out of the workflow, so an edit to it does not break the
+# case; the unplanted copy is the control that must pass.
+for workflow in "$ROOT"/.github/workflows/*.yml; do
+  run "$workflow"
+  status_is "workflow $(basename "$workflow"): passes as committed" 0
+done
+
+WORKFLOW="$ROOT/.github/workflows/pr-paths.yml"
+# <line of the first `run: |` key> <its column> <name of the step it belongs to>
+plant="$(awk '
+  BEGIN { SQ = sprintf("%c", 39) }
+  /^[[:space:]]*-[[:space:]]+name:/ {
+    step = $0
+    sub(/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/, "", step)
+    gsub("^[\"" SQ "]|[\"" SQ "]$", "", step)
+  }
+  /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*\|[[:space:]]*$/ {
+    match($0, /run:/)
+    print FNR "\t" RSTART - 1 "\t" step
+    exit
+  }' "$WORKFLOW")"
+IFS=$'\t' read -r plant_line plant_col plant_step <<<"$plant"
+if [ -z "$plant_step" ]; then
+  bad "workflow plant: pr-paths.yml has a named step with a block run: body to plant in" "found: '$plant'"
+else
+  awk -v at="$plant_line" -v col="$plant_col" '
+    { print }
+    FNR == at { printf "%" (col + 2) "s%s\n", "", "echo \"${{ github.head_ref }}\"" }' "$WORKFLOW" >"$WORK/planted-workflow.yml"
+  run "$WORK/planted-workflow.yml"
+  status_is "workflow with an expression in a run: body: fails" 1
+  has "workflow with an expression in a run: body: names the line after the key" "file=$WORK/planted-workflow.yml,line=$((plant_line + 1)),"
+  has "workflow with an expression in a run: body: names the expression" "'\${{ github.head_ref }}'"
+  has "workflow with an expression in a run: body: names the step" "(step '$plant_step')"
+  annotations "workflow with an expression in a run: body: only the planted one" 1
+fi
+
 # --- the real file -------------------------------------------------------------------------
 
 # No arguments: the file and the directory the workflow runs it on, from any cwd.
