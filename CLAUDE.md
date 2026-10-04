@@ -12,6 +12,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `README.md` - User documentation with examples and input/output reference
 - `scripts/combine-shards.sh` - Checks and joins per-shard lcov files for the `shard-reports` input
 - `scripts/omni-dev-asset.sh` - Maps a runner's OS and architecture to the omni-dev release asset to download (`tests/omni-dev-asset.test.sh` tests it; `test.yml` runs that)
+- `scripts/find-baseline.sh` - Decides which run's baseline artifact a pull request downloads: the merge-base's, else the nearest first-parent ancestor's (`tests/find-baseline.test.sh` tests it against a stub `curl` and throwaway git repositories; `test.yml` runs that)
+- `tests/baseline-steps.test.sh` - Reads the lookup, download and diff steps out of `action.yml` and checks the wiring (the variables the script requires, the run id handed to the download, the comment's ancestor note) (`test.yml` runs that)
 - `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl` (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses and a stub `sleep` (`test.yml` runs that)
@@ -25,13 +27,15 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
 - `tests/llvm-tool-shim.sh` - Pass-through for `llvm-cov`/`llvm-profdata` that logs each `llvm-profdata merge`; the fat-mode job installs it to assert the profile is merged once (see "One profile merge"; `tests/llvm-tool-shim.test.sh` tests it, with stub tools; `test.yml` runs that)
-- `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the merge-base worktree recompute, and `ignore-filename-regex` reaching the comment and the patch gate
+- `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the ancestor fallback, the merge-base worktree recompute, and `ignore-filename-regex` reaching the comment and the patch gate
 - `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on (`extra` adds a second patched file for P5 and P6)
 - `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
 - `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit
 - `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
 - `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally (`tests/prepare-shard-crate.test.sh` tests it; `test.yml` runs that)
 - `tests/assert-lib.sh` - Assertion helpers the `e2e-sharded.yml` checking steps source (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
+- `tests/expected-baseline.sh` - What the baseline lookup should find for a commit, read from the Actions API through `gh` (`tests/expected-baseline.test.sh` tests it against a stub `gh`; `test.yml` runs that)
+- `tests/baseline-lib.sh` - Checks of a baseline's `TN:` commit, the comment's ancestor note and the lookup against `expected-baseline.sh`, sourced by `pr-paths.yml` and `e2e-sharded.yml` (`tests/baseline-lib.test.sh` tests it, including against the real diff step; `test.yml` runs that)
 - `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
 - `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
@@ -58,9 +62,11 @@ The action is a composite action with two phases:
      caller supplies the per-line lcov via the `report` input — or, for a run
      sharded across jobs, via `shard-reports`, which `scripts/combine-shards.sh`
      checks and joins into `report` so every later step still reads one file.
-   - On pull requests: compute the `origin/main`..`HEAD` merge-base, download the
-     `coverage-baseline` artifact for that exact commit, and on a miss recompute
-     it in a git worktree (fat mode). Render the comment with
+   - On pull requests: compute the `origin/main`..`HEAD` merge-base, find the
+     `coverage-baseline` artifact for that commit or, failing that, the nearest
+     first-parent ancestor's (`scripts/find-baseline.sh`), download it by run id, and
+     when none is in reach recompute it at the merge-base in a git worktree (fat
+     mode). Render the comment with
      `omni-dev coverage diff` and post it via
      `marocchino/sticky-pull-request-comment`.
    - On pushes to `main`: publish this run's lcov as the `coverage-baseline`
@@ -76,8 +82,59 @@ The action is a composite action with two phases:
   `~/.cargo/bin`), not a `target/debug/omni-dev` built by the coverage run — that
   is the whole point of the install/cache phase, and it is what lets thin mode
   work without any cargo build.
-- **Baseline is pinned to the merge-base**, not "latest main", so per-file
-  deltas are attributable to the PR alone.
+- **Baseline is pinned to the merge-base's first-parent line**, not "latest main", so
+  per-file deltas are attributable to the PR alone, give or take the commits between
+  the merge-base and the baseline when it is an ancestor's (the next bullet).
+- **Baseline lookup** (#5): `scripts/find-baseline.sh` decides which run's artifact to
+  download, and `dawidd6/action-download-artifact` downloads it by `run_id`. `dawidd6`'s
+  `commit:` lookup could not do the job: it takes the newest successful run of ONE
+  `head_sha` and looks for the artifact in that run only (a `merge_group` run with no
+  artifact hides the `push` run that has it), it cannot walk ancestors (a step cannot
+  loop), and a workflow the API does not know yet throws whatever `if_no_artifact_found`
+  says. `check_artifacts`/`search_artifacts` would fix only the first, and neither checks
+  `expired`. Rules, so they are not re-derived:
+  - Candidates are the merge-base, then up to `baseline-ancestor-depth` of its
+    first-parent ancestors, nearest first (default `10`; `0` is the exact lookup). A
+    commit has a baseline if a successful run of `baseline-workflow` for it holds an
+    unexpired artifact of that name. ANY such run counts, not the newest. Only first
+    parents: on `main` they are the merged pull requests, each of which published one,
+    where a second parent is a pull request's own branch.
+  - A run from a fork is skipped (`head_repository.full_name` must be this repository),
+    as `dawidd6`'s `allow_forks: false` did. A fork's pull request can carry any head SHA
+    and upload any artifact name, so trusting it would let it write the baseline.
+  - No `event` or `branch` filter: the artifact is the precise filter, and a `push`
+    filter would break a caller that publishes from a schedule or a manual run. Runs not
+    yet `success` are not used even if they have uploaded; the walk is what covers the
+    race (the `push` run unfinished, so the next ancestor is used instead of a rebuild).
+  - A 404 for the workflow is a warned miss that ends the walk: the API knows a workflow
+    only once its file is on the default branch, and every candidate would 404 alike.
+    Transient statuses (no response, 429, 5xx) are tried three times. After that the FIRST
+    request failing is an error with the status and the API's message, as before: a
+    permission or an outage must not read as "no baseline", or every pull request would
+    quietly pay for a rebuild. A failure on a later request is a warned miss: the first one
+    worked, so the credentials do, the baseline is optional, and the walk makes many more
+    requests than the old single lookup, so one blip on the eleventh must not fail a pull
+    request. A runner with no `jq`, `curl` or `git` gets a warned miss that names it: without
+    `jq` the names encode to nothing and the request is a 404 that would read as "no such
+    workflow".
+  - **On by default**, decided in #5: the issue proposed the walk as the behaviour and
+    "at least an option" as the floor. It changes only a pull request whose merge-base
+    has no baseline. To make exactness the default, change the default in `action.yml`
+    (`baseline-steps.test.sh` pins `'10'`; `expected-baseline.sh` reads it from there).
+  - omni-dev renders "Comparing merge-base -> head" and "vs main" and only displays
+    `--base-sha`, so when the baseline is an ancestor's the diff step appends one line
+    naming its commit and distance. Not when there is no downloaded file, and not when the
+    recompute built it: the lookup can have found an ancestor's whose download left no file
+    under this report's name (it expired in between, or the report was renamed), and the
+    recompute's baseline is the merge-base's own, so it sets `recomputed` and the diff step
+    reads that. The patch is unaffected: `--base-ref` stays the merge-base.
+    `tests/baseline-lib.sh` pins the wording against the real step.
+  - Each commit tried costs at least one API request, plus one per successful run it
+    has; a full miss spends `depth + 1`. `GITHUB_TOKEN` has 1,000 an hour per
+    repository, which is why `integration.yml` passes `baseline-ancestor-depth: 0` (up to
+    16 lookups per pull-request run, and none finds anything), and why the depth is a bound.
+  - The recompute stays the last resort and runs only when nothing is in reach, so the
+    `recompute` job of `pr-paths.yml` turns the walk off: its synthetic base has none.
 - **`worktree-system-deps`** generalizes the one omni-dev-specific wrinkle from
   the original inline job (installing `libasound2-dev` before building old
   history); it installs nothing unless set.
@@ -429,12 +486,23 @@ The action is a composite action with two phases:
     caller does not.
   - A baseline hit is not assumed: it needs a published baseline for the merge-base,
     which the first pull request cannot have and a recent merge-base may still be
-    producing. The last step asks the Actions API what the lookup should find (`hit`,
-    `miss`, or `either` while a run is in progress) and the observed result must
-    match, so both paths are tested whichever one a run takes. On a hit the baseline's
-    `TN:` must be the merge-base SHA and the totals are recomputed from the downloaded
-    file, so the assertions survive edits to the fixture. Expectations marked `#5`
-    are the ones the nearest-ancestor fallback will change.
+    producing. `tests/expected-baseline.sh` (which walks the same first-parent ancestors
+    through `gh` and not through the lookup's own code) is asked before the scenarios and
+    again in the last step, and the lookup must land within the span of the two answers: a
+    baseline can be published while the job runs (the `push` run for the merge-base
+    finishing), so one answer taken at the end could expect a nearer commit than the lookup
+    could have seen. When nothing changed the answers agree and it is exact: the nearest
+    baseline, or a miss. Both paths are tested whichever one a run takes. On a hit the
+    baseline's `TN:` is the commit the lookup found, the comment must carry the ancestor
+    note exactly when that is not the merge-base's, and the totals are recomputed from the
+    downloaded file, so the assertions survive edits to the fixture.
+  - P7 and P8 make the walk deterministic. Their `base-ref` is a commit made with
+    `git commit-tree` (a child of the merge-base with its tree, on no branch, which omni-dev
+    diffs from as it would the merge-base), so no run was ever for it. P8 has the walk
+    off and must miss on every run whatever `main` holds; P7 can only be answered by an
+    ancestor and is held to the API. P9 names a workflow the API does not know and must be
+    a miss, not a failure, under the README's permissions. The comments are off, so the
+    ordering rule below is unaffected.
   - The diff is `merge-base..HEAD`, so a pull request's own changes would decide the
     patch gate. `write-pr-fixtures.sh` commits a 10-line `patch-fixture.txt` locally
     (never pushed) so the patch always has known added lines, and instruments
@@ -466,7 +534,7 @@ The action is a composite action with two phases:
   `merge-multiple` → the action); `pr-paths.yml` covers the same loop on hand-written
   lcov. It follows `pr-paths.yml`'s rules (push unfiltered, pull request path-filtered,
   never a required check, per-SHA concurrency on pushes, the baseline lookup asserted
-  against the Actions API, the `#5` marks). What is particular to it:
+  against the Actions API through `tests/baseline-lib.sh`). What is particular to it:
   - It publishes `coverage-baseline-e2e-sharded` and comments under `e2e-sharded`,
     apart from `pr-paths.yml`: the baseline lookup is per workflow, and two uploads
     of one name in a run conflict.

@@ -11,7 +11,8 @@ It is the coverage counterpart to [omni-dev-commit-check](https://github.com/act
 - **Thin mode**: bring your own lcov; the action only diffs, comments, and gates
 - **Sharded runs**: split the instrumented run across concurrent jobs, then combine the
   shard reports in one aggregation job and keep the comment, baseline, and gates
-- Merge-base baseline with a download + git-worktree-recompute fallback
+- Merge-base baseline, falling back to the nearest ancestor's baseline and then to a
+  git-worktree recompute
 - Sticky pull-request comment with patch coverage, per-file deltas, and the
   uncovered `file:line` list (via `omni-dev coverage diff`)
 - Full per-file summary appended to the run's Summary tab and uploaded as an artifact
@@ -324,13 +325,14 @@ on the default `use-prebuilt-binary: 'true'` fails at the install step. So does 
 
 ### Merge-base baseline
 
-| Input                    | Description                                                                                     | Default            |
-|--------------------------|-------------------------------------------------------------------------------------------------|--------------------|
-| `baseline-artifact-name` | Name of the artifact holding the per-line baseline report                                      | `coverage-baseline`|
-| `baseline-workflow`      | Workflow file the baseline artifact is published from (for the merge-base download)            | `ci.yml`           |
-| `recompute-baseline`     | On a download miss, recompute coverage at the merge-base in a git worktree (fat mode only)     | `true`             |
-| `worktree-system-deps`   | Space-separated apt packages to install before the worktree recompute (e.g. `libasound2-dev`)  | `''`               |
-| `publish-baseline`       | On a push to `main`, publish this run's report as the baseline artifact                        | `true`             |
+| Input                     | Description                                                                                       | Default             |
+|---------------------------|---------------------------------------------------------------------------------------------------|---------------------|
+| `baseline-artifact-name`  | Name of the artifact holding the per-line baseline report                                         | `coverage-baseline` |
+| `baseline-workflow`       | Workflow file the baseline artifact is published from (for the merge-base download)               | `ci.yml`            |
+| `baseline-ancestor-depth` | When the merge-base has no baseline, how many first-parent ancestors to try, nearest first        | `10`                |
+| `recompute-baseline`      | When no baseline is found, recompute coverage at the merge-base in a git worktree (fat mode only) | `true`              |
+| `worktree-system-deps`    | Space-separated apt packages to install before the worktree recompute (e.g. `libasound2-dev`)     | `''`                |
+| `publish-baseline`        | On a push to `main`, publish this run's report as the baseline artifact                           | `true`              |
 
 ### Artifacts
 
@@ -363,19 +365,58 @@ On a pull request the action pins the comparison to the PR's fork point
 attributable to *this* PR alone rather than to whatever else merged into `main`
 while the PR was open:
 
-1. **Download** the `coverage-baseline` artifact published by the `main` run for
-   that exact merge-base commit (`dawidd6/action-download-artifact`). A miss is a
-   warning, not a failure.
-2. **Recompute fallback** (fat mode): on a miss, build coverage at the merge-base
-   in a git worktree and rewrite its absolute `SF:` paths to the workspace prefix
-   so `omni-dev coverage diff` strips one prefix for both head and baseline. Use
-   `worktree-system-deps` if building that historical commit needs system
+1. **Find** the `coverage-baseline` artifact published by the `main` run for that
+   exact merge-base commit. If the merge-base has none, try its first-parent
+   ancestors, nearest first, up to `baseline-ancestor-depth` of them, and use the
+   first baseline found. A miss is a warning, not a failure.
+2. **Download** it (`dawidd6/action-download-artifact`, by the run that was found).
+3. **Recompute fallback** (fat mode): when nothing is in reach, build coverage at the
+   merge-base in a git worktree and rewrite its absolute `SF:` paths to the workspace
+   prefix so `omni-dev coverage diff` strips one prefix for both head and baseline.
+   Use `worktree-system-deps` if building that historical commit needs system
    packages (omni-dev passes `libasound2-dev`).
-3. **Publish** on `main` pushes: this run's lcov becomes the baseline future PRs
+4. **Publish** on `main` pushes: this run's lcov becomes the baseline future PRs
    download. In a sharded run that is the combined report.
 
 Without a baseline the comment still renders patch coverage and the uncovered-line
 list; only the deltas and indirect-change sections are omitted.
+
+### What counts as a baseline
+
+A commit has one when a **successful** run of `baseline-workflow` for it, in this
+repository, holds an **unexpired** artifact named `baseline-artifact-name`. Every such
+run is looked in, not only the newest, so a run that has no artifact (the
+`merge_group` run of a merge queue, which shares its head SHA with the `push` run that
+publishes) cannot hide the run that has it. Runs from forks are ignored.
+
+- **Only first parents are walked.** On `main` those are the merged pull requests, each of
+  which published a baseline; a second parent is a pull request's own branch, which did
+  not. A shallow checkout gives a shorter walk, which is why `fetch-depth: 0` is
+  required.
+- **A baseline workflow that does not exist is a miss.** The API knows a workflow only
+  once its file is on the default branch, so pointing `baseline-workflow` at a new
+  workflow before it has merged logs a warning and carries on, instead of failing the
+  step. Any other API failure (a permission, an outage) still fails the step with its
+  status and message, because it says nothing about whether a baseline exists.
+- **A run that is still in progress is not used**, even if it has already uploaded the
+  artifact. If the `push` run for the merge-base has not finished, the next ancestor's
+  baseline is used instead of rebuilding.
+- **Cost.** Each commit tried costs at least one GitHub API request, plus one for each
+  successful run it has, so a lookup that finds nothing spends `baseline-ancestor-depth + 1`.
+  On github.com the workflow token allows 1,000 requests an hour per repository.
+
+### When the baseline is an ancestor's
+
+The deltas then compare this pull request with a baseline from a few commits before its
+fork point, so they also include whatever those commits changed (usually small, and the
+diff already tolerates drift). The patch is unaffected: it is still `merge-base..HEAD`.
+The comment says so, on its last line:
+
+> _Baseline: the report published for [`abc1234`](…), 2 commits before the merge-base,
+> which has none. The deltas also include whatever those commits changed._
+
+Set `baseline-ancestor-depth: 0` for the exact-merge-base lookup: a merge-base with no
+baseline is then a miss, and in fat mode it is recomputed.
 
 ## Gates
 
@@ -432,7 +473,8 @@ drops those files from the diff instead:
 
 ## Requirements
 
-- Check out with `fetch-depth: 0` so `git merge-base` can resolve the PR's fork point.
+- Check out with `fetch-depth: 0` so `git merge-base` can resolve the PR's fork point and
+  the baseline lookup can walk its ancestors.
 - `permissions: pull-requests: write` on the job, so the comment can be posted.
 - Fat mode builds Rust under `cargo-llvm-cov`; thin mode needs only a per-line lcov.
 - Thin mode's line gate and `shard-reports` need an omni-dev release that has

@@ -107,11 +107,15 @@ inputs:
     required: false
     default: 'coverage-baseline'
   baseline-workflow:
-    description: 'Workflow file the baseline artifact is published from (for the merge-base download)'
+    description: 'Workflow file the baseline artifact is published from (for the merge-base download). One the API does not know yet (its file is not on the default branch) is a miss with a warning, not a failure'
     required: false
     default: 'ci.yml'
+  baseline-ancestor-depth:
+    description: 'When the merge-base has no baseline, how many of its first-parent ancestors to try, nearest first, before giving up (fat mode then recomputes). The first baseline found is used and the comment says so: its deltas also include whatever changed since. `0` uses the merge-base''s own baseline only. Each commit tried costs at least one GitHub API request'
+    required: false
+    default: '10'
   recompute-baseline:
-    description: 'On a baseline-download miss, recompute coverage at the merge-base in a git worktree (fat mode only)'
+    description: 'When no baseline is found (the merge-base''s, or an ancestor''s within `baseline-ancestor-depth`), recompute coverage at the merge-base in a git worktree (fat mode only)'
     required: false
     default: 'true'
   worktree-system-deps:
@@ -580,32 +584,53 @@ runs:
         fi
         echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-    - name: Download baseline coverage for merge-base
-      # Pulls the per-line report published by the main run for the exact
-      # merge-base commit. A miss is a warning, not a failure.
-      id: baseline
+    - name: Find baseline coverage
+      # Which run's baseline to download: the merge-base's own, else the nearest
+      # first-parent ancestor's (`baseline-ancestor-depth`). It is a script, not
+      # dawidd6's `commit` lookup, because that takes the newest successful run of ONE
+      # commit and looks only in it: a run with no artifact (a `merge_group` run) hides
+      # the `push` run that has it, there is no walk to an ancestor, and a workflow the
+      # API does not know yet fails the step. A miss is a warning, not a failure.
+      id: baseline-lookup
       if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        BASELINE_WORKFLOW: ${{ inputs.baseline-workflow }}
+        BASELINE_ARTIFACT: ${{ inputs.baseline-artifact-name }}
+        BASE_REF: ${{ steps.mb.outputs.sha }}
+        ANCESTOR_DEPTH: ${{ inputs.baseline-ancestor-depth }}
+      run: bash "${{ github.action_path }}/scripts/find-baseline.sh"
+
+    - name: Download baseline coverage
+      # By run id, so it downloads what the lookup found and nothing else.
+      id: baseline
+      if: github.event_name == 'pull_request' && steps.baseline-lookup.outputs.found == 'true'
       uses: dawidd6/action-download-artifact@v21
       with:
         name: ${{ inputs.baseline-artifact-name }}
-        commit: ${{ steps.mb.outputs.sha }}
-        workflow: ${{ inputs.baseline-workflow }}
+        run_id: ${{ steps.baseline-lookup.outputs.run-id }}
         path: baseline
         if_no_artifact_found: warn
 
     - name: Compute baseline from merge-base (fallback)
-      # Runs whenever the merge-base has no usable baseline (cold start, expired
-      # artifact). Builds coverage at that exact commit in a worktree so the
-      # comparison stays correct. A no-op when the baseline was downloaded.
+      # Sets `recomputed` when it builds the baseline, so the comment does not call it an
+      # ancestor's: the lookup can have found one whose download left no file under this
+      # report's name (it expired in between, or the report was renamed since).
+      # Runs when no baseline is in reach: none for the merge-base or for any of the
+      # `baseline-ancestor-depth` ancestors tried (cold start, expired artifacts). Builds
+      # coverage at the merge-base itself in a worktree so the comparison stays correct.
+      # A no-op when a baseline was downloaded, the merge-base's or an ancestor's.
       # Uses only `test-args` — `setup-commands`/`extra-test-commands` are NOT
       # replayed here: gated suites/fixtures may not exist at an old merge-base,
       # and the normal path downloads a baseline that already includes them.
+      id: recompute
       if: github.event_name == 'pull_request' && inputs.run-coverage == 'true' && inputs.recompute-baseline == 'true'
       shell: bash
       run: |
         REPORT_BASENAME="$(basename "${{ inputs.report }}")"
         if [ -f "baseline/$REPORT_BASENAME" ]; then
-          echo "baseline already present for the merge-base; skipping recompute"
+          echo "a baseline was downloaded; skipping recompute"
           exit 0
         fi
         # Optional system deps for building historical commits (e.g. a merge-base
@@ -621,6 +646,7 @@ runs:
         # `omni-dev coverage diff` strips one prefix for both head and baseline.
         sed "s#$(cd ../base && pwd)/#$GITHUB_WORKSPACE/#g" \
           "../base/$REPORT_BASENAME" > "baseline/$REPORT_BASENAME"
+        echo "recomputed=true" >> "$GITHUB_OUTPUT"
 
     - name: Build coverage diff
       # Single comprehensive comment: total + delta vs main, per-file before/after,
@@ -637,6 +663,9 @@ runs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit
         IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
+        BASELINE_SHA: ${{ steps.baseline-lookup.outputs.sha }}
+        BASELINE_DISTANCE: ${{ steps.baseline-lookup.outputs.distance }}
+        BASELINE_RECOMPUTED: ${{ steps.recompute.outputs.recomputed }}
       run: |
         REPORT_BASENAME="$(basename "${{ inputs.report }}")"
         args=(coverage diff
@@ -671,6 +700,17 @@ runs:
           args+=(--baseline-report "baseline/$REPORT_BASENAME")
         fi
         omni-dev "${args[@]}" -o markdown > coverage.md
+        # omni-dev still calls the comparison merge-base -> head and the deltas "vs main",
+        # so when the baseline is an ancestor's (`baseline-ancestor-depth`) the comment
+        # says which one, unless the file is the merge-base's own recompute, which is what the
+        # lookup's distance does not describe. The patch is unaffected: it is merge-base..HEAD
+        # either way.
+        if [ -f "baseline/$REPORT_BASENAME" ] && [ "${BASELINE_DISTANCE:-0}" -gt 0 ] \
+          && [ "$BASELINE_RECOMPUTED" != true ]; then
+          if [ "$BASELINE_DISTANCE" -eq 1 ]; then commits='1 commit'; else commits="$BASELINE_DISTANCE commits"; fi
+          printf '\n_Baseline: the report published for [`%s`](%s/%s), %s before the merge-base, which has none. The deltas also include whatever those commits changed._\n' \
+            "${BASELINE_SHA:0:7}" "$COMMIT_URL" "$BASELINE_SHA" "$commits" >> coverage.md
+        fi
         echo "comment-path=coverage.md" >> "$GITHUB_OUTPUT"
 
         # Machine-readable percentages (best-effort; never fail the build). stderr
