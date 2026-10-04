@@ -191,6 +191,22 @@ jobs:
             commit-tree "$mb^{tree}" -p "$mb" -m 'test: a commit no baseline was published for')"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+      # What the lookup should find, asked now and again at the end (the last step). The lookups
+      # run in between, and a baseline can be published meanwhile (the `push` run for the
+      # merge-base finishing), which a lookup may or may not have seen. Only the span between
+      # the two answers is a fair expectation, so the last step holds each lookup to that.
+      - name: Ask the Actions API what the lookups should find (before the scenarios)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOBASE_SHA: ${{ steps.nobase.outputs.sha }}
+        run: |
+          mb="$(git merge-base origin/main HEAD)"
+          # Redirected, not piped to tee: without pipefail a failing call would not fail the step.
+          bash tests/expected-baseline.sh pr-paths.yml coverage-baseline "$mb" > out/expected-before-p1.txt
+          bash tests/expected-baseline.sh pr-paths.yml coverage-baseline "$NOBASE_SHA" > out/expected-before-p7.txt
+          echo "P1 (from the merge-base): $(cat out/expected-before-p1.txt)"
+          echo "P7 (from a commit after it): $(cat out/expected-before-p7.txt)"
+
       # A comment left by an earlier run (a push, or a re-run) must not be able to
       # stand in for one this run is meant to post.
       - name: Clear the comment from an earlier run
@@ -685,16 +701,17 @@ jobs:
           # the action's default here) with a successful run of this workflow and a live
           # baseline artifact. Any such run counts, not the newest, because a run without the
           # artifact must not hide one with it. There is deliberately no `event` or `branch`
-          # filter, because the action passes none. `either` is a nearer run still in progress,
-          # which may publish between that call and the lookup. `held_to_the_api` is
-          # tests/baseline-lib.sh's.
+          # filter, because the action passes none. The API is asked here and was asked before
+          # the scenarios (the first step after the throwaway commit), and the lookup is held to
+          # the span between the two answers: a baseline published meanwhile may or may not have
+          # been seen. `held_to_the_api` is tests/baseline-lib.sh's.
           source tests/baseline-lib.sh
 
           MB="$(git merge-base origin/main HEAD)"
-          held_to_the_api "P1" pr-paths.yml coverage-baseline "$MB" out/p1/baseline/coverage-head.lcov
+          held_to_the_api "P1" pr-paths.yml coverage-baseline "$MB" out/p1/baseline/coverage-head.lcov out/expected-before-p1.txt
           # P7's base has no baseline of its own, so a hit is at least one commit back, and a
           # miss means none within reach.
-          held_to_the_api "P7" pr-paths.yml coverage-baseline "$NOBASE_SHA" out/p7/baseline/coverage-head.lcov
+          held_to_the_api "P7" pr-paths.yml coverage-baseline "$NOBASE_SHA" out/p7/baseline/coverage-head.lcov out/expected-before-p7.txt
           exit "$status"
 
   recompute:

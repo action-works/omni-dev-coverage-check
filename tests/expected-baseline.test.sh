@@ -6,8 +6,8 @@
 # The script is what pr-paths.yml and e2e-sharded.yml hold the action's baseline lookup to, so
 # a mistake in it would either excuse a wrong lookup or fail a right one on a runner, where it
 # is slow to find. It runs here against a stub `gh` and throwaway git repositories, with the
-# runs and artifacts each case sets up. A case that expects `miss` or `either` has a control
-# that differs in one thing and expects `hit`.
+# runs and artifacts each case sets up. A case that expects `miss` has a control that differs
+# in one thing and expects `hit`.
 
 set -uo pipefail
 
@@ -69,6 +69,7 @@ cat >"$BIN/gh" <<'EOF'
 # `gh api <path>`: answers from files under $FAKE, as the Actions API would.
 #   runs-<sha>.list        one JSON run per line      (.../workflows/<wf>/runs?head_sha=<sha>)
 #   artifacts-<id>.list    one JSON artifact per line (.../runs/<id>/artifacts)
+#   artifacts-<id>.fail    the request fails, printing this text on stderr, as `gh` does for an HTTP error
 [ "$1" = api ] || { echo "stub gh: unexpected arguments: $*" >&2; exit 99; }
 path="$2"
 case "$path" in
@@ -87,6 +88,10 @@ case "$path" in
     exit 99
     ;;
 esac
+if [ -f "$FAKE/$key.fail" ]; then
+  cat "$FAKE/$key.fail" >&2
+  exit 1
+fi
 if [ -f "$FAKE/$key.list" ]; then
   jq -s --arg w "$wrap" '{($w): .}' "$FAKE/$key.list"
 else
@@ -259,45 +264,49 @@ expected merge
 eq "first parent's control: the line's own baseline, 2 back" "hit c14 2" "$ANSWER"
 git -C "$REPO" checkout -q -f c14 2>/dev/null
 
-# --- a run that has not finished -----------------------------------------------------------------------------------
+# --- a run that has not finished ------------------------------------------------------------------------------
 
-# It may publish between this call and the lookup, so a miss may have been a hit.
+# It is not a baseline yet, for this script as for the lookup. A caller that wants to allow for it
+# publishing mid-run asks before and after (tests/baseline-lib.sh).
 reset
 run c14 501 in_progress ""
+baseline_at c12 502
 expected c14
-eq "pending: nothing found and a run is unfinished: either" either "$ANSWER"
+eq "unfinished: a run that has not finished is passed over for the next commit's baseline" "hit c12 2" "$ANSWER"
+reset
+run c14 501 queued ""
+expected c14
+eq "unfinished: it is not a baseline, so with nothing else this is a miss" miss "$ANSWER"
+reset
+run c14 503 completed success # finished: the control
+artifact 503 coverage-baseline
+run c14 504 in_progress ""
+expected c14
+eq "unfinished's control: the finished run beside it is a baseline" "hit c14 0" "$ANSWER"
+
+# --- a run deleted after it was listed ---------------------------------------------------------------------------
 
 reset
-run c14 501 completed success
+baseline_at c14 601
+baseline_at c14 602
+echo "gh: Not Found (HTTP 404)" >"$FAKE/artifacts-601.fail"
 expected c14
-eq "pending's control: the same run, finished: a miss" miss "$ANSWER"
-
-# A nearer unfinished run could have published a nearer baseline.
+eq "deleted: a run whose artifacts are a 404 is passed over, as the lookup passes over it" "hit c14 0" "$ANSWER"
+eq "deleted: the script succeeds" 0 "$STATUS"
 reset
-run c14 502 queued ""
-baseline_at c12 503
+baseline_at c14 601
+echo "gh: Not Found (HTTP 404)" >"$FAKE/artifacts-601.fail"
+baseline_at c13 603
 expected c14
-eq "pending: a hit farther than an unfinished run: either" either "$ANSWER"
+eq "deleted: and the walk goes on to the next commit" "hit c13 1" "$ANSWER"
 
-# At the same commit it cannot change which commit is used.
+# Any other failure is not an answer, and a check that guessed would pass for nothing.
 reset
-run c12 504 in_progress ""
-baseline_at c12 505
+baseline_at c14 604
+echo "gh: Internal Server Error (HTTP 500)" >"$FAKE/artifacts-604.fail"
 expected c14
-eq "pending at the commit that has it: still a hit" "hit c12 2" "$ANSWER"
-
-# Farther than the hit it cannot matter either.
-reset
-baseline_at c12 506
-run c10 507 in_progress ""
-expected c14
-eq "pending beyond the hit: still a hit" "hit c12 2" "$ANSWER"
-
-# An unfinished run of a fork is not one this repository's lookup would use.
-reset
-run c14 508 in_progress "" evil/fork
-expected c14
-eq "pending from a fork does not count" miss "$ANSWER"
+eq "failure: another HTTP error is not guessed at: the script fails" 1 "$STATUS"
+has "failure: and shows what gh said" "$ANSWER" "HTTP 500"
 
 # --- usage ------------------------------------------------------------------------------------------------------------------
 

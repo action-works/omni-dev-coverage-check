@@ -54,24 +54,54 @@ check_note() { # <label> <start> <tn> <comment file>
   fi
 }
 
-# Holds what a scenario found to what tests/expected-baseline.sh says it should have: a hit
-# must be the commit the API names (the nearest with a live baseline), a miss must be a miss,
-# and `either` (a nearer run still in progress) may be anything. A scenario that found a
-# baseline has downloaded it to <baseline lcov>.
-held_to_the_api() { # <label> <workflow> <artifact> <start> <baseline lcov>
-  local kind sha distance observed=miss tn=
-  read -r kind sha distance <<<"$(bash "$expected_baseline" "$2" "$3" "$4")"
-  if [ -s "$5" ]; then
-    observed=hit
-    tn="$(tn_of "$5")"
+# Holds what a scenario found to what tests/expected-baseline.sh says it should have.
+#
+# The API is asked twice, once before the scenarios ran (<snapshot>, written by the caller
+# with `bash tests/expected-baseline.sh ... > <snapshot>`) and once now. The lookup ran in
+# between, and a baseline can be published in between (the `push` run for the merge-base
+# finishing), so the lookup is held to the span between the two answers: a baseline only
+# appears, so what it found is no nearer than the later answer and no farther than the earlier.
+# When nothing changed in between the two answers agree, and this is exact: the nearest
+# baseline, no nearer and no farther, or a miss. A scenario that found a baseline has
+# downloaded it to <baseline lcov>.
+held_to_the_api() { # <label> <workflow> <artifact> <start> <baseline lcov> <snapshot>
+  local far=1000000 b_kind='' b_sha b_dist a_kind='' a_sha a_dist bd ad lo hi od found tn=
+  read -r b_kind b_sha b_dist <"$6" || true
+  read -r a_kind a_sha a_dist <<<"$(bash "$expected_baseline" "$2" "$3" "$4")"
+  if [ -z "$b_kind" ] || [ -z "$a_kind" ]; then
+    echo "::error::$1: could not ask the API what the lookup should find (before: '${b_kind:-nothing}', after: '${a_kind:-nothing}'; did tests/expected-baseline.sh fail?)"
+    status=1
+    return
   fi
-  echo "::notice::$1: lookup from ${4:0:7}: expected $kind${sha:+ ${sha:0:7}, $distance back}, observed $observed${tn:+ ${tn:0:7}}"
-  case "$kind:$observed" in
-    hit:hit) check "$1: the baseline found is the one for ${sha:0:7}, the nearest" "$sha" "$tn" ;;
-    miss:miss | either:*) echo "ok   - $1: the lookup found what the API says it should" ;;
-    *)
-      echo "::error::$1: the lookup found a baseline: $observed; the API says: ${kind:-nothing (did tests/expected-baseline.sh fail?)}"
+  bd=$far
+  [ "$b_kind" != hit ] || bd=$b_dist
+  ad=$far
+  [ "$a_kind" != hit ] || ad=$a_dist
+  lo=$ad
+  hi=$bd
+  if [ "$bd" -lt "$ad" ]; then
+    lo=$bd
+    hi=$ad
+  fi
+
+  od=$far
+  if [ -s "$5" ]; then
+    tn="$(tn_of "$5")"
+    od="$(distance_of "$4" "$tn")"
+    if [ -z "$od" ]; then
+      echo "::error::$1: the baseline's commit ${tn:0:7} is not on the first-parent line of ${4:0:7}"
       status=1
-      ;;
-  esac
+      return
+    fi
+  fi
+
+  found="no baseline"
+  [ -z "$tn" ] || found="the baseline for ${tn:0:7} ($od back)"
+  echo "::notice::$1: lookup from ${4:0:7}: the API said ${b_kind}${b_sha:+ ${b_sha:0:7} ($b_dist back)} before and ${a_kind}${a_sha:+ ${a_sha:0:7} ($a_dist back)} after; the lookup found $found"
+  if [ "$od" -ge "$lo" ] && [ "$od" -le "$hi" ]; then
+    echo "ok   - $1: the lookup found what the API says it should"
+  else
+    echo "::error::$1: the lookup found $found, outside what the API says it should have (before: $b_kind${b_dist:+ $b_dist back}, after: $a_kind${a_dist:+ $a_dist back})"
+    status=1
+  fi
 }

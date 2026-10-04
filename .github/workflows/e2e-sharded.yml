@@ -272,6 +272,19 @@ jobs:
           # 3: there was none. 4: more than one, now all deleted.
           case "$rc" in 0 | 3 | 4) ;; *) exit "$rc" ;; esac
 
+      # What E1's lookup should find, asked now and again at the end (the last step). The
+      # lookups run in between, and a baseline can be published meanwhile (the `push` run for
+      # the merge-base finishing), which a lookup may or may not have seen. Only the span
+      # between the two answers is a fair expectation.
+      - name: Ask the Actions API what the lookup should find (before the scenarios)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mb="$(git merge-base origin/main HEAD)"
+          # Redirected, not piped to tee: without pipefail a failing call would not fail the step.
+          bash tests/expected-baseline.sh e2e-sharded.yml coverage-baseline-e2e-sharded "$mb" > out/expected-before-e1.txt
+          echo "E1 (from the merge-base): $(cat out/expected-before-e1.txt)"
+
       # E2, E3 and E4 each differ from E1 in exactly one input, and E1 succeeds. The
       # gates sit well either side of the measured figures: the head's union is
       # 65.6% and one shard alone is 43.75%, so a gate of 55 passes only if the
@@ -581,9 +594,10 @@ jobs:
           # the action's default here) with a successful run of this workflow and a live
           # baseline artifact. Any such run counts, not the newest, because a run without the
           # artifact must not hide one with it. There is deliberately no `event` or `branch`
-          # filter, because the action passes none. `either` is a nearer run still in
-          # progress, which may publish between that call and the lookup.
+          # filter, because the action passes none. The API is asked here and was asked before
+          # the scenarios, and the lookup is held to the span between the two answers: a
+          # baseline published meanwhile may or may not have been seen.
           source tests/baseline-lib.sh
           MB="$(git merge-base origin/main HEAD)"
-          held_to_the_api "E1" e2e-sharded.yml coverage-baseline-e2e-sharded "$MB" out/e1/baseline/coverage-head.lcov
+          held_to_the_api "E1" e2e-sharded.yml coverage-baseline-e2e-sharded "$MB" out/e1/baseline/coverage-head.lcov out/expected-before-e1.txt
           exit "$status"

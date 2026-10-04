@@ -146,6 +146,12 @@ for expr in report collapse-ranges all-files strip-prefix report-format; do
   esac
   DIFF_SCRIPT="${DIFF_SCRIPT//"\${{ inputs.$expr }}"/$value}"
 done
+# An expression this test does not fill in would leave a literal `${{` in the script, which bash
+# would fail on with its output thrown away below: say so here instead, by name.
+if [[ "$DIFF_SCRIPT" == *'${{'* ]]; then
+  echo "FAIL - the diff step holds an expression this test does not fill in: $(grep -o '\${{[^}]*}}' <<<"$DIFF_SCRIPT" | sort -u | paste -sd' ' -)"
+  exit 1
+fi
 BIN="$WORK/bin"
 mkdir "$BIN"
 cat >"$BIN/omni-dev" <<'EOF'
@@ -209,34 +215,75 @@ has "check_note: and says so" "$OUT" "is not on the first-parent line"
 
 # --- held_to_the_api -----------------------------------------------------------------------------
 
-# A stub for tests/expected-baseline.sh that says what the case wants it to.
+# A stub for tests/expected-baseline.sh: what the API says now.
 STUB="$WORK/expected-stub.sh"
 cat >"$STUB" <<'EOF'
 #!/usr/bin/env bash
 [ -n "${FAKE_EXPECTED:-}" ] || exit 1
 echo "$FAKE_EXPECTED"
 EOF
-printf 'TN:aaaaaaaaaaaaaaaaaaaa\nSF:/x\nend_of_record\n' >"$WORK/found.lcov"
 
-# held <label> <pass|fail> <answer> <baseline file, or "none">
+# answer <answer>: `miss`, or `hit:<tag>:<distance>` as the stub or the snapshot prints it.
+answer() {
+  case "$1" in
+    hit:*)
+      IFS=: read -r _ tag dist <<<"$1"
+      echo "hit $(sha "$tag") $dist"
+      ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# held <label> <pass|fail> <before> <after> <found: none|<tag>>: a lookup from c5 that downloaded
+# the baseline for <tag> (or nothing), held to the API's answers before the scenarios and after.
 held() {
-  local label="$1" want="$2" answer="$3" baseline="$4"
-  [ "$baseline" != none ] || baseline="$WORK/no-such.lcov"
-  lib 'held_to_the_api S ci.yml coverage-baseline 0123456789abcdef "'"$baseline"'"' "expected_baseline=$STUB" "FAKE_EXPECTED=$answer"
+  local label="$1" want="$2" before="$3" after="$4" found="$5" baseline="$WORK/no-such.lcov"
+  if [ "$found" != none ]; then
+    baseline="$WORK/found.lcov"
+    printf 'TN:%s\nSF:/x\nend_of_record\n' "$(sha "$found")" >"$baseline"
+  fi
+  if [ "$before" = none ]; then rm -f "$WORK/snapshot"; else answer "$before" >"$WORK/snapshot"; fi
+  lib 'held_to_the_api S ci.yml coverage-baseline "$(git rev-parse c5)" "'"$baseline"'" "'"$WORK/snapshot"'"' \
+    "expected_baseline=$STUB" "FAKE_EXPECTED=$(answer "$after")"
   if [ "$want" = pass ]; then eq "$label" 0 "$STATUS"; else eq "$label" 1 "$STATUS"; fi
 }
-held "held: a hit, and the baseline is the commit the API names" pass "hit aaaaaaaaaaaaaaaaaaaa 2" "$WORK/found.lcov"
-held "held: a hit, but the baseline is another commit's (not the nearest)" fail "hit bbbbbbbbbbbbbbbbbbbb 2" "$WORK/found.lcov"
-held "held: a hit that the lookup missed" fail "hit aaaaaaaaaaaaaaaaaaaa 2" none
-held "held: a miss, and the lookup found nothing" pass "miss" none
-held "held: a miss, but the lookup found a baseline" fail "miss" "$WORK/found.lcov"
-held "held: either, and the lookup found one" pass "either" "$WORK/found.lcov"
-held "held: either, and the lookup found none" pass "either" none
-held "held: the check could not ask the API at all" fail "" none
-has "held: and says so" "$OUT" "did tests/expected-baseline.sh fail?"
-held "held: a baseline with no TN: line is not the commit the API names" fail "hit aaaaaaaaaaaaaaaaaaaa 2" "$WORK/none.lcov"
-lib 'held_to_the_api S ci.yml coverage-baseline 0123456789abcdef "'"$WORK/found.lcov"'"' "expected_baseline=$STUB" "FAKE_EXPECTED=hit aaaaaaaaaaaaaaaaaaaa 2"
-has "held: it reports what it expected and what it saw" "$OUT" "expected hit aaaaaaa, 2 back, observed hit aaaaaaa"
+
+# Nothing changed while the scenarios ran: exact.
+held "held: stable, a hit 2 back: the lookup found it" pass hit:c3:2 hit:c3:2 c3
+held "held: stable: found a nearer one than the API knows of" fail hit:c3:2 hit:c3:2 c4
+held "held: stable: found a farther one than the API says is nearest" fail hit:c3:2 hit:c3:2 c2
+held "held: stable: a hit the lookup missed" fail hit:c3:2 hit:c3:2 none
+held "held: stable, a miss: the lookup found nothing" pass miss miss none
+held "held: stable, a miss: but the lookup found a baseline" fail miss miss c3
+held "held: stable, the merge-base's own: found" pass hit:c5:0 hit:c5:0 c5
+held "held: stable, the merge-base's own: but the lookup went back" fail hit:c5:0 hit:c5:0 c3
+
+# A baseline was published while the scenarios ran (the push run for the merge-base finished):
+# the lookup may have seen it or not.
+held "held: published meanwhile, 2 back before and 0 after: the lookup found the older one" pass hit:c3:2 hit:c5:0 c3
+held "held: published meanwhile: the lookup found the new one" pass hit:c3:2 hit:c5:0 c5
+held "held: published meanwhile: but found none at all, which was never true" fail hit:c3:2 hit:c5:0 none
+held "held: nothing before and one after: the lookup found nothing" pass miss hit:c5:0 none
+held "held: nothing before and one after: the lookup found it" pass miss hit:c5:0 c5
+# One expired meanwhile: the two answers swap, and either is fair.
+held "held: expired meanwhile: the lookup found the one that was there" pass hit:c5:0 hit:c3:2 c5
+
+# A snapshot that was never taken, or an API that cannot be asked, is not a pass.
+held "held: no snapshot to hold the lookup to" fail none miss none
+has "held: and it says so" "$OUT" "did tests/expected-baseline.sh fail?"
+answer miss >"$WORK/snapshot"
+lib 'held_to_the_api S ci.yml coverage-baseline "$(git rev-parse c5)" "'"$WORK/no-such.lcov"'" "'"$WORK/snapshot"'"' "expected_baseline=$STUB" "FAKE_EXPECTED="
+eq "held: the API cannot be asked now" 1 "$STATUS"
+has "held: and it says so too" "$OUT" "did tests/expected-baseline.sh fail?"
+
+printf 'SF:/x\nend_of_record\n' >"$WORK/notn.lcov"
+answer hit:c3:2 >"$WORK/snapshot"
+lib 'held_to_the_api S ci.yml coverage-baseline "$(git rev-parse c5)" "'"$WORK/notn.lcov"'" "'"$WORK/snapshot"'"' "expected_baseline=$STUB" "FAKE_EXPECTED=$(answer hit:c3:2)"
+eq "held: a baseline with no TN: line is not any commit's" 1 "$STATUS"
+
+held "held: it says what was expected and found" pass hit:c3:2 hit:c3:2 c3
+lib 'held_to_the_api S ci.yml coverage-baseline "$(git rev-parse c5)" "'"$WORK/found.lcov"'" "'"$WORK/snapshot"'"' "expected_baseline=$STUB" "FAKE_EXPECTED=$(answer hit:c3:2)"
+has "held: the notice names the commit found and how far back" "$OUT" "the lookup found the baseline for $(sha c3 | cut -c1-7) (2 back)"
 
 echo
 echo "$passed passed, $failed failed"
