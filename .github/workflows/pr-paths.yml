@@ -314,25 +314,7 @@ jobs:
       # through the gate, which is vacuous. The file and its report come after P1 to P4
       # have run, so they do not see it, and P5 and P6 leave no comment to read back.
       - name: Add a second file to the patch
-        run: |
-          if [ -e patch-extra.txt ] || [ -e shards/shard-3.lcov ]; then
-            echo "::error::patch-extra.txt or shards/shard-3.lcov already exists; refusing to overwrite it"
-            exit 1
-          fi
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            echo "extra $i"
-          done >patch-extra.txt
-          git add patch-extra.txt
-          git -c user.name=integration-test -c user.email=integration-test@invalid \
-            commit -q -m 'test: add a second file with known added lines'
-          # Every line uncovered, and no newline after the last record, as llvm-cov writes it.
-          {
-            printf 'SF:%s/patch-extra.txt\n' "$GITHUB_WORKSPACE"
-            for i in 1 2 3 4 5 6 7 8 9 10; do
-              printf 'DA:%d,0\n' "$i"
-            done
-            printf 'end_of_record'
-          } >shards/shard-3.lcov
+        run: bash tests/write-pr-fixtures.sh extra
 
       - name: 'P5. The patch gate with the second file filtered out'
         id: p5
@@ -418,8 +400,10 @@ jobs:
           same() { [ "$(cat "$1")" = "$(cat "$2")" ]; }
           # shellcheck disable=SC2329
           differ() { ! same "$@"; }
+          # A missing file is not "absent": grep exits 2 for it, and `!` would turn that
+          # into a pass.
           # shellcheck disable=SC2329
-          absent() { ! grep -qF -- "$1" "$2"; }
+          absent() { [ -s "$2" ] && ! grep -qF -- "$1" "$2"; }
           # Lines of <file> whose covered state differs between two reports.
           flipped() { # <before> <after> <file>
             awk -F'[:,]' -v want="$3" '
