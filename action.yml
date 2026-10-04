@@ -214,7 +214,29 @@ runs:
             if [ "$attempt" -lt 3 ]; then sleep $((attempt * 3)); fi
           done
           if [ -z "$RELEASE_TAG" ]; then
-            echo "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts. If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+            # The API did not answer, and a spent rate limit can last up to an hour,
+            # longer than the attempts above can wait. The releases/latest page is an
+            # ordinary web request that draws on no API quota, and it redirects to
+            # .../releases/tag/<tag>. One request, no -L: the Location header is the
+            # answer, and following it would fetch the tag's page for nothing. No
+            # token either: it buys nothing on github.com. curl prints the status and
+            # the URL separated by a space (000 and nothing for a refused connection),
+            # and under -e `|| true` lets that reach the message instead of ending the
+            # step with curl's bare exit code. The URL is read from a header, so it is
+            # used only if it has the shape of this repository's release tag.
+            redirect=$(curl -sS \
+              --connect-timeout 10 --max-time 30 \
+              -o /dev/null -w '%{http_code} %{redirect_url}' \
+              https://github.com/rust-works/omni-dev/releases/latest || true)
+            read -r redirect_status redirect_to <<<"$redirect"
+            tag_url='^https://github\.com/rust-works/omni-dev/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$'
+            if [[ "$redirect_to" =~ $tag_url ]]; then
+              RELEASE_TAG="${BASH_REMATCH[1]}"
+              echo "::warning::The GitHub API did not answer after 3 attempts (API: ${api_message:-unknown error}), so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+            fi
+          fi
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "::error::Could not determine latest omni-dev version. The GitHub API did not answer after 3 attempts (API: ${api_message:-unknown error}) and the github.com releases/latest redirect gave no release tag (HTTP ${redirect_status:-000}${redirect_to:+ to $redirect_to}). If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
             exit 1
           fi
           VERSION="$RELEASE_TAG"

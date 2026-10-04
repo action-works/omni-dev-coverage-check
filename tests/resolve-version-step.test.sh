@@ -7,11 +7,14 @@
 # The step resolves `version: latest` with one GitHub API call. Run unauthenticated
 # from a shared runner IP that call hit the 60/hr limit and failed the whole job (#1),
 # so it now sends the token and tries three times. This pins that: the header, the
-# retries and their delays, the timeouts that let a hung connection be retried, the
-# message after the last attempt, a runner with no jq, and that a pinned version
-# never touches the network and loses a leading v (#38). The step's script is read
-# out of action.yml itself, so renaming the step or moving its `run:` fails here, by
-# name, rather than leaving a test of a copy.
+# retries and their delays, the timeouts that let a hung connection be retried, a
+# runner with no jq, and that a pinned version never touches the network and loses a
+# leading v (#38). A spent limit can outlast those attempts, so when all three fail the
+# step reads the tag from the github.com releases/latest redirect instead (#40). This
+# pins that too: the one request it makes, that only a release tag of omni-dev's own is
+# taken from it, and the one error that names both failures when neither answers. The
+# step's script is read out of action.yml itself, so renaming the step or moving its
+# `run:` fails here, by name, rather than leaving a test of a copy.
 #
 # `curl` is a stub that replays the responses a case scripts, one per call, and logs
 # each call's arguments; `sleep` is a stub that logs its argument and returns, so no
@@ -112,7 +115,7 @@ n=$(( $(grep -c '^call ' "$CASE_DIR/curl.log") + 1 ))
 [ -f "$CASE_DIR/response.$n" ] || exit 0
 response="$(cat "$CASE_DIR/response.$n")"
 if [[ "$response" == '!'* ]]; then
-  echo "curl: (7) Failed to connect to api.github.com port 443" >&2
+  echo "curl: (${response#!}) stub failure" >&2
   exit "${response#!}"
 fi
 printf '%s' "$response"
@@ -167,6 +170,24 @@ arg_after() {
   local got
   got="$(grep -A1 -xF -- "$2" <<<"$CURLS" | sed -n 2p)"
   if [ "$got" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2 $3', got '$2 $got' in: $CURLS"; fi
+}
+
+# call_args <n>: the arguments of the nth curl call, one per line. The three API
+# attempts are calls 1 to 3 and the redirect, when they all fail, is call 4.
+call_args() {
+  awk -v n="$1" '$0 == "call " n { on = 1; next } /^call / { on = 0 } on' <<<"$CURLS"
+}
+
+# call_present <name> <call> <arg>: the call received exactly that argument.
+call_present() {
+  if grep -qxF -- "$3" <<<"$2"; then ok "$1"; else bad "$1" "no argument '$3' in: $2"; fi
+}
+
+# call_after <name> <call> <flag> <value>: the call received <flag> with <value> next.
+call_after() {
+  local got
+  got="$(grep -A1 -xF -- "$3" <<<"$2" | sed -n 2p)"
+  if [ "$got" = "$4" ]; then ok "$1"; else bad "$1" "expected '$3 $4', got '$3 $got' in: $2"; fi
 }
 
 # --- a pinned version never asks GitHub --------------------------------------
@@ -247,9 +268,12 @@ eq "no token: no empty argument stands in for one" 0 "$(grep -c '^$' <<<"$CURLS"
 
 # --- latest, rate limited, then good -----------------------------------------
 
-run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" '{"tag_name":"v0.46.1"}'
+# A fourth response, a redirect to another release, is scripted and must stay unread:
+# the redirect only changes a run that would have failed.
+run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" '{"tag_name":"v0.46.1"}' \
+  "302 https://github.com/rust-works/omni-dev/releases/tag/v9.9.9"
 eq "recovers: the step succeeds on the third attempt" 0 "$STATUS"
-eq "recovers: it made three calls" 3 "$CALLS"
+eq "recovers: it made three calls, so the redirect was not asked" 3 "$CALLS"
 eq "recovers: it backed off 3s then 6s" "3 6" "$SLEEPS"
 eq "recovers: it resolved the version" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
@@ -260,18 +284,115 @@ lacks "recovers: attempt 3 worked, so it is not warned about" "$LOG" "Attempt 3/
 lacks "recovers: no error is raised" "$LOG" "::error::"
 lacks "recovers: the token is not printed" "$LOG" "SENTINEL"
 
-# --- latest, never answers ---------------------------------------------------
+# --- latest, the API never answers: the redirect -----------------------------
 
-run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED"
-eq "exhausted: the step fails" 1 "$STATUS"
-eq "exhausted: it tried three times and no more" 3 "$CALLS"
-eq "exhausted: it did not wait after the last attempt" "3 6" "$SLEEPS"
-eq "exhausted: it wrote no version" "" "$OUT"
-has "exhausted: all three attempts are warned about" "$LOG" "::warning::Attempt 3/3:"
-has "exhausted: the error says how many attempts it made" "$LOG" "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts."
-has "exhausted: the error names the input to check" "$LOG" "check that github-token holds a valid token"
-has "exhausted: the error offers pinning, which skips the lookup" "$LOG" "or set 'version' to a release to skip the lookup."
-lacks "exhausted: the token is not printed" "$LOG" "SENTINEL"
+TAG_URL=https://github.com/rust-works/omni-dev/releases/tag
+
+run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v0.46.1"
+eq "redirect: the step succeeds" 0 "$STATUS"
+eq "redirect: three API attempts, then one request for the redirect and no more" 4 "$CALLS"
+eq "redirect: it waited between the API attempts only" "3 6" "$SLEEPS"
+eq "redirect: the version comes from the tag in the Location" "version=0.46.1
+release-tag=v0.46.1" "$OUT"
+has "redirect: attempt 3 is still warned about" "$LOG" "::warning::Attempt 3/3:"
+has "redirect: a warning says the redirect answered and why the API did not" "$LOG" \
+  "::warning::The GitHub API did not answer after 3 attempts (API: API rate limit exceeded for 10.0.0.1."
+has "redirect: the warning names the release it resolved" "$LOG" \
+  "was resolved from the github.com releases/latest redirect instead: v0.46.1."
+has "redirect: the warning offers the ways out, since the job passed on a failing API" "$LOG" \
+  "or set 'version' to a release to skip the lookup."
+lacks "redirect: no error is raised" "$LOG" "::error::"
+lacks "redirect: the token is not printed" "$LOG" "SENTINEL"
+
+call="$(call_args 4)"
+call_present "redirect: it asks the releases/latest page" "$call" \
+  "https://github.com/rust-works/omni-dev/releases/latest"
+call_after "redirect: it asks curl for the status and the Location" "$call" -w '%{http_code} %{redirect_url}'
+call_after "redirect: it keeps the page itself" "$call" -o /dev/null
+call_after "redirect: it bounds the connection, so a hang ends in the error" "$call" --connect-timeout 10
+call_after "redirect: it bounds the whole call, so a hang ends in the error" "$call" --max-time 30
+# Following the redirect would fetch the tag's page, which the step has no use for.
+eq "redirect: it does not follow the redirect" 0 \
+  "$(grep -cE '^(--location|-[A-Za-z]*L[A-Za-z]*)$' <<<"$call" || true)"
+# The token buys nothing on github.com, so it is not sent there.
+lacks "redirect: no token is sent to github.com" "$call" "Authorization"
+lacks "redirect: no token is sent to github.com, even as an argument" "$call" "SENTINEL"
+
+# Whatever the tag is, it is taken from the Location, and a pre-release suffix is a tag.
+run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v10.20.300"
+eq "redirect: a tag of several digits is taken whole" "version=10.20.300
+release-tag=v10.20.300" "$OUT"
+run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v0.46.1-rc.1"
+eq "redirect: a pre-release suffix is part of the tag" "version=0.46.1-rc.1
+release-tag=v0.46.1-rc.1" "$OUT"
+
+run_resolve latest "" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v0.46.1"
+eq "redirect, no token: the step succeeds" 0 "$STATUS"
+eq "redirect, no token: it resolves the version" "version=0.46.1
+release-tag=v0.46.1" "$OUT"
+
+# --- latest, the API and the redirect both fail ------------------------------
+
+# A redirect that is not a release tag of this repository is rejected, not used: the
+# value reaches a cache key, a download URL, cargo install and $GITHUB_OUTPUT. Each
+# case must end in the one error, with the three API attempts and one request for the
+# redirect made, and nothing written for the steps after it.
+expect_failure() { # <name> <redirect response> <what the error says the redirect gave>
+  run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "$2"
+  eq "$1: the step fails" 1 "$STATUS"
+  eq "$1: it asked the redirect once" 4 "$CALLS"
+  eq "$1: it wrote no version" "" "$OUT"
+  has "$1: the error says what the redirect gave" "$LOG" \
+    "the github.com releases/latest redirect gave no release tag ($3)."
+  lacks "$1: it does not say the redirect answered" "$LOG" "was resolved from"
+  lacks "$1: the token is not printed" "$LOG" "SENTINEL"
+}
+expect_location() { # <name> <the Location a 302 carries>
+  expect_failure "$1" "302 $2" "HTTP 302 to $2"
+}
+
+expect_failure "redirect fails: curl cannot connect" '!7' "HTTP 000"
+expect_failure "redirect fails: curl times out" '!28' "HTTP 000"
+expect_failure "redirect fails: the page is served, not redirected" '200 ' "HTTP 200"
+expect_failure "redirect fails: github.com throttles it" '429 ' "HTTP 429"
+expect_failure "redirect fails: a server error" '502 ' "HTTP 502"
+expect_failure "redirect fails: no answer at all" '' "HTTP 000"
+expect_location "redirect fails: a login page" "https://github.com/login?return_to=%2Frust-works%2Fomni-dev%2Freleases%2Flatest"
+expect_location "redirect fails: the latest page itself" "https://github.com/rust-works/omni-dev/releases/latest"
+expect_location "redirect fails: the tags page" "https://github.com/rust-works/omni-dev/releases/tag/"
+expect_location "redirect fails: another repository" "https://github.com/someone-else/omni-dev/releases/tag/v0.46.1"
+expect_location "redirect fails: another host" "https://example.com/rust-works/omni-dev/releases/tag/v0.46.1"
+expect_location "redirect fails: not https" "http://github.com/rust-works/omni-dev/releases/tag/v0.46.1"
+expect_location "redirect fails: github.com as a suffix of another host" "https://github.com.example.com/rust-works/omni-dev/releases/tag/v0.46.1"
+# The dot in the host is a dot, not any character.
+expect_location "redirect fails: a host that differs from github.com by one character" "https://githubxcom/rust-works/omni-dev/releases/tag/v0.46.1"
+expect_location "redirect fails: a tag that is not a version" "$TAG_URL/nightly"
+expect_location "redirect fails: a tag with a major only" "$TAG_URL/v1"
+expect_location "redirect fails: a tag with no patch" "$TAG_URL/v1.2"
+expect_location "redirect fails: a tag with four numbers" "$TAG_URL/v1.2.3.4"
+expect_location "redirect fails: a tag with no v" "$TAG_URL/0.46.1"
+expect_location "redirect fails: a tag with a letter in a number" "$TAG_URL/v0.46.1x"
+expect_location "redirect fails: a tag with a dangling hyphen" "$TAG_URL/v0.46.1-"
+expect_location "redirect fails: a tag with build metadata" "$TAG_URL/v0.46.1+build"
+expect_location "redirect fails: a path below the tag" "$TAG_URL/v0.46.1/extra"
+expect_location "redirect fails: a query after the tag" "$TAG_URL/v0.46.1?x=1"
+expect_location "redirect fails: a fragment after the tag" "$TAG_URL/v0.46.1#x"
+expect_location "redirect fails: a newline smuggled in, escaped" "$TAG_URL/v0.46.1%0Aversion=9.9.9"
+expect_location "redirect fails: a command after the tag" "$TAG_URL/v0.46.1;id"
+
+# The one error names both failures and both ways out.
+run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "429 "
+has "both fail: the error says the API did not answer, after how many attempts" "$LOG" \
+  "::error::Could not determine latest omni-dev version. The GitHub API did not answer after 3 attempts"
+has "both fail: the error carries the API's reason" "$LOG" \
+  "(API: API rate limit exceeded for 10.0.0.1."
+has "both fail: the error says what the redirect gave" "$LOG" \
+  "and the github.com releases/latest redirect gave no release tag (HTTP 429)."
+has "both fail: the error names the input to check" "$LOG" "check that github-token holds a valid token"
+has "both fail: the error offers pinning, which skips the lookup" "$LOG" "or set 'version' to a release to skip the lookup."
+eq "both fail: it waited between the API attempts only" "3 6" "$SLEEPS"
+has "both fail: all three API attempts are warned about" "$LOG" "::warning::Attempt 3/3:"
+eq "both fail: a single error is raised" 1 "$(grep -c '^::error::' <<<"$LOG" || true)"
 
 # Each of these must be retried, not end the step early under -e: curl exiting
 # non-zero (a refused connection), a body that is not JSON, and JSON with no tag.
@@ -285,7 +406,7 @@ expect_retry() { # <name> <first response> <message fragment the warning must ca
 release-tag=v0.46.1" "$OUT"
   has "$1: the warning says what it saw" "$LOG" "::warning::Attempt 1/3: could not resolve latest omni-dev version (API: $3)"
 
-  run_resolve latest "$TOKEN" "$2" "$2" "$2"
+  run_resolve latest "$TOKEN" "$2" "$2" "$2" "429 "
   eq "$1: failing every time still ends in the error, not curl's or jq's" 1 "$STATUS"
   has "$1: it reaches the error message" "$LOG" "::error::Could not determine latest omni-dev version"
 }
