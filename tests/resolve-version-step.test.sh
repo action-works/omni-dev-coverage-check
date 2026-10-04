@@ -191,7 +191,6 @@ eq "pinned v: no API call is made" 0 "$CALLS"
 eq "pinned v: it never waits" "" "$SLEEPS"
 eq "pinned v: the version has no v and the tag has one" "version=0.45.0
 release-tag=v0.45.0" "$OUT"
-lacks "pinned v: the tag is not doubled" "$OUT" "vv"
 
 run_resolve 0.45.0 "$TOKEN"
 bare_out="$OUT"
@@ -205,6 +204,11 @@ release-tag=v0.46.0-dev" "$OUT"
 run_resolve v0.46.0-dev "$TOKEN"
 eq "pinned v: only the leading v is dropped" "version=0.46.0-dev
 release-tag=v0.46.0-dev" "$OUT"
+# One v, not every leading v: a doubled one is a typo, so it stays visibly wrong
+# (a version that starts with v) instead of being quietly accepted.
+run_resolve vv0.45.0 "$TOKEN"
+eq "pinned v: one leading v is dropped, not all of them" "version=v0.45.0
+release-tag=vv0.45.0" "$OUT"
 
 # --- latest, the first answer is good ----------------------------------------
 
@@ -325,7 +329,8 @@ has "input: github-token is optional, so a workflow needs no configuration" \
   "$(input_block github-token)" "    required: false"
 # The v is accepted, so the input must say so: a caller who copies a release tag
 # should not have to read the script to learn it works.
-has "input: version says a leading v is accepted" "$(input_block version)" "leading v"
+has "input: version says a leading v is accepted" "$(input_block version)" \
+  "with or without a leading v (e.g., 0.45.0 or v0.45.0)"
 
 # The runner evaluates every expression in a `run:` script before bash sees it,
 # whether it sits in a message or a comment and whether or not a backslash precedes
