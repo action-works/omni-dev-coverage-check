@@ -29,7 +29,8 @@ name: Integration
 #     tests/assert-omni-dev-version.sh, which fails unless the binary on PATH is
 #     exactly the version the job pinned. `arm64-release-without-asset` installs
 #     nothing and `deprecation-control` has one install and asserts no outcome, so
-#     neither calls it.
+#     neither calls it, and `old-glibc`'s failing leg installs a binary that cannot
+#     start, so only its control does.
 #   - A job that exists to run the install does not run on a cached binary. A hit on
 #     `actions/cache` restores ~/.cargo/bin/omni-dev and skips the platform and download
 #     steps, and the key holds the version, not the action's code, so such a job would
@@ -480,6 +481,140 @@ jobs:
             status=1
           fi
           exit "$status"
+
+  # A pre-built binary on a runner whose glibc is too old (#67). omni-dev's Linux binaries
+  # need glibc 2.38 or newer (the x86_64 0.45.0 one: 2.38 as a hard requirement and 2.39 as
+  # an optional one, which its loader reports as `weak`), and ubuntu-22.04 has 2.35. The
+  # binary is found, downloaded and installed, and then cannot start, so the step that
+  # prints the version has to say why: the glibc it needs, the one the runner has and the
+  # two ways out. ubuntu-24.04 is the control: the same inputs on a runner whose glibc is
+  # enough, which must succeed. The leg and its control differ in nothing but the runner
+  # (the matrix cannot read `env`, so the version is a literal and `failure-messages`
+  # repeats it, as it repeats the leg's name).
+  #
+  # What the leg shows that the unit test cannot: that the loader says, on a real old image,
+  # what tests/fixtures/omni-dev-loader/ says it does, and that the step that prints the
+  # version is where the action stops. It must run the install, not restore a binary: a cache
+  # hit skips the download step, and the download step is where a binary is first put in place
+  # (it ended by running the binary, so on a miss the loader's bare message stopped the action
+  # there, and the first version of this job passed only because it hit a cache that another
+  # job had saved). So each leg's `cache-prefix` holds the run and the attempt, as
+  # `version-pin`'s does, and the last step removes the binary so the post step saves an entry
+  # nothing would restore. If GitHub retires the ubuntu-22.04 image the leg ends at the
+  # runner, not at the assertion.
+  old-glibc:
+    name: Old glibc (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            expect: failure
+          - runner: ubuntu-24.04
+            expect: success
+    steps:
+      # The full history, as `output-flag` has it: on a pull request the control gets past the
+      # install and the guard to "Determine merge-base", which needs `origin/main`. The leg that
+      # fails stops long before that.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write fixtures
+        run: |
+          mkdir shards out
+          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
+          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
+
+      # Sharded on purpose, as in 6 and 7: the shards are combined after the install, so a
+      # missing combined report shows where the action stopped.
+      - name: '13. Pre-built omni-dev on a runner with this glibc'
+        id: install
+        uses: ./
+        continue-on-error: true
+        with:
+          version: '0.45.0'
+          cache-prefix: old-glibc-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}-
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/glibc.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
+
+      - name: Assert the outcome
+        env:
+          INSTALL: ${{ steps.install.outcome }}
+          EXPECT: ${{ matrix.expect }}
+          LEG: ${{ matrix.runner }}
+          ARCH: ${{ runner.arch }}
+        run: |
+          status=0
+          # The scenario is only about glibc if this runner's is below what the binary needs
+          # (2.38) on the failing leg and above it on the control.
+          if [ "$ARCH" != X64 ] || [ "$(uname -m)" != x86_64 ]; then
+            echo "::error::13 did not run on x86_64 Linux (runner.arch $ARCH, uname -m $(uname -m))"
+            status=1
+          fi
+          glibc="$(getconf GNU_LIBC_VERSION)"
+          glibc="${glibc#glibc }"
+          echo "$LEG has glibc $glibc"
+          if [ "$(printf '%s\n' "$glibc" 2.38 | sort -V | head -n 1)" = "$glibc" ] && [ "$glibc" != 2.38 ]; then
+            old=yes
+          else
+            old=no
+          fi
+          if [ "$EXPECT" = failure ] && [ "$old" != yes ]; then
+            echo "::error::13: $LEG has glibc $glibc, which is not older than the 2.38 this leg is about"
+            status=1
+          fi
+          if [ "$EXPECT" = success ] && [ "$old" != no ]; then
+            echo "::error::13: the control, $LEG, has glibc $glibc, which is older than the 2.38 it needs"
+            status=1
+          fi
+
+          if [ "$INSTALL" = "$EXPECT" ]; then
+            echo "ok   - 13. pre-built omni-dev on $LEG (glibc $glibc): $INSTALL"
+          else
+            echo "::error::13. pre-built omni-dev on $LEG (glibc $glibc): expected $EXPECT, got $INSTALL"
+            status=1
+          fi
+
+          # The binary was installed on both legs: it was found and downloaded (or restored),
+          # and what differs is whether it can start.
+          if [ ! -e "$HOME/.cargo/bin/omni-dev" ]; then
+            echo "::error::13: no omni-dev was installed at $HOME/.cargo/bin/omni-dev, so this is not the case of a binary that cannot start"
+            status=1
+          fi
+
+          if [ "$EXPECT" = failure ]; then
+            # Stopped at the version step, before the shards were combined.
+            if [ -e out/glibc.lcov ]; then
+              echo "::error::13 got past the version step: the shards were combined"
+              status=1
+            fi
+          else
+            if [ ! -s out/glibc.lcov ]; then
+              echo "::error::13: the control did not get past the install: no combined report"
+              status=1
+            fi
+            # Only a binary that starts has a version to check.
+            bash tests/assert-omni-dev-version.sh 0.45.0 || status=1
+          fi
+          # The key cannot hit (the prefix holds the run), so what the post step would save
+          # is never restored, and an entry of about 18 MiB per leg per run would push out the
+          # entries the other jobs reuse. After the checks above, which need the binary.
+          exit "$status"
+
+      # Its own step, not the end of the one above: a failed assertion must not skip it, and a
+      # step that fails stops the job before the post step, which then saves nothing either.
+      - name: Remove the binary so the cache saves nothing
+        if: always()
+        run: rm -f "$HOME/.cargo/bin/omni-dev"
 
   # The pull-request half of the guard. The comment diff and the patch gate pass
   # `-o/--output` (omni-dev 0.32.0), and they run only on a `pull_request` event, so
@@ -1646,6 +1781,7 @@ jobs:
       - thin-mode
       - thin-mode-old-omni-dev
       - arm64-release-without-asset
+      - old-glibc
       - output-flag
       - ignore-filename-regex
       - ignore-filename-regex-flag
@@ -1732,6 +1868,27 @@ jobs:
               "$asset" "Set 'version' to a release that has it"
             expect "6: the message says to build from source" "$errors" \
               "$asset" "set 'use-prebuilt-binary: false' to build from source"
+          else
+            status=1
+          fi
+
+          # 13: a pre-built binary on a runner whose glibc is too old names the release and
+          # the platform, the glibc its loader says it needs (the newest non-weak one: 2.38
+          # for the 0.45.0 x86_64 binary) and the one the runner has (ubuntu-22.04: 2.35), and
+          # gives both ways out. The job name is the one `old-glibc` sets; its control leg on
+          # ubuntu-24.04 succeeds and has no message to read. Every check holds the glibc the
+          # message asks for, so a message about another version cannot satisfy it.
+          if errors="$(bash tests/job-errors.sh 'Old glibc (ubuntu-22.04)')"; then
+            expect "13: the release and the platform are named" "$errors" \
+              "omni-dev 0.45.0 cannot run on this runner (Linux X64)"
+            expect "13: the glibc it needs and the one the runner has" "$errors" \
+              "it needs glibc 2.38 or newer, and the runner has glibc 2.35."
+            expect "13: the first way out is a newer runner image" "$errors" \
+              "it needs glibc 2.38 or newer" \
+              "Use a runner image with glibc 2.38 or newer (ubuntu-24.04, or ubuntu-24.04-arm)"
+            expect "13: the second way out is to build from source" "$errors" \
+              "it needs glibc 2.38 or newer" \
+              "set 'use-prebuilt-binary: false' to build omni-dev from source."
           else
             status=1
           fi
@@ -1886,6 +2043,7 @@ jobs:
       - thin-mode
       - thin-mode-old-omni-dev
       - arm64-release-without-asset
+      - old-glibc
       - output-flag
       - ignore-filename-regex
       - ignore-filename-regex-flag
