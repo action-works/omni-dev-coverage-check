@@ -30,6 +30,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally (`tests/prepare-shard-crate.test.sh` tests it; `test.yml` runs that)
 - `tests/assert-lib.sh` - Assertion helpers the `e2e-sharded.yml` checking steps source (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
 - `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
+- `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that run the action in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml` end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `.github/pull_request_template.md` - PR template
 
@@ -166,6 +167,22 @@ The action is a composite action with two phases:
   succeed, plus a file check showing where the action stopped. `OLD_OMNI_DEV` is the
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
+  - The poisoned-cache rule is checked by `tests/assert-omni-dev-version.sh <version>`, which
+    the jobs that run the action end on, in `integration.yml`, `pr-paths.yml` and
+    `e2e-sharded.yml`. It needs the version line to start with `omni-dev <version>` and
+    the number to end at a space or the end of the line (the line is `omni-dev 0.45.0
+    (b5445b9 2026-10-03)`, so a plain equality check would be wrong). The old
+    `grep -qF` was a substring match, which would have let a pin that is a prefix or a
+    suffix of another release's number pass for it (`0.4.1` for `0.4.10`, `1.2.3` for
+    `11.2.3`); no release has that shape today. Rules:
+    - Call it as `bash tests/assert-omni-dev-version.sh "$VERSION" || status=1`. A bare call
+      ends the step under Actions' `bash -e` before the step's other checks report.
+    - Pass the pin, or the action's `version` output for a `latest` leg (a bare release
+      number). A step that failed exposes no output, so the version arrives empty; that is
+      a usage error, not a match for every binary as `grep -qF ""` was.
+    - A new leg or job that runs an omni-dev gets this call at the end of its checking
+      step. `tests/assert-omni-dev-version.test.sh` holds the cases (prefix, suffix, a
+      dot that is not a wildcard, a binary that is missing or fails).
   - The `--output` guard acts only on a `pull_request`, so the `output-flag` job (a
     matrix: `0.28.0`, the newest release with no `coverage` subcommand at all, `0.31.0`,
     the newest with `coverage diff` but without the flag, and `0.32.0`, the floor)
