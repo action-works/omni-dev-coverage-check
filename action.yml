@@ -11,7 +11,7 @@ inputs:
   # omni-dev install + cache (mirrors action-works/omni-dev-commit-check)
   # ---------------------------------------------------------------------------
   version:
-    description: 'omni-dev version to install: a release number with or without a leading v or V (e.g., 0.45.0 or v0.45.0), or latest. An empty value, or a bare v, fails the step'
+    description: 'omni-dev version to install: a release number with or without a leading v or V (e.g., 0.45.0 or v0.45.0), or latest. An empty value, or only a v or V, fails the step'
     required: false
     default: 'latest'
   github-token:

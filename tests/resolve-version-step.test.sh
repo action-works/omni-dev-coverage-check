@@ -212,7 +212,9 @@ expect_no_release() { # <name> <version as the script sees it> <value the messag
   eq "$1: it writes no output, so no empty version reaches a later step" "" "$OUT"
   eq "$1: no API call is made, so the default is not looked up" 0 "$CALLS"
   eq "$1: it never waits" "" "$SLEEPS"
-  eq "$1: it logs one error and nothing else" 1 "$(grep -c '^' <<<"$LOG")"
+  # Non-empty lines: a here-string of an empty log is one empty line, which a plain
+  # line count would call one message.
+  eq "$1: it logs one error and nothing else" 1 "$(grep -c . <<<"$LOG" || true)"
   has "$1: the error names the input" "$LOG" "::error::The 'version' input"
   has "$1: the error quotes what it was given" "$LOG" "(got '$3')"
   has "$1: the error offers a release number" "$LOG" "a release number such as 0.45.0"
@@ -222,6 +224,15 @@ expect_no_release() { # <name> <version as the script sees it> <value the messag
 expect_no_release "empty" "" ""
 expect_no_release "v alone" v v
 expect_no_release "V alone" V V
+
+# The check sits after the `latest` branch, so it holds however the value was obtained,
+# as the strip does: a tag that is only a v would otherwise write an empty version.
+# GitHub publishes no such tag, so this pins where the check sits, not a case a caller
+# can reach (the message then blames the input, which is as close as the step can say).
+run_resolve latest "$TOKEN" '{"tag_name":"v"}'
+eq "latest resolving to a lone v: the step fails" 1 "$STATUS"
+eq "latest resolving to a lone v: it writes no output" "" "$OUT"
+has "latest resolving to a lone v: it logs the refusal" "$LOG" "::error::The 'version' input names no release (got 'v')"
 
 # --- latest, the first answer is good ----------------------------------------
 

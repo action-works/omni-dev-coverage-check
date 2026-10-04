@@ -297,8 +297,8 @@ have; a runner without it fails first, saying so.)
 A pinned `version` makes no request, and may be written as a release tag is, with a leading `v`: `v0.45.0` and
 `0.45.0` give the same `version` (`0.45.0`) and `release-tag` (`v0.45.0`) outputs and share one cache entry. A
 capital `V` is accepted the same way (`V0.45.0`), and `release-tag` stays lowercase. Only one leading character is
-dropped, so `vv0.45.0` stays visibly wrong. A value with nothing left after that, an empty `version` or just `v`,
-fails the step at once with a message naming the input, instead of failing later in a step that blames the
+dropped, so `vv0.45.0` stays visibly wrong. A value with nothing left after that, an empty `version` or just
+`v` or `V`, fails the step at once with a message naming the input, instead of failing later in a step that blames the
 release: give a release number, or leave `version` out to get `latest`.
 
 The pre-built binary is chosen from the runner's OS and architecture: Linux x64, Linux ARM64, macOS ARM64 and

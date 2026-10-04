@@ -322,11 +322,12 @@ The action is a composite action with two phases:
   - No `--fail` on that curl: a 403 keeps its JSON body, which is where GitHub's reason ("API rate
     limit exceeded", "Bad credentials") comes from, and the warning prints it.
   - A leading `v` is dropped from the value however it was obtained (#38), once, after the
-    `latest` branch: `VERSION="${VERSION#v}"`. A pin written as a release tag (`v0.45.0`) used to give
-    `release-tag=vv0.45.0` (a 404 that the platform step reports as a missing asset), its own cache key,
-    and a `cargo install --version` that cargo refuses ("not a valid SemVer requirement"). Only one `v`,
-    and only a leading one: `0.46.0-dev` keeps its. Keep the strip out of the `latest` branch, or a pin
-    skips it; `tests/resolve-version-step.test.sh` runs both spellings and checks the input says so.
+    `latest` branch: `VERSION="${VERSION#v}"` when it was written (now `${VERSION#[vV]}`, below). A pin
+    written as a release tag (`v0.45.0`) used to give `release-tag=vv0.45.0` (a 404 that the platform
+    step reports as a missing asset), its own cache key, and a `cargo install --version` that cargo
+    refuses ("not a valid SemVer requirement"). Only one `v`, and only a leading one: `0.46.0-dev` keeps
+    its. Keep the strip out of the `latest` branch, or a pin skips it;
+    `tests/resolve-version-step.test.sh` runs both spellings and checks the input says so.
     That test reads the step alone; the `version-pin` job in `integration.yml` runs both spellings
     through the whole install on a runner (see "Integration workflow").
   - A capital `V` is dropped the same way (#51): `VERSION="${VERSION#[vV]}"`. It has one reading, and

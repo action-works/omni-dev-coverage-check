@@ -3,8 +3,9 @@ name: Integration
 # Runs the action itself (`uses: ./`) on a real runner on every change: in thin
 # mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
 # `ignore-filename-regex`, the `--output` floor a pull request needs, and the
-# `version` input's empty, `v` and `V` spellings), and in fat mode against a fixture crate (the instrumented test run, the three report
-# outputs and the one profile merge they share, the fat-mode line gate,
+# `version` input's empty, `v` and `V` spellings), and in fat mode against a
+# fixture crate (the instrumented test run, the three report outputs and the one
+# profile merge they share, the fat-mode line gate,
 # `setup-commands`/`extra-test-commands`, `llvm-cov-ignore-filename-regex`). Each
 # scenario's outcome is asserted
 # at the end of its job; the scenarios are `continue-on-error` so one regression
@@ -999,7 +1000,11 @@ jobs:
     name: Version input
     runs-on: ubuntu-latest
     steps:
+      # Full history: on a pull request 12c runs the merge-base step, which needs
+      # origin/main, as in every job here that runs the pull-request path.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Write fixtures
         run: |
@@ -1094,6 +1099,17 @@ jobs:
           assert "12c: got past the install: the shards were combined" test -s out/capital-v.lcov
           check "12c: the version output has no V" 0.45.0 "$VERSION"
           check "12c: the release-tag output has a lowercase v" v0.45.0 "$RELEASE_TAG"
+
+          # On a pull request 12c also ran the comment and percentages diffs, and the
+          # failure-messages job reads this job's log for a deprecation warning from
+          # either. The files show the steps ran: a skipped step logs nothing, so a log
+          # without a warning proves nothing about a step that did not run.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            assert "12c: the comment was rendered" test -s coverage.md
+            assert "12c: the percentages were rendered" jq -e 'type == "object"' coverage.json
+          else
+            assert "12c: no diff rendered outside a pull request" test ! -e coverage.md
+          fi
 
           bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
