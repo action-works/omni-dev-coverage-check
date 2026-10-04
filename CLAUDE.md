@@ -131,8 +131,8 @@ The action is a composite action with two phases:
     `tests/baseline-lib.sh` pins the wording against the real step.
   - Each commit tried costs at least one API request, plus one per successful run it
     has; a full miss spends `depth + 1`. `GITHUB_TOKEN` has 1,000 an hour per
-    repository, which is why `integration.yml` passes `baseline-ancestor-depth: 0` (about
-    14 lookups per pull-request run, and none finds anything), and why the depth is a bound.
+    repository, which is why `integration.yml` passes `baseline-ancestor-depth: 0` (up to
+    16 lookups per pull-request run, and none finds anything), and why the depth is a bound.
   - The recompute stays the last resort and runs only when nothing is in reach, so the
     `recompute` job of `pr-paths.yml` turns the walk off: its synthetic base has none.
 - **`worktree-system-deps`** generalizes the one omni-dev-specific wrinkle from

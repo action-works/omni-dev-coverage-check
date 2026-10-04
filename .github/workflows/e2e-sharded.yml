@@ -43,7 +43,7 @@ name: E2E sharded
 #     baseline for an older commit and a miss means none within reach. What it should
 #     find is asked of tests/expected-baseline.sh, which reads the Actions API, and
 #     compared with the baseline's own `TN:` line, which names the commit it was
-#     published for. pr-paths.yml's P5 and P6 make the walk deterministic; this
+#     published for. pr-paths.yml's P7 and P8 make the walk deterministic; this
 #     workflow only holds E1's lookup to the API.
 #   - E2 and E1 share a comment header and render the same comment on a miss, so
 #     E2's is read back and deleted before E1 runs. Otherwise an E1 that stopped
