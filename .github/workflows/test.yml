@@ -34,6 +34,9 @@ jobs:
       - name: Test find-baseline.sh
         run: bash tests/find-baseline.test.sh
 
+      - name: Test the baseline steps of action.yml
+        run: bash tests/baseline-steps.test.sh
+
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
 
