@@ -13,20 +13,21 @@
 # the check cannot disagree about which events must install.
 #
 # prefix   Prints the `cache-prefix` for $GITHUB_EVENT_NAME, and nothing else.
-#            pull_request, push           install-<16 hex of $INSTALL_CODE_HASH>-
-#            schedule, workflow_dispatch  run-<$GITHUB_RUN_ID>-<$GITHUB_RUN_ATTEMPT>-<$INSTALL_CACHE_LEG>-
+#            pull_request, push           install-<16 hex of $INSTALL_CODE_HASH>-<leg>-
+#            schedule, workflow_dispatch  run-<$GITHUB_RUN_ID>-<$GITHUB_RUN_ATTEMPT>-<leg>-
 #          $INSTALL_CODE_HASH is `hashFiles('action.yml', 'scripts/*.sh')`. Runs on
 #          unchanged install code reuse the entry, so a change to it installs once and a
 #          pull request does not write an entry per push. The weekly run and a manual run
 #          are the ones that test the world rather than a change, so they install every
 #          time, and a re-run (a new attempt) installs again.
-#          $INSTALL_CACHE_LEG (optional, for a job with a matrix) names the leg, and only the
-#          run-id prefix carries it. The legs of a job can resolve to the same key: a pinned
-#          0.46.0 and `latest` when latest is 0.46.0, on the same runner. Sharing is right on
-#          unchanged code (a hit is expected there), but with a prefix unique to the run one
-#          leg's saved entry could be restored by another that started later, and `check`
-#          would fail a leg that did nothing wrong. Letters, digits, dots, underscores and
-#          hyphens, so it is safe in a key.
+#          <leg> is $INSTALL_CACHE_LEG (optional, for a job with a matrix), and both prefixes
+#          carry it. The legs of a job can resolve to the same key: a pinned 0.46.0 and
+#          `latest` when latest is 0.46.0, on the same runner. Sharing it would let whichever
+#          leg finishes first save the entry the other restores, so the other would not run
+#          the install at all (seen on this change's own pull request: the ARM64 `latest`
+#          leg's last two scenarios hit the pinned leg's entry), and on a run-id event
+#          `check` would fail a leg that did nothing wrong. Letters, digits, dots,
+#          underscores and hyphens, so it is safe in a key.
 #
 # check    Reads the `omni-dev-cache-hit` output of the first scenario of a job (a failed
 #          scenario exposes no outputs, and the entry is saved in a post step, so the first
@@ -67,15 +68,15 @@ prefix() {
     err "GITHUB_EVENT_NAME is not set, so the event that decides the prefix is unknown"
     return 1
   fi
+  local leg="${INSTALL_CACHE_LEG:-}"
+  if [ -n "$leg" ] && [[ ! "$leg" =~ ^[0-9A-Za-z._-]+$ ]]; then
+    err "INSTALL_CACHE_LEG may hold only letters, digits, dots, underscores and hyphens, as it goes into a cache key; got '$leg'"
+    return 1
+  fi
   if installs_every_time; then
     # A prefix that did not change with the run would hit the entry the last one saved.
     if [[ ! "${GITHUB_RUN_ID:-}" =~ ^[0-9]+$ || ! "${GITHUB_RUN_ATTEMPT:-}" =~ ^[0-9]+$ ]]; then
       err "a $GITHUB_EVENT_NAME run needs GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT to make its prefix unique; got '${GITHUB_RUN_ID:-}' and '${GITHUB_RUN_ATTEMPT:-}'"
-      return 1
-    fi
-    local leg="${INSTALL_CACHE_LEG:-}"
-    if [ -n "$leg" ] && [[ ! "$leg" =~ ^[0-9A-Za-z._-]+$ ]]; then
-      err "INSTALL_CACHE_LEG may hold only letters, digits, dots, underscores and hyphens, as it goes into a cache key; got '$leg'"
       return 1
     fi
     echo "run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${leg:+$leg-}"
@@ -87,7 +88,7 @@ prefix() {
     err "INSTALL_CODE_HASH must be a hex hash of the install code (hashFiles('action.yml', 'scripts/*.sh')), got '${INSTALL_CODE_HASH:-}'; do the globs match nothing?"
     return 1
   fi
-  echo "install-${INSTALL_CODE_HASH:0:16}-"
+  echo "install-${INSTALL_CODE_HASH:0:16}-${leg:+$leg-}"
 }
 
 check() {

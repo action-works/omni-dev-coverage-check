@@ -102,15 +102,23 @@ eq "schedule: no hash is needed" "$base" "$(prefix_of schedule 100 1 "")"
 pass "the two kinds of prefix cannot be the same key" test "$base" != "$unchanged"
 
 # The legs of one job can resolve to the same key (a pinned 0.46.0 and latest, when latest
-# is 0.46.0), so on a run-id event each leg needs its own prefix, or one leg could restore
-# what another saved and be failed for it. The hash prefix is shared on purpose.
+# is 0.46.0), so each leg needs its own prefix, on every event. Shared, whichever leg
+# finishes first saves the entry the other restores, and the other never runs the install
+# (it happened on this change's own pull request); on a run-id event `check` would also
+# fail a leg that did nothing wrong.
 eq "schedule: a leg is part of the prefix" "run-100-1-latest-" "$(LEG=latest prefix_of schedule 100 1 "$HASH_A")"
 eq "workflow_dispatch: ... and so is a pinned leg's" "run-100-1-0.46.0-" "$(LEG=0.46.0 prefix_of workflow_dispatch 100 1 "$HASH_A")"
 pass "schedule: two legs of one run cannot share a prefix" test "$(LEG=latest prefix_of schedule 100 1 "$HASH_A")" != "$(LEG=0.46.0 prefix_of schedule 100 1 "$HASH_A")"
-eq "pull_request: the leg is not part of the hash prefix, so legs may share it" "$unchanged" "$(LEG=latest prefix_of pull_request 100 1 "$HASH_A")"
+eq "pull_request: a leg is part of the hash prefix" "install-0123456789abcdef-latest-" "$(LEG=latest prefix_of pull_request 100 1 "$HASH_A")"
+eq "push: ... and so is a pinned leg's" "install-0123456789abcdef-0.46.0-" "$(LEG=0.46.0 prefix_of push 100 1 "$HASH_A")"
+pass "pull_request: two legs of one run cannot share a prefix" test "$(LEG=latest prefix_of pull_request 100 1 "$HASH_A")" != "$(LEG=0.46.0 prefix_of pull_request 100 1 "$HASH_A")"
+eq "pull_request: a leg does not change which code the prefix follows" "install-fedcba9876543210-latest-" "$(LEG=latest prefix_of pull_request 100 1 "$HASH_B")"
 
 LEG="a b" run schedule 100 1 "$HASH_A" prefix
 eq "schedule with a leg that is not safe in a key: exits 1" 1 "$STATUS"
+LEG="a b" run pull_request 100 1 "$HASH_A" prefix
+eq "pull_request with a leg that is not safe in a key: exits 1" 1 "$STATUS"
+eq "  and prints no prefix" "" "$OUT"
 eq "  and prints no prefix" "" "$OUT"
 has "  and says which variable is wrong" "$ERR" "INSTALL_CACHE_LEG"
 LEG='x/../y' run schedule 100 1 "$HASH_A" prefix
