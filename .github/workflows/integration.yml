@@ -851,6 +851,17 @@ jobs:
               $1 == "DA" && $2 == line { print ($3 > 0 ? "covered" : "uncovered"); found = 1 }
               END { if (!found) print "missing" }' "$1"
           }
+          # The same for codecov.json, which keeps each line's hits as "hit/total".
+          codecov_state() { # <codecov.json> <function>
+            local line
+            line="$(grep -n "pub fn $2(" src/lib.rs | head -1 | cut -d: -f1)"
+            jq -r --arg line "$line" '
+              [.coverage | to_entries[] | select(.key | endswith("/src/lib.rs")) | .value[$line] // empty]
+              | first // "missing"
+              | if . == "missing" then .
+                elif (split("/")[0] | tonumber) > 0 then "covered"
+                else "uncovered" end' "$1"
+          }
 
           check "F1. full configuration, gate below the coverage" success "$F1"
           check "F2. same, gate above the coverage" failure "$F2"
@@ -870,6 +881,13 @@ jobs:
           check "F1: extra_only, from extra-test-commands" covered "$(state out/f1.lcov extra_only)"
           check "F1: setup_only, run with profiling off" uncovered "$(state out/f1.lcov setup_only)"
           check "F1: never, reached by nothing" uncovered "$(state out/f1.lcov never)"
+          # codecov.json is read from the profile the lcov step merged, so its hit
+          # counts must say what the lcov's do. Naming a file proves nothing about
+          # them, and a stale or empty profile would still name src/lib.rs.
+          for fn in main_run extra_only setup_only never; do
+            check "F1: codecov.json agrees with the lcov on $fn" \
+              "$(state out/f1.lcov "$fn")" "$(codecov_state out/f1/codecov.json "$fn")"
+          done
           # Without this, setup_only could be uncovered only because its test
           # never ran.
           assert "F1: the setup test ran" test -e out/f1/setup-test-ran.txt
