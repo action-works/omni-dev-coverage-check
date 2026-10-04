@@ -13,6 +13,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `scripts/combine-shards.sh` - Checks and joins per-shard lcov files for the `shard-reports` input
 - `scripts/omni-dev-asset.sh` - Maps a runner's OS and architecture to the omni-dev release asset to download (`tests/omni-dev-asset.test.sh` tests it; `test.yml` runs that)
 - `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl` (`test.yml` runs that)
+- `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` with chosen help text (`test.yml` runs that)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
@@ -158,6 +159,18 @@ The action is a composite action with two phases:
     an error (the `if:` guarantees a flag is needed, so an empty help fails the step).
     Keep the capture tolerant if you touch it; the 0.28.0 leg below is what fails when
     it is not.
+  - `has_flag` matches a flag's definition line (an optional short flag, the long flag,
+    then a value or the end of the line), not any occurrence of the string. A bare
+    substring counts `--output-file`, or prose that names the flag, as the flag being
+    there, and the run then fails later with clap's bare `unexpected argument`, which is
+    the failure the guard replaces. No release has such help text (0.29.0 to 0.45.0 were
+    swept), so the integration legs cannot reach it; `tests/guard-step.test.sh` does,
+    against a stub `omni-dev`, and also pins the tolerant capture, the "every missing flag"
+    report and the "flag not needed, not probed" cases. A new flag is one more `has_flag`
+    call and a case there. It is a line match, not a help parser: a wrapped description
+    line that itself begins with the flag would still count. And it does not help when
+    omni-dev deprecates a flag and hides it from `--help`: the probe would call a working
+    flag missing, and no upgrade fixes that.
 - **Integration workflow**: `integration.yml` asserts each scenario's step `outcome`
   (not `conclusion`, which is `success` under `continue-on-error`). Three rules keep it
   honest. Run one omni-dev version per job: `actions/cache` saves in a post step, so a
