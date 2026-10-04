@@ -1959,6 +1959,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
           status=0
 
@@ -1992,28 +1993,41 @@ jobs:
           # A job that stops at a guard (output-flag 0.31.0, the ARM64 job) logs none,
           # which is the right answer for it. The jobs that run the diffs show with a
           # file check, in their own assertion steps, that they did.
+          #
+          # The list is what decides which logs are read, so a list that is short makes
+          # the check read fewer jobs and pass (#89). tests/run-jobs.sh looks again at a
+          # failed call, a body that is not JSON, a list that disagrees with the API's own
+          # count, and a list shorter than this: every job this one needs, and this one.
+          # That is a lower bound, since a matrix job is several jobs: it catches a list
+          # that is badly short and does not prove the rest complete.
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            jobs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100")"
-            names="$(jq -s -r --arg control "$control" \
-              '.[].jobs[] | select(.conclusion == "success" and .name != $control) | .name' <<<"$jobs")"
-            if [ -z "$names" ]; then
-              echo "::error::the run has no finished job to read the log of, so nothing was checked"
+            if ! min="$(jq 'length + 1' <<<"$NEEDS")"; then
+              echo "::error::the jobs this one needs could not be read, so the job list cannot be held to a minimum"
               status=1
-            fi
-            while IFS= read -r job; do
-              [ -n "$job" ] || continue
-              if lines="$(bash tests/job-deprecations.sh "$job" </dev/null)"; then
-                if [ -z "$lines" ]; then
-                  echo "ok   - $job: no deprecation warning"
-                else
-                  echo "::error::$job logged a deprecation warning. If omni-dev printed it, action.yml passes a flag omni-dev has deprecated: stop passing it and add it to tests/check-deprecated-flags.sh. If another tool did, see what it deprecated."
-                  while IFS= read -r line; do echo "  $line"; done <<<"$lines"
-                  status=1
-                fi
-              else
+            elif jobs="$(RUN_JOBS_MIN="$min" bash tests/run-jobs.sh)"; then
+              names="$(jq -r --arg control "$control" \
+                '.[] | select(.conclusion == "success" and .name != $control) | .name' <<<"$jobs")"
+              if [ -z "$names" ]; then
+                echo "::error::the run has no finished job to read the log of, so nothing was checked"
                 status=1
               fi
-            done <<<"$names"
+              while IFS= read -r job; do
+                [ -n "$job" ] || continue
+                if lines="$(bash tests/job-deprecations.sh "$job" </dev/null)"; then
+                  if [ -z "$lines" ]; then
+                    echo "ok   - $job: no deprecation warning"
+                  else
+                    echo "::error::$job logged a deprecation warning. If omni-dev printed it, action.yml passes a flag omni-dev has deprecated: stop passing it and add it to tests/check-deprecated-flags.sh. If another tool did, see what it deprecated."
+                    while IFS= read -r line; do echo "  $line"; done <<<"$lines"
+                    status=1
+                  fi
+                else
+                  status=1
+                fi
+              done <<<"$names"
+            else
+              status=1
+            fi
           fi
           exit "$status"
 

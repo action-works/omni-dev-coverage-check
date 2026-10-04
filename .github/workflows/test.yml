@@ -61,6 +61,9 @@ jobs:
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
 
+      - name: Test run-jobs.sh
+        run: bash tests/run-jobs.test.sh
+
       - name: Test assert-lib.sh
         run: bash tests/assert-lib.test.sh
 
