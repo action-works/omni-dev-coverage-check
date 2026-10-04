@@ -234,9 +234,6 @@ The action is a composite action with two phases:
   - Not covered by a unit test: the pull-request paths on a real runner (`pr-paths.yml`,
     `e2e-sharded.yml`, `integration.yml`'s fat-mode job) and the download step (it writes to
     `/tmp`; `platform-step.test.sh` covers what picks its URL).
-  - Left alone, found in review: the pinned `version` is not validated, so a value holding a
-    newline or `/..` can write extra lines to `$GITHUB_OUTPUT` or steer the download URL. That
-    predates #39 and is not an expression-evaluation hole; it is a follow-up, not done here.
 - **Shard join**: `cargo llvm-cov` writes no newline after its final `end_of_record`,
   so a bare `cat` of shards glues records and a consumer can silently drop a file.
   `combine-shards.sh` always puts a newline between shards; keep that if you touch it.
@@ -422,11 +419,34 @@ The action is a composite action with two phases:
     `::error::` that names the `version` input, quotes what it got and offers a release number or `latest`,
     before either output is written. Left to pass, the version output was empty (a cache key ending
     `--binary`) and the platform step blamed the release. The check sits after the strip and after the
-    `latest` branch, so it holds however the value was obtained. The step does not validate the rest:
-    `cargo install --version` takes a requirement (`^0.45`), so a shape check would reject what the
-    `use-prebuilt-binary: false` path accepts. A whitespace-only value and `Latest` are not handled either.
+    `latest` branch, so it holds however the value was obtained. The shape check below handles the rest of
+    what a value may hold, but a whitespace-only value (a space is allowed there) and `Latest` are not handled.
     The script cannot say whether a workflow's `version: ''` reaches it or the input's default applies
     instead; the `version-input` job of `integration.yml` shows it on a runner.
+  - **The value's shape (#72, #75)**: after the strip and the empty check, and before either output is
+    written, the value must be made only of letters, digits and `. + - * ^ ~ < > = ,` and spaces, or the
+    step fails with one `::error::` that names the input and quotes what it got, with each non-printable
+    character shown as `?` and cut at 60 characters, so a newline in it cannot start another workflow
+    command. It is an allowlist in a `case`, with the letters spelled out and not ranged, because a range
+    follows the locale. Why: the value is written to `$GITHUB_OUTPUT`, a cache key, the download URL and
+    `cargo install --version`. A newline wrote extra output lines (an input could set `release-tag`), and
+    `/..` walked the URL out of `rust-works/omni-dev/releases/download/` (curl resolves dot segments, and
+    five of them leave the repository). It is not a shell-injection hole (the value reaches the script
+    through `env:`, #39), and `version` is normally a literal, so it matters only to a caller who passes a
+    value they do not control. Decided so it is not re-derived: #72 recommended refusing only control
+    characters and `/` so that `^0.45` keeps working on the source install, and #75 the strict release shape,
+    which refuses a requirement. This is the allowlist in between: what a release and a cargo requirement
+    are written with, and none of what changes the meaning of a value once written (`/ ? # % \ $`, quotes,
+    a backtick, `; | &`, control characters, non-ASCII). No working value changed. Not taken from #75: its
+    refusal of a space, because a requirement is written `>= 0.45`. It sits after the `latest` branch as the
+    strip does, so an API `tag_name` is held to it too (the redirect fallback was already stricter).
+    A comma is allowed because cargo takes a range; whether the rest of the job can use such a value is not
+    checked here. `tests/resolve-version-step.test.sh` has a case per refused shape (each must fail, write
+    nothing, make no request and log one line) and per accepted spelling, and was checked against the check
+    removed, `/`, `?` and `%` allowed, `^`, `+`, an uppercase letter and the space missing, the message not
+    sanitised or cut short, a refusal that does not stop, and the stripped value quoted in place of the
+    given one. Not run on a runner: no `integration.yml` scenario sends a hostile `version` (the
+    `version-input` job sends the empty and the lone `v`).
   - The release-asset downloads stay unauthenticated on purpose. They are `github.com/.../releases/
     download/` URLs, not API calls, so the limit in #1 does not apply to them, and curl drops
     `Authorization` on the redirect to the asset CDN: the header would only send the token somewhere
