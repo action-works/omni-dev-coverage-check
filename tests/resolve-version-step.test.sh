@@ -7,8 +7,9 @@
 # The step resolves `version: latest` with one GitHub API call. Run unauthenticated
 # from a shared runner IP that call hit the 60/hr limit and failed the whole job (#1),
 # so it now sends the token and tries three times. This pins that: the header, the
-# retries and their delays, the message after the last attempt, and that a pinned
-# version never touches the network. The step's script is read out of action.yml
+# retries and their delays, the timeouts that let a hung connection be retried, the
+# message after the last attempt, a runner with no jq, and that a pinned version
+# never touches the network. The step's script is read out of action.yml
 # itself, so renaming the step or moving its `run:` fails here, by name, rather than
 # leaving a test of a copy.
 #
@@ -161,6 +162,13 @@ arg_present() {
   if grep -qxF -- "$2" <<<"$CURLS"; then ok "$1"; else bad "$1" "no argument '$2' in: $CURLS"; fi
 }
 
+# arg_after <name> <flag> <value>: a curl call received <flag> with <value> right after.
+arg_after() {
+  local got
+  got="$(grep -A1 -xF -- "$2" <<<"$CURLS" | sed -n 2p)"
+  if [ "$got" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2 $3', got '$2 $got' in: $CURLS"; fi
+}
+
 # --- a pinned version never asks GitHub --------------------------------------
 
 run_resolve 0.45.0 "$TOKEN" '{"tag_name":"v9.9.9"}'
@@ -183,6 +191,12 @@ arg_present "latest: it asks the releases API for omni-dev's latest" \
 arg_present "latest: it authenticates with the token" "Authorization: Bearer $TOKEN"
 arg_present "latest: it asks for the GitHub JSON media type" "Accept: application/vnd.github+json"
 arg_present "latest: it pins the API version" "X-GitHub-Api-Version: 2022-11-28"
+arg_after "latest: it bounds the connection, so a hang is retried" --connect-timeout 10
+arg_after "latest: it bounds the whole call, so a hang is retried" --max-time 30
+# With --fail curl drops the body of a 403, and GitHub's reason with it: the warning
+# would say "unknown error" for a rate limit.
+eq "latest: curl is not told to --fail, so GitHub's reason stays in the body" 0 \
+  "$(grep -cE '^(--fail|-[A-Za-z]*f[A-Za-z]*)$' <<<"$CURLS" || true)"
 lacks "latest: no warning when the first attempt works" "$LOG" "::warning::"
 lacks "latest: the token is not printed" "$LOG" "SENTINEL"
 
@@ -223,7 +237,8 @@ eq "exhausted: it did not wait after the last attempt" "3 6" "$SLEEPS"
 eq "exhausted: it wrote no version" "" "$OUT"
 has "exhausted: all three attempts are warned about" "$LOG" "::warning::Attempt 3/3:"
 has "exhausted: the error says how many attempts it made" "$LOG" "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts."
-has "exhausted: the error names the input to check" "$LOG" "ensure a github-token is available"
+has "exhausted: the error names the input to check" "$LOG" "check that github-token holds a valid token"
+has "exhausted: the error offers pinning, which skips the lookup" "$LOG" "or set 'version' to a release to skip the lookup."
 lacks "exhausted: the token is not printed" "$LOG" "SENTINEL"
 
 # Each of these must be retried, not end the step early under -e: curl exiting
@@ -243,20 +258,43 @@ release-tag=v0.46.1" "$OUT"
   has "$1: it reaches the error message" "$LOG" "::error::Could not determine latest omni-dev version"
 }
 expect_retry "curl fails" '!7' "unknown error"
+expect_retry "curl times out" '!28' "unknown error"
 expect_retry "not JSON" '<html>502 Bad Gateway</html>' "unknown error"
 expect_retry "no tag_name" '{}' "no tag_name in response"
 expect_retry "null tag_name" '{"tag_name":null}' "no tag_name in response"
 
+# --- a runner with no jq ------------------------------------------------------
+
+# The step's jq calls hide their errors, so without a guard a missing jq looks like
+# a rate limit: three retries, then advice about the token. The guard runs before
+# any call, so the step needs nothing on PATH but the shell itself; an empty
+# directory stands in for a runner that lacks jq.
+nojq="$WORK/nojq"
+mkdir "$nojq"
+dir="$(mktemp -d "$WORK/case.XXXXXX")"
+: >"$dir/output"
+# shellcheck disable=SC2016
+script="${RESOLVE//'${{ inputs.version }}'/latest}"
+LOG="$(PATH="$nojq" GITHUB_OUTPUT="$dir/output" GH_TOKEN="$TOKEN" "$BASH" --noprofile --norc -eo pipefail -c "$script" 2>&1)"
+STATUS=$?
+eq "no jq: the step fails" 1 "$STATUS"
+has "no jq: the error says jq is missing" "$LOG" "::error::jq is required to resolve 'version: latest'"
+has "no jq: the error offers pinning" "$LOG" "set 'version' to a release to skip the lookup"
+lacks "no jq: it is not mistaken for a rate limit" "$LOG" "::warning::"
+eq "no jq: it wrote no version" "" "$(cat "$dir/output")"
+
 # --- the wiring around the script --------------------------------------------
 
+# The cases above run the script under bash; it uses arrays, which sh and pwsh lack.
+has "shell: the step runs under bash, as these cases do" "$BLOCK" "      shell: bash"
 # shellcheck disable=SC2016
 has "env: the step reads the token from the github-token input" "$BLOCK" \
   '        GH_TOKEN: ${{ inputs.github-token }}'
 # shellcheck disable=SC2016
 has "input: github-token defaults to the workflow token" "$(input_block github-token)" \
   '    default: ${{ github.token }}'
-eq "input: github-token is optional, so a workflow needs no configuration" "true" \
-  "$(input_block github-token | grep -q 'required: false' && echo true || echo false)"
+has "input: github-token is optional, so a workflow needs no configuration" \
+  "$(input_block github-token)" "    required: false"
 
 # The runner evaluates every expression in a `run:` script before bash sees it,
 # whether it sits in a message or a comment and whether or not a backslash precedes

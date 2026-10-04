@@ -114,17 +114,24 @@ The action is a composite action with two phases:
   (`.../repos/rust-works/omni-dev/releases/latest`); a pinned version makes none. Made
   unauthenticated from a shared runner address it hit the 60/hr limit and failed the whole job,
   so the step sends `github-token` (default `github.token`, 1000/hr) and tries three times,
-  sleeping 3s then 6s (none after the last) before one error that names the input. Rules:
+  sleeping 3s then 6s (none after the last) before one error that names the input and the
+  other way out, pinning `version`. Each call is bounded (`--connect-timeout 10 --max-time 30`),
+  so a hung connection is retried instead of waited on until the job's timeout. Rules:
   - The token reaches the script through `env: GH_TOKEN`, never as an expression in the script.
     The runner evaluates every `${{ }}` in a `run:` block, in a comment or a message, and a
     backslash does not escape one: a message that wrote the expression would show the masked
     token (`\***`) instead, and an empty `${{ }}` in a comment fails the step. The test fails if
-    the script holds any expression but `inputs.version`.
+    the script holds any expression but `inputs.version`, which is still interpolated, as
+    inputs are in most steps of this file; that is how it is today, not a rule to copy.
   - The token does reach curl's arguments (`-H "Authorization: Bearer ..."`); the environment only
     keeps it out of the script text. It is the job's own masked token, as in commit-check's step.
   - `curl` and `jq` each end in `|| true`: under `bash -e` a refused connection or a gateway's HTML
     error page would otherwise end the step with a bare exit code before the retry or the message.
-    The test scripts each shape (curl failing, a body that is not JSON, JSON with no `tag_name`).
+    The test scripts each shape (curl failing or timing out, a body that is not JSON, JSON with no
+    `tag_name`). `jq` also hides its stderr there, so a runner without it would look like a rate
+    limit: the step checks for `jq` first and says so.
+  - No `--fail` on that curl: a 403 keeps its JSON body, which is where GitHub's reason ("API rate
+    limit exceeded", "Bad credentials") comes from, and the warning prints it.
   - The release-asset downloads stay unauthenticated on purpose. They are `github.com/.../releases/
     download/` URLs, not API calls, so the limit in #1 does not apply to them, and curl drops
     `Authorization` on the redirect to the asset CDN: the header would only send the token somewhere
