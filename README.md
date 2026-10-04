@@ -154,10 +154,25 @@ warning.
 
 Things to know:
 
-- **Partitioning needs nextest**, and nextest does not run doctests, so coverage
-  that comes only from doctests is lost when moving off `cargo test`.
-- **`setup-commands` and `extra-test-commands` are fat-mode inputs.** In a sharded
-  run, do that work in the shard jobs yourself.
+- **Partitioning needs nextest**, which the action never runs for you: the shard job
+  and its `--partition count:N/M` are yours (see [Why there is no `mode: shard`](#why-there-is-no-mode-shard)).
+  nextest does not run doctests, so coverage that only a doctest provides is lost
+  unless you add the [doctest job](#recovering-doctest-coverage) below.
+- **`setup-commands` and `extra-test-commands` are fat-mode inputs**, so a sharded
+  run does that work itself, in the job that needs it. Setup that tests need (a model
+  download, say) goes in each shard job that runs them. Work that should run exactly
+  once rather than per shard, such as a gated `--ignored` suite, gets a job of its
+  own, like the doctest job below. Three rules for such a job:
+  - Name its artifact and file so the aggregation job's `pattern` and `shard-reports`
+    globs match them (`coverage-shard-*` and `shard-*.lcov` above). A report the globs
+    miss is not an error, because the other shards still match: coverage just drops.
+  - Run it on every event the shard jobs run on. If it is skipped on pull requests
+    (secrets missing on forks, say), the head report lacks lines the `main` baseline
+    has, and the comment shows a drop that no change caused.
+  - Run it under the same workspace root as the shards (next bullet).
+
+  Anything nextest can partition just takes its flags on the partitioned run
+  (`--run-ignored all` adds the ignored tests to a partitioned run).
 - **Every shard must run under the same workspace root** (the same runner image
   does), because the report paths are made repo-relative by stripping one prefix.
   Use `strip-prefix` if the root is not the checkout directory.
@@ -171,6 +186,52 @@ Things to know:
 - With `codecov: true` in thin mode, the action uploads the shard files themselves
   (codecov merges several uploads natively) and, outside sharded runs, the lcov at
   `report`, since there is no `codecov.json`.
+
+#### Recovering doctest coverage
+
+Add one job that runs only the doctests and uploads its own report. The join takes
+any number of files, so the `coverage-shard-*` and `shards/shard-*.lcov` patterns above
+pick it up unchanged; the only edit to the aggregation job is `needs: [shard, doctests]`.
+
+```yaml
+  doctests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # `cargo llvm-cov --doc` is unstable, so this job needs nightly.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview   # without it cargo-llvm-cov stops at an install prompt
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: >-
+          cargo llvm-cov --doc --all-features --workspace
+          --lcov --output-path shard-doctests.lcov
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coverage-shard-doctests
+          path: shard-doctests.lcov
+```
+
+The doctest report lists every function in the crate, mostly with a zero count. The
+join is a union, so a line the shards covered stays covered. This job runs on nightly
+and the shards on stable, so the two can instrument slightly different lines of a
+file; a line only one report lists is counted by that report alone, and the total
+can differ a little from an all-stable run.
+
+This job is not part of `e2e-sharded.yml`. It was checked once, locally: on a copy of
+that workflow's fixture crate with one doctest added, the nextest shards alone gave
+87.50% and adding this report gave 100.00%.
+
+#### Why there is no `mode: shard`
+
+The action has no `mode: shard` / `mode: report`. A composite action cannot own the
+job matrix, the artifact hand-off, or the dependency between jobs, so such a mode
+would still be two invocations inside jobs you write; it would save only the shard
+job's install and partition steps. The example above is the supported shape, and
+[`e2e-sharded.yml`](.github/workflows/e2e-sharded.yml) runs its shard topology. The
+full reasoning, and what would change it, is in
+[#24](https://github.com/action-works/omni-dev-coverage-check/issues/24).
 
 ### Fat mode with fixture setup + model-gated tests
 

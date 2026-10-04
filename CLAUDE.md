@@ -104,6 +104,34 @@ The action is a composite action with two phases:
   never gets an ARM64 asset), with 5b as its control. The ARM64 install that succeeds
   needs a release carrying the asset (#20), and until then nothing checks the ARM64 asset's
   name against a real release.
+- **No first-class shard mode (decided in #24)**: there is no `mode: shard` / `mode: report`,
+  and none should be built until a real adopter has a sharded workflow on this action and
+  names what was awkward. The README's sharded example, kept honest by `e2e-sharded.yml`, is
+  the supported shape. The reasoning, so it is not re-derived:
+  - A composite action cannot own the matrix, the artifact hand-off or the `needs`, so a
+    mode would be two invocations in jobs the caller still writes, saving the shard job's
+    install and partition steps (about 10 lines per shard job).
+  - A reusable workflow has fixed inputs, where real callers need per-architecture setup and
+    steps around the action (succinctly's x86_64 leg reclaims disk first; its ARM64 leg builds
+    omni-dev from source, `use-prebuilt-binary: false`). A local `uses: ./` inside one resolves
+    against the caller's checkout, so it could not be tested against a pull request's own
+    `action.yml`.
+  - Nobody had adopted `shard-reports` when this was decided. rust-works/succinctly, the case
+    behind it, still ran fat mode, pinned to omni-dev 0.43.0 with `fail-under-lines: 55`; in
+    thin mode that gate needs 0.45.0 or later (`shard-reports` itself uses no omni-dev flag).
+  - nextest stays the caller's choice (the action never runs it), and the caller owns
+    `--partition count:i/N`. `setup-commands` and `extra-test-commands` stay fat-mode inputs.
+  - nextest skips doctests. One more job on nightly, `cargo llvm-cov --doc --lcov`, uploading
+    its own `shard-*.lcov`, recovers them, because the join accepts any number of files. On
+    the shard fixture with a doctest added, the nextest shards gave 87.50% and the join with
+    that report 100.00%. Checked locally, not on a runner; `llvm-tools-preview` must be a
+    component of the nightly toolchain or cargo-llvm-cov stops at an interactive prompt.
+  - If it is built: `mode: full|shard|report` (`full` the default, today's behaviour);
+    `shard` takes `shard-index` and `shard-count`, skips every pull-request, baseline and gate
+    step, and runs `cargo llvm-cov nextest <test-args> --partition count:i/N --lcov`, then
+    uploads `coverage-shard-i`; `report` downloads `coverage-shard-*` with `merge-multiple` and
+    runs thin mode with `shard-reports`. Move `e2e-sharded.yml` onto it with its assertions
+    intact, and add an `integration.yml` scenario per bad input.
 - **Flags that need a new omni-dev**: one guard step captures `omni-dev coverage diff
   --help` once and feature-detects each flag the run needs, failing with the fix
   rather than letting clap report an unknown argument later. It runs before the
