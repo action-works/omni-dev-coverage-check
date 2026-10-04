@@ -252,6 +252,25 @@ run 'work_dir; echo "$WORK"; exit 3'
 verdict "work_dir: an exit in the middle keeps its status" 3
 gone "work_dir: the directory is removed after an exit in the middle"
 
+# Each call makes its own directory, empty. A fixed path would pass every case above.
+run 'work_dir; echo "$WORK"; ls -A "$WORK" | wc -l'
+first="$(sed -n 1p <<<"$OUT")"
+run 'work_dir; echo "$WORK"; ls -A "$WORK" | wc -l'
+second="$(sed -n 1p <<<"$OUT")"
+if [ -n "$first" ] && [ -n "$second" ] && [ "$first" != "$second" ]; then
+  ok "work_dir: two tests get two directories"
+else
+  bad "work_dir: two tests get two directories" "'$first' and '$second'"
+fi
+eq "work_dir: the directory starts empty" 0 "$(tail -n 1 <<<"$OUT" | tr -d ' ')"
+
+# A path with a space in it is removed whole: the trap quotes $WORK. mktemp is a function
+# that makes such a path, since macOS's mktemp -d ignores TMPDIR and cannot be pointed at one.
+export SPACE_ROOT="$WORK"
+run 'mktemp() { mkdir "$SPACE_ROOT/a dir with spaces" && echo "$SPACE_ROOT/a dir with spaces"; }; work_dir; echo "$WORK"; touch "$WORK/f"'
+verdict "work_dir: a directory with spaces in its name is made" 0 "a dir with spaces"
+gone "work_dir: and is removed whole, not word by word"
+
 # More cleanup than the directory: the test sets its own trap afterwards and removes
 # "$WORK" in it too, as the comment on work_dir says.
 run 'work_dir; echo "$WORK"; trap "echo extra-cleanup; rm -rf \"\$WORK\"" EXIT; ok x; summary'
