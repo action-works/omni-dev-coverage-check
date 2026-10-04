@@ -16,6 +16,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/baseline-steps.test.sh` - Reads the lookup, download and diff steps out of `action.yml` and checks the wiring (the variables the script requires, the run id handed to the download, the comment's ancestor note) (`test.yml` runs that)
 - `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl`, with the variables the steps' `env:` blocks fill set directly (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
+- `tests/print-version-step.test.sh` - Runs the "Print omni-dev version" script read out of `action.yml` against a stub `omni-dev` that replays the captured loader output in `tests/fixtures/omni-dev-loader/` and a stub `getconf`: the glibc the binary needs, the one the runner has and the two ways out (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
 - `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
 - `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` or of a workflow in `.github/workflows/` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
@@ -25,7 +26,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/step-lib.sh` - `step_run`, `step_block`, `step_field`, `step_map` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo (runs on `merge_group` too: `Validate Commit Messages` is a required check of the merge queue)
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; the `old-glibc` job runs the pre-built binary on ubuntu-22.04, whose glibc is too old for it, with ubuntu-24.04 as its control (#67); a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API (the job list and the log are each retried); `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
@@ -48,6 +49,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/merge-queue.test.sh` - Tests `ci-gate.sh`, and reads the workflows to check what the merge queue relies on: `ci-gate` needs every job of `integration.yml` and runs `always()`, `merge_group` is a trigger of the three workflows a required check comes from and of neither path-filtered one, and the required checks' names are still the jobs' names (`test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `tests/fixtures/omni-dev-probe/` - What the real releases either side of each guard floor (and 0.28.0, which has no `coverage`) answered to the guard's probe, one `<version>/<flag>.txt` each: `exit=<status>`, then the output (`tests/guard-step.test.sh` replays them)
+- `tests/fixtures/omni-dev-loader/` - What the dynamic loader printed when a pre-built omni-dev Linux binary needed a newer glibc than the runner had (Ubuntu 22.04, glibc 2.35), one `<release>-<arch>-glibc-<version>.txt` each: `exit=<status>`, then the output (`tests/print-version-step.test.sh` replays them)
 - `.github/pull_request_template.md` - PR template
 
 ## How It Works
@@ -308,7 +310,7 @@ The action is a composite action with two phases:
   - The legs run on `ubuntu-24.04-arm`, not an older ARM image: omni-dev's Linux binaries,
     the x86_64 ones too, need glibc 2.39 (the highest `GLIBC_` version in each binary's
     version-needs table, read from the 0.45.0 and 0.46.0 releases), Ubuntu 24.04's, so an
-    older runner image fails at `Print omni-dev version`. Every leg checks it ran on the
+    older runner image fails at `Print omni-dev version`, which now says why (#67, below). Every leg checks it ran on the
     architecture it names (`runner.arch` and `uname -m`), as job 6 does, so a leg cannot
     pass as ARM64 on another runner.
   - **The install runs when the install code changes, not only on a cache miss (decided in
@@ -379,6 +381,46 @@ The action is a composite action with two phases:
     may see it for longer or shorter, as the asset can be uploaded by another job than the
     x86_64 one: a red `latest` leg right after an omni-dev release, with "has no pre-built
     omni-dev-linux-arm64.tar.gz", is a re-run, not a regression.
+  - **A binary that cannot start on an older glibc (#67, decided: react, and document).** On a
+    runner whose glibc is older than the binary's (`ubuntu-22.04`, `ubuntu-22.04-arm`, a
+    Debian 12 or Amazon Linux host) the platform step finds the asset, the download works, and
+    the first failure is the dynamic loader's own message from `omni-dev --version`. "Print
+    omni-dev version" now runs the binary once, keeps what it said and, when that is a missing
+    `GLIBC_` version, adds one `::error::` that names the release and the platform, the glibc
+    the binary needs, the glibc the runner has (`getconf GNU_LIBC_VERSION`) and the two ways out
+    (a newer runner image, or `use-prebuilt-binary: 'false'`). Anything else that stops the
+    binary is shown as before and keeps its exit status. Rules, so they are not re-derived:
+    - **React, don't ask first.** The option of reading the runner's glibc before the download and
+      comparing it with a number written into this action was rejected: that number belongs to
+      omni-dev's build image and moves with it, in either direction (too high refuses a runner
+      that works, too low is the problem today). The loader's message cannot go stale that way and
+      cannot refuse a runner that works. It costs a download of a binary that cannot run.
+    - **The glibc named is the newest NON-weak version the loader reports.** The captured output
+      (`tests/fixtures/omni-dev-loader/`) shows why: the 0.45.0 x86_64 binary fails on `GLIBC_2.38`
+      and also logs `weak version GLIBC_2.39`, an optional one that did not stop it, so asking for
+      2.39 would name a version the run did not fail on; and the 0.46.0 ARM64 binary lists 2.39
+      before 2.38, so the first line is not the answer either. They are compared as numbers
+      (`sort -t. -k1,1n -k2,2n -k3,3n`; `2.9` must not beat `2.38`). `GLIBCXX_` (an old libstdc++)
+      is another problem and is not matched. The message says "or newer", not that the runner will
+      then work: the loader reports what it checked.
+    - **It is the loader's text that is matched, so it is replayed from what the loader printed.**
+      `tests/print-version-step.test.sh` runs the step against those captures and a stub `getconf`,
+      and each capture is also checked for the message it is meant to hold. A new capture is a new
+      file there (`exit=<status>`, then the output) and a case.
+    - **The `old-glibc` job shows it on a real old image (#67): ubuntu-22.04 expects failure, and
+      ubuntu-24.04 is the control with the same inputs.** The failing leg checks that it ran on
+      x86_64 with a glibc below 2.38 and that the binary was installed (so this is a binary that
+      cannot start, not one that was never found), that the install failed and stopped before the
+      shards were combined; the control that it succeeded and that `omni-dev` is exactly 0.45.0.
+      `failure-messages` asserts the message of the failing leg (the release and platform, "needs
+      glibc 2.38 or newer, and the runner has glibc 2.35.", and each way out). The version is a
+      literal, `0.45.0`, because the matrix cannot read `env` and because the x86_64 capture is of
+      that release. It keeps the cache like the jobs that exist for something else: the binary is
+      the same whether restored or downloaded. If GitHub retires the `ubuntu-22.04` image the leg
+      ends at the runner, not at an assertion.
+    - Not shown: the Windows and macOS runners (the loader's `GLIBC_` text does not exist there, so
+      nothing is added and behaviour is as before), and an older runner image on ARM64 (the
+      `ubuntu-22.04-arm` image would show the 2.39 case; the unit test replays its capture).
 - **Version resolution (#1, #40)**: `version: latest` costs one call to the GitHub API
   (`.../repos/rust-works/omni-dev/releases/latest`), and one more request if the API gives no
   release in any attempt (the redirect fallback, below); a pinned version makes none. Made
@@ -630,7 +672,7 @@ The action is a composite action with two phases:
     body at 8) and refuses the rest: nothing on stdout, the reason on stderr, status 1. Call it
     as `X="$(step_run 'Step name')" || exit 1`; a `-z` check on the result is not needed, and a
     fourth awk copy would read the wrong thing without saying so. `run: |`, `|-` and `|+` are
-    all read; an inline `run:` (`Print omni-dev version` is one), a folded `>`, a body not at
+    all read; an inline `run:` (`Add cargo bin to PATH` is one), a folded `>`, a body not at
     8 spaces, a step with no `run:` and a name that is missing or doubled are refused.
   - **`step_field <step> <key>` and `step_map <step> <key>` (#74)** read a step's own key
     written on one line (`id`, `if`, `uses`, `shell`, an inline `run`) and the entries of its

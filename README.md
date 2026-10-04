@@ -321,6 +321,14 @@ or the missing asset: set `use-prebuilt-binary: 'false'` to build omni-dev from 
 release that has the asset. A workflow that set `use-prebuilt-binary: 'false'` only to get omni-dev onto an ARM64
 Linux runner can drop it, on `latest` or on `0.46.0` or later.
 
+The pre-built Linux binaries (x64 and ARM64) need a recent glibc: 2.38 or 2.39, depending on the release (Ubuntu
+24.04 has 2.39). An `ubuntu-22.04` runner, `ubuntu-22.04-arm`, or a self-hosted Debian 12 or Amazon Linux host has an
+older one. On such a runner the binary is found and downloaded, and then cannot start; the step that prints the
+omni-dev version fails with a message that names the glibc the binary needs (the newest version its dynamic loader
+reports as missing), the glibc the runner has, and the two ways out: a newer runner image (`ubuntu-24.04`,
+`ubuntu-24.04-arm`), or `use-prebuilt-binary: 'false'` to build omni-dev from source. Any other reason the binary
+cannot start (a missing shared library, say) is shown as the loader reported it.
+
 ### Coverage run (fat mode)
 
 | Input              | Description                                                                                   | Default               |
