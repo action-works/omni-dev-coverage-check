@@ -343,15 +343,21 @@ runs:
         # (the `if:` guarantees a flag is needed), so it never sits beside a green step.
         help="$(omni-dev coverage diff --help || true)"
         found="$(omni-dev --version)"
+        # Match the flag's definition line, not any occurrence: clap lays an option out
+        # as an optional short flag, the long flag, then a value or the end of the line.
+        # A bare substring would count `--output-file` or prose that mentions `--output`
+        # as the flag being there, and the run would then fail later with clap's bare
+        # `unexpected argument`, which is the failure this step replaces.
+        has_flag() { grep -Eq -- "^[[:space:]]+(-[A-Za-z], )?$1([[:space:]]|\$)" <<<"$help"; }
         status=0
         if [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ] \
-          && ! grep -q -- '--fail-under-lines' <<<"$help"; then
+          && ! has_flag --fail-under-lines; then
           echo "::error::$found has no 'coverage diff --fail-under-lines', which thin mode uses for the line gate. Set 'version' to a release that includes it, or set 'fail-under-lines' to an empty string to run thin mode without a line gate."
           status=1
         fi
         # No input turns this one off: the diff runs on every pull request, even
         # with `comment: false`.
-        if [ "$EVENT_NAME" = 'pull_request' ] && ! grep -q -- '--output' <<<"$help"; then
+        if [ "$EVENT_NAME" = 'pull_request' ] && ! has_flag --output; then
           echo "::error::$found has no 'coverage diff --output', which the pull-request comment and the patch gate use. It needs omni-dev 0.32.0 or later: set 'version' to 0.32.0 or later, or to 'latest'."
           status=1
         fi
