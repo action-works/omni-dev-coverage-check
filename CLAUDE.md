@@ -16,11 +16,11 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/baseline-steps.test.sh` - Reads the lookup, download and diff steps out of `action.yml` and checks the wiring (the variables the script requires, the run id handed to the download, the comment's ancestor note) (`test.yml` runs that)
 - `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl` (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
-- `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses and a stub `sleep` (`test.yml` runs that)
+- `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
@@ -207,13 +207,15 @@ The action is a composite action with two phases:
   never gets an ARM64 asset), with 5b as its control. The ARM64 install that succeeds
   needs a release carrying the asset (#20), and until then nothing checks the ARM64 asset's
   name against a real release.
-- **Version resolution (#1)**: `version: latest` costs one call to the GitHub API
-  (`.../repos/rust-works/omni-dev/releases/latest`); a pinned version makes none. Made
+- **Version resolution (#1, #40)**: `version: latest` costs one call to the GitHub API
+  (`.../repos/rust-works/omni-dev/releases/latest`), and one more request if the API gives no
+  release in any attempt (the redirect fallback, below); a pinned version makes none. Made
   unauthenticated from a shared runner address it hit the 60/hr limit and failed the whole job,
   so the step sends `github-token` (default `github.token`, 1000/hr) and tries three times,
-  sleeping 3s then 6s (none after the last) before one error that names the input and the
-  other way out, pinning `version`. Each call is bounded (`--connect-timeout 10 --max-time 30`),
-  so a hung connection is retried instead of waited on until the job's timeout. Rules:
+  sleeping 3s then 6s (none after the last) before the redirect fallback; if that fails too,
+  one error names both failures, the input to check and the other way out, pinning `version`.
+  Each call is bounded (`--connect-timeout 10 --max-time 30`), so a hung connection is
+  retried instead of waited on until the job's timeout. Rules:
   - The token reaches the script through `env: GH_TOKEN`, never as an expression in the script.
     The runner evaluates every `${{ }}` in a `run:` block, in a comment or a message, and a
     backslash does not escape one: a message that wrote the expression would show the masked
@@ -239,6 +241,53 @@ The action is a composite action with two phases:
     download/` URLs, not API calls, so the limit in #1 does not apply to them, and curl drops
     `Authorization` on the redirect to the asset CDN: the header would only send the token somewhere
     it buys nothing.
+  - **Redirect fallback (#40)**: a spent limit can last up to an hour, longer than the attempts can
+    wait, so after the third failure the step reads the tag from the redirect of
+    `https://github.com/rust-works/omni-dev/releases/latest`. The API stays first (it is the
+    documented interface and the redirect is not), so the fallback only changes a run that would have
+    failed, and the one warning it logs says it did, with the API's reason. Rules:
+    - One request, no `-L`: `-w '%{http_code} %{redirect_url}'` gives the status and the `Location`,
+      and following the redirect would fetch the tag's HTML page, which the step has no use for and
+      is one more request that can fail or be throttled. No token: it buys nothing on github.com, as
+      with the asset downloads. The call ends in `|| true` for the API call's `-e` reason, and the
+      answer is read with `read` and `[[ =~ ]]`, no jq. A runner with no jq still fails first, with
+      the jq message, although the redirect needs none: the API runs first and the guard keeps a
+      missing jq from being reported as a rate limit.
+    - The URL is read from a header, so it is used only if it is exactly
+      `https://github.com/rust-works/omni-dev/releases/tag/v<N>.<N>.<N>`, with an optional semver
+      pre-release (`-` and dot-separated identifiers of letters, digits and hyphens). The tag goes
+      into a cache key, a download URL, `cargo install` and `$GITHUB_OUTPUT`, and is stricter than
+      the API path, which takes any `tag_name` as it is, because this one comes from a URL. A login
+      page, no redirect, another repository or host, `nightly`, build metadata (`+`), a path, query
+      or fragment after the tag, or the tag URL inside a longer string is rejected, and the error
+      says what the redirect gave (`HTTP <status>`, and the URL it went to).
+      `tests/resolve-version-step.test.sh` has a case for each of 35 such shapes. It was checked
+      against mutations of the step, each of which fails it: either anchor of the regex dropped,
+      each unescaped dot (the host's, the version's), a suffix that takes any text or empty
+      identifiers, `http`, any tag, `-L`, the token sent to github.com, no `|| true` on the
+      redirect call, no timeouts. Keep a case for any shape you allow or refuse.
+    - "Latest" means the same on both sides: each is the repository's Latest release, which leaves out
+      drafts and pre-releases. Checked on 2026-10-04 where the newest release is a pre-release
+      (neovim/neovim, rust-lang/rust-analyzer) and where the Latest flag is not on the newest by date
+      (dotnet/runtime): the API and the redirect gave the same tag every time. omni-dev has no
+      pre-release to try, and drafts are invisible without a token.
+    - A bad `github-token` (401) takes this path too, so it no longer fails the job: it resolves from
+      the redirect and logs the warning, which names the API's reason ("Bad credentials") and says to
+      check the token. That is the point of the fallback (the step resolves whatever the API says),
+      and also how the `latest-redirect` job makes the API fail on demand. The warning says the API
+      "gave no release", not that it did not answer, because a refusal is an answer.
+    - Whether github.com throttles the redirect on a runner's address is not known. It cannot make a
+      run worse (the fallback runs only after the API failed), but it was not measured from a runner
+      when this was written. The `latest-redirect` job is that measurement and keeps checking, weekly
+      too: scenario 10 sends the token `not-a-token`, which the API refuses with 401 whatever the rate
+      limit and without spending any, so its three attempts fail on demand and the redirect must
+      answer; the job asks the API directly, with the workflow token, what "latest" is, and the two
+      must agree. A second run of the action is not the control: with the fallback it would use the
+      redirect too whenever the API failed, and a second `latest` install would break the one
+      omni-dev version per job rule. The 401 is recorded just before 10 and asserted at the end,
+      because a job cannot read its own log. What 10's log says (the warning) is pinned only by the
+      unit test, as is that `github-token` reaches the step; nothing in `failure-messages` reads a
+      `##[warning]` line, and a reader for one would let it assert the warning.
 - **No first-class shard mode (decided in #24)**: there is no `mode: shard` / `mode: report`,
   and none should be built until a real adopter has a sharded workflow on this action and
   names what was awkward. The README's sharded example, kept honest by `e2e-sharded.yml`, is
@@ -345,7 +394,7 @@ The action is a composite action with two phases:
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
   - The poisoned-cache rule is checked by `tests/assert-omni-dev-version.sh <version>`, which
-    the eleven jobs that assert a scenario's outcome end on, in `integration.yml`,
+    the twelve jobs that assert a scenario's outcome end on, in `integration.yml`,
     `pr-paths.yml` and `e2e-sharded.yml`. `arm64-release-without-asset` installs nothing
     and `deprecation-control` has one install and asserts no outcome, so neither calls
     it. It needs the version line to start with `omni-dev <version>` and
