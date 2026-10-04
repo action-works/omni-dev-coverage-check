@@ -485,9 +485,20 @@ runs:
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov report --lcov --output-path "${{ inputs.report }}"
-        # Merged, so the raw profiles have done their job. The profile is kept
-        # (`--profraw-only`); the next run starts with `clean --workspace`, which
-        # removes it, so a stale one is never reused.
+
+    - name: Remove merged raw coverage profiles
+      # The lcov step merged them into one profile, so they have done their job.
+      # With none left, every later `cargo llvm-cov report` skips its own merge and
+      # reads that profile. `--profraw-only` keeps the profile; the next run starts
+      # with `clean --workspace`, which removes it, so a stale one is never reused.
+      # Not `continue-on-error`: a removal that stopped halfway would leave some raw
+      # profiles, and the next report would merge only those over the full profile,
+      # reporting a fraction of the coverage without any error.
+      if: inputs.run-coverage == 'true'
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov clean --profraw-only
 
     - name: Generate codecov.json

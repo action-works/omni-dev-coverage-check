@@ -60,11 +60,12 @@ outputs are produced. `cargo llvm-cov report` merges every raw profile each time
 called, which costs minutes per call for a suite that spawns many processes and leaves
 thousands of them. The action merges them with the first report (the lcov), removes the
 raw profiles, and lets the `codecov.json`, summary and line-gate calls read the merged
-profile. The outputs are unchanged. Once the action has run, the target directory holds
-the merged profile (`<workspace>.profdata`) and no `*.profraw`. A `cargo llvm-cov report`
-in your own steps afterwards still works and reads that profile; if you run more
-instrumented tests before it, it covers only those, because this run's raw profiles
-are gone.
+profile. The outputs are unchanged. Once the action has run, the target directory
+that `cargo llvm-cov show-env` reports (the action's steps run under it) holds the
+merged profile (`<workspace-name>.profdata`) and no `*.profraw`. If a step of yours
+then runs more instrumented tests under the same `show-env` and calls `cargo llvm-cov
+report`, that report covers only those new runs, because this run's raw profiles are
+gone.
 
 ### Thin mode
 
