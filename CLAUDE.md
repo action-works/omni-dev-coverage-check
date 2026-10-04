@@ -30,7 +30,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally (`tests/prepare-shard-crate.test.sh` tests it; `test.yml` runs that)
 - `tests/assert-lib.sh` - Assertion helpers the `e2e-sharded.yml` checking steps source (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
 - `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
-- `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that run the action in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml` end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
+- `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `.github/pull_request_template.md` - PR template
 
@@ -168,8 +168,10 @@ The action is a composite action with two phases:
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
   - The poisoned-cache rule is checked by `tests/assert-omni-dev-version.sh <version>`, which
-    the jobs that run the action end on, in `integration.yml`, `pr-paths.yml` and
-    `e2e-sharded.yml`. It needs the version line to start with `omni-dev <version>` and
+    the nine jobs that assert a scenario's outcome end on, in `integration.yml`,
+    `pr-paths.yml` and `e2e-sharded.yml`. `arm64-release-without-asset` installs nothing
+    and `deprecation-control` has one install and asserts no outcome, so neither calls
+    it. It needs the version line to start with `omni-dev <version>` and
     the number to end at a space or the end of the line (the line is `omni-dev 0.45.0
     (b5445b9 2026-10-03)`, so a plain equality check would be wrong). The old
     `grep -qF` was a substring match, which would have let a pin that is a prefix or a

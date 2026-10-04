@@ -12,13 +12,15 @@
 # || status=1`; a bare call would end the step under Actions' `bash -e` before the
 # step's other checks had reported.
 #
-# The version line is `omni-dev 0.45.0 (b5445b9 2026-10-03)`: a commit and date
-# follow the number, so it cannot be compared whole. It must start with
-# `omni-dev <version>`, and the number must then end, at a space or at the end of
-# the line. A substring match (`grep -F`) lets a pin that is a prefix or a suffix
-# of another release's number pass for it: `0.4.1` for `0.4.10`, `1.2.3` for
-# `11.2.3`. Every character of the pin is literal here, so a dot is a dot and a
-# `+` is a plus; a regex would need each one escaped.
+# The version line is `omni-dev 0.45.0 (b5445b9 2026-10-03)` (a `, dirty` can follow
+# the date in a local build; 0.28.0 to 0.32.0, clap's `#[command(version)]`, print just
+# `omni-dev 0.28.0`): a commit and date may follow the number, so it cannot be
+# compared whole. It must start with `omni-dev <version>`, and the number must
+# then end, at a space or at the end of the line. A substring match (`grep -F`)
+# lets a pin that is a prefix or a suffix of another release's number pass for
+# it: `0.4.1` for `0.4.10`, `1.2.3` for `11.2.3`. Every character of the pin is
+# literal here, so a dot is a dot and a `+` is a plus; a regex would need each
+# one escaped.
 #
 # `omni-dev --version` is captured before it is matched, as the guard in
 # action.yml does, so a binary that fails reports itself instead of a grep on an
@@ -48,7 +50,7 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
-if [ "$found" != "omni-dev $version" ] && [[ $found != "omni-dev $version "* ]]; then
+if [[ $found != "omni-dev $version" && $found != "omni-dev $version "* ]]; then
   echo "::error::omni-dev on PATH is not $version ($found); a poisoned cache?"
   exit 1
 fi

@@ -17,8 +17,11 @@ name: Integration
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
 #     every scenario has run, and saves whatever is at ~/.cargo/bin/omni-dev
 #     then; a second version installed over it poisons the first version's key.
-#     A job ends on tests/assert-omni-dev-version.sh, which fails unless the binary
-#     on PATH is exactly the version the job pinned.
+#     A job that asserts its scenarios' outcomes ends on
+#     tests/assert-omni-dev-version.sh, which fails unless the binary on PATH is
+#     exactly the version the job pinned. `arm64-release-without-asset` installs
+#     nothing and `deprecation-control` has one install and asserts no outcome, so
+#     neither calls it.
 #   - Every scenario expected to fail has a control that differs in exactly one
 #     input and must succeed, plus a file check showing where the action stopped.
 #     `outcome == failure` alone also holds when the install breaks.
