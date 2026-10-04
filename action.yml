@@ -162,6 +162,9 @@ outputs:
   release-tag:
     description: 'Resolved omni-dev release tag (v-prefixed)'
     value: ${{ steps.resolve-version.outputs.release-tag }}
+  omni-dev-cache-hit:
+    description: '`true` when the omni-dev binary was restored from the cache, so the install steps did not run; `false` when it was installed'
+    value: ${{ steps.cache-omni-dev.outputs.cache-hit == 'true' }}
   patch-percent:
     description: 'Patch (diff) coverage percentage for this PR'
     value: ${{ steps.diff.outputs.patch-percent }}

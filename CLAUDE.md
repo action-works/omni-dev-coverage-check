@@ -25,7 +25,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the four step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
@@ -43,6 +43,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/baseline-lib.sh` - Checks of a baseline's `TN:` commit, the comment's ancestor note and the lookup against `expected-baseline.sh`, sourced by `pr-paths.yml` and `e2e-sharded.yml` (`tests/baseline-lib.test.sh` tests it, including against the real diff step; `test.yml` runs that)
 - `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
 - `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
+- `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run and attempt on `schedule` and `workflow_dispatch`, and the leg in both) and checks the action's `omni-dev-cache-hit` output (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `tests/fixtures/omni-dev-probe/` - What the real releases either side of each guard floor (and 0.28.0, which has no `coverage`) answered to the guard's probe, one `<version>/<flag>.txt` each: `exit=<status>`, then the output (`tests/guard-step.test.sh` replays them)
 - `.github/pull_request_template.md` - PR template
@@ -283,17 +284,70 @@ The action is a composite action with two phases:
     older runner image fails at `Print omni-dev version`. Every leg checks it ran on the
     architecture it names (`runner.arch` and `uname -m`), as job 6 does, so a leg cannot
     pass as ARM64 on another runner.
-  - **A cache hit skips the install.** `actions/cache` restores `~/.cargo/bin/omni-dev` and
-    "Download pre-built binary" is then skipped; the key holds the version, not the action's
-    code. That holds for every leg, x86_64 included, and none works around it: the asset's
-    name, the archive layout and the binary are exercised on the first run for a version (a
-    new release, or an entry that was evicted or never written for that ref), not on each
-    run. A `cache-prefix` made of a hash of `action.yml` and `scripts/*.sh` was tried on the
-    ARM64 legs and dropped: the gap is not ARM64's, so fixing it there alone leaves the
-    matrix inconsistent; the glob has to be kept in step with the install code by hand; the
-    weekly run would still hit an entry; and each miss reinstalls once per scenario, since
-    the entry is saved only in the post step. If it is wanted, do it for every leg that
-    exists to run the install, and decide the schedule and a run-id prefix then.
+  - **The install runs when the install code changes, not only on a cache miss (decided in
+    #66).** `actions/cache` restores `~/.cargo/bin/omni-dev` on a hit and "Determine platform
+    and download URL" and "Download pre-built binary" are then skipped. The default key holds
+    the version, not the action's code, so a leg that exists to run the install passed on a
+    binary an earlier run had installed, whatever a change did to the platform step, the
+    download or `scripts/omni-dev-asset.sh`. Every `thin-mode` leg (x86_64 and ARM64, pinned
+    and `latest`) now passes the `cache-prefix` that `tests/install-cache.sh prefix` prints:
+    `install-<16 hex of hashFiles('action.yml', 'scripts/*.sh')>-<leg>-` on `pull_request` and
+    `push` (a change to the install code is a new key and installs; unchanged code reuses the
+    entry, so a push to a pull request writes none), and `run-<run_id>-<run_attempt>-<leg>-`
+    on `schedule` and `workflow_dispatch` (the weekly and manual runs install every time, and a
+    re-run installs again). Rules:
+    - Both prefixes carry the leg (`matrix.omni-dev`, through `INSTALL_CACHE_LEG`). Legs of one
+      job can resolve to the same key: ARM64 pinned `0.46.0` and ARM64 `latest` do whenever
+      latest is `0.46.0`. Shared, whichever finishes first saves the entry the other restores,
+      and the other leg then runs no install on a change that was meant to make it: this
+      happened on #77's own run, where the ARM64 `latest` leg's third and fourth scenarios
+      hit the pinned leg's entry (its first two had missed). On a run-id event `check` would
+      also fail a leg that did nothing wrong. The review found it for the run-id prefix; the
+      run showed the hash prefix had it too. The leg costs one entry more per pair of legs that
+      coincide (9-18 MB), which is the price of each leg's install not depending on a race.
+    - The checking step reads the action's `omni-dev-cache-hit` output from scenario 1 (a
+      failed scenario exposes no outputs, and the entry is saved in the post step, so s1 sees
+      the cache as the job found it) and calls `install-cache.sh check`. It logs whether the
+      install ran, logs a hit on unchanged code as correct, and FAILS a hit on `schedule` or
+      `workflow_dispatch`, where the prefix is unique to the run and a hit means it never
+      reached the action. It is an output because a composite action's steps are invisible to
+      the workflow that calls it. `version-pin` proves the same thing by the archive the
+      download leaves in `/tmp`; moving it onto the output is a follow-up, not done in #66.
+    - The hash covers the whole of `action.yml` and `scripts/*.sh`, not just the install
+      steps: a change elsewhere in `action.yml` reinstalls once, which costs seconds, and a
+      list of install files kept by hand is what the ARM64-only attempt in #65 was dropped
+      for. `tests/install-cache.test.sh` keeps the glob honest by reading the real files: it
+      fails when an install step runs a file from `$ACTION_PATH` outside `scripts/*.sh`, when
+      the workflow's `hashFiles` stops being exactly those two globs, when a `thin-mode`
+      scenario does not pass the prefix, and when the prefix step is not ahead of the first
+      scenario (read before it is written, the prefix is empty, which is the default key). A
+      new install script goes under `scripts/`, or the globs are widened in the workflow, the
+      test and `install-cache.sh` together. Each of those cases was checked against a mutation
+      that makes it fail.
+    - `hashFiles` gives an empty string when its globs match nothing, and a constant prefix
+      would stop invalidating the cache without a word, so `prefix` refuses an empty or
+      non-hex hash. The step calls it as `prefix="$(bash tests/install-cache.sh prefix)"`, not
+      inside an `echo`: under `bash -e` a failure is lost there.
+    - What it costs, accepted: the four scenarios of a leg each miss on the first run for a
+      prefix (the entry is saved only in the post step), so omni-dev is installed four times
+      and three of the four saves log `Unable to reserve cache`; and the weekly and manual runs
+      write an entry per leg that nothing restores (9-18 MB, removed when unused for 7 days).
+      `version-pin` removes the binary so nothing is saved; these legs do not, because the
+      hashed entries are reused.
+    - Settled with it, so it is not re-derived. Only the jobs whose point is the install take
+      the prefix: `thin-mode-old-omni-dev`, `output-flag`, `ignore-filename-regex*`,
+      `latest-redirect`, `fat-mode`, `deprecation-control`, `pr-paths.yml` and
+      `e2e-sharded.yml` exist for something else and keep the cache, which is useful to them;
+      `version-pin` already forces the install with a key of its own; and
+      `arm64-release-without-asset` installs nothing, so its key is never saved and cannot hit.
+      The `latest` legs do not cover themselves (a new release is a new key; a change to the
+      install code is not). The weekly run installs on every `thin-mode` leg, pinned included.
+    - Not run on a runner when this was written: the `schedule` and `workflow_dispatch`
+      branches, only unit-tested, until the Monday run or a manual one. Not covered at all: a
+      stub-`curl` test of "Download pre-built binary" with a tarball of the real layout
+      (`omni-dev`, `omni-dev-mcp`, `LICENSE`, `README.md`) and one of the Windows zip's, which
+      would pin the extraction on every pull request whatever the cache holds, including the
+      `.zip` branch no runner exercises. It complements the prefix and was left out of #66.
   - The `latest` ARM64 leg shares the release-asset lag the other `latest` legs have, and
     may see it for longer or shorter, as the asset can be uploaded by another job than the
     x86_64 one: a red `latest` leg right after an omni-dev release, with "has no pre-built
@@ -559,7 +613,7 @@ The action is a composite action with two phases:
     install's outcome, `version` is `0.45.0`, `release-tag` is `v0.45.0`, and the binary on PATH.
     Rules:
     - Each leg's `cache-prefix` holds the run and the attempt, so the key cannot hit. The platform
-      and download steps are skipped on a cache hit, and on the default key (the thin-mode
+      and download steps are skipped on a cache hit, and on the default key (the `ignore-filename-regex`
       job's `0.45.0` leg saves it, and `v0.45.0` resolves to it) every run after the first on `main`
       would hit and check only the outputs: the very path this job exists for would not run. The
       assertion step checks the archive the download step leaves in `/tmp`, so a leg that stops

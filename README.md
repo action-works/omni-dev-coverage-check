@@ -300,6 +300,10 @@ capital `V` is accepted the same way (`V0.45.0`), and `release-tag` stays lowerc
 dropped, so `vv0.45.0` stays visibly wrong. A value with nothing left after that, an empty `version` or just
 `v` or `V`, fails the step at once with a message naming the input, instead of failing later in a step that blames the
 release: give a release number, or leave `version` out to get `latest`.
+The `omni-dev-cache-hit` output says whether the binary came from the cache (`true`: the download and `cargo install`
+steps were skipped) or was installed (`false`). The cache key holds the runner's OS and architecture, the version and
+the install method, never the action's own code; a caller that needs a fresh install on some runs can change
+`cache-prefix` on those runs.
 
 The pre-built binary is chosen from the runner's OS and architecture: Linux x64, Linux ARM64, macOS ARM64 and
 Windows. Linux ARM64 needs omni-dev 0.46.0 or later, the first release that publishes
@@ -364,13 +368,14 @@ Linux runner can drop it, on `latest` or on `0.46.0` or later.
 
 ## Outputs
 
-| Output          | Description                                             |
-|-----------------|---------------------------------------------------------|
-| `version`       | Resolved omni-dev version installed (no leading `v`)    |
-| `release-tag`   | Resolved omni-dev release tag (v-prefixed)              |
-| `patch-percent` | Patch (diff) coverage percentage for this PR            |
-| `line-percent`  | Overall line coverage percentage (requires a baseline)  |
-| `comment-path`  | Path to the rendered markdown comment                   |
+| Output               | Description                                                                                             |
+|----------------------|---------------------------------------------------------------------------------------------------------|
+| `version`            | Resolved omni-dev version installed (no leading `v`)                                                    |
+| `release-tag`        | Resolved omni-dev release tag (v-prefixed)                                                              |
+| `omni-dev-cache-hit` | `true` if omni-dev was restored from the cache and the install was skipped, `false` if it was installed |
+| `patch-percent`      | Patch (diff) coverage percentage for this PR                                                            |
+| `line-percent`       | Overall line coverage percentage (requires a baseline)                                                  |
+| `comment-path`       | Path to the rendered markdown comment                                                                   |
 
 ## How the baseline works
 
