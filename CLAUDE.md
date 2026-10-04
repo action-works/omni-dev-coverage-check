@@ -104,10 +104,20 @@ The action is a composite action with two phases:
   never gets an ARM64 asset), with 5b as its control. The ARM64 install that succeeds
   needs a release carrying the asset (#20), and until then nothing checks the ARM64 asset's
   name against a real release.
-- **Thin-mode line gate needs a new omni-dev**: `latest` can resolve to a release
-  without `coverage diff --fail-under-lines`, so a guard step feature-detects it and
-  fails with the fix. Do not tag a release of this action until an omni-dev release
-  with the flag exists, or every thin-mode caller on the default gate would fail.
+- **Flags that need a new omni-dev**: one guard step captures `omni-dev coverage diff
+  --help` once and feature-detects each flag the run needs, failing with the fix
+  rather than letting clap report an unknown argument later. It runs before the
+  coverage run, and only when a flag is needed (a fat-mode push calls no `omni-dev
+  coverage`, so an old pin must keep working there). It reports every missing flag.
+  - `--fail-under-lines` (0.45.0): thin mode with the line gate on. `latest` can
+    resolve to a release without it. Do not tag a release of this action until an
+    omni-dev release with the flag exists, or every thin-mode caller on the default
+    gate would fail.
+  - `--output` (0.32.0): every `pull_request`, fat or thin, because the comment diff
+    runs even with `comment: false`, so no input turns this one off. 0.32.0 is the
+    floor for the whole pull-request path, not just `-o` (0.29.0 to 0.31.0 have
+    `--format`, and the path passes no flag 0.32.0 lacks). Probe the help text, never
+    the version: the guard must keep working when `latest` moves.
 - **Integration workflow**: `integration.yml` asserts each scenario's step `outcome`
   (not `conclusion`, which is `success` under `continue-on-error`). Three rules keep it
   honest. Run one omni-dev version per job: `actions/cache` saves in a post step, so a
