@@ -1,0 +1,6 @@
+exit=2
+error: unrecognized subcommand 'coverage'
+
+Usage: omni-dev [OPTIONS] <COMMAND>
+
+For more information, try '--help'.

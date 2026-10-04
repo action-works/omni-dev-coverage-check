@@ -355,21 +355,38 @@ runs:
         FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}
         IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
       run: |
-        # Capture first: `grep -q` closing the pipe early would SIGPIPE omni-dev,
-        # and under `pipefail` that fails the step even when grep matched. A failing
-        # `--help` counts as "none of these flags are here": an omni-dev below 0.29.0
-        # has no `coverage` subcommand, so clap exits 2 and `-e` would end the step
-        # before either message. The version step above already proved the binary runs.
-        # Its stderr stays in the log: a failure that is not "no such subcommand" still
-        # shows what omni-dev said, and a failing `--help` always ends in an error below
-        # (the `if:` guarantees a flag is needed), so it never sits beside a green step.
-        help="$(omni-dev coverage diff --help || true)"
         found="$(omni-dev --version)"
-        # Match the flag's definition line, not any occurrence: `--output-file`, or prose
-        # that names the flag, must not count as the flag being there. That line is an
-        # optional short flag, the long flag, then a value (after a space, `=` or `[=`) or
-        # the end of the line. $1 is a plain long flag, used as is in the pattern.
-        has_flag() { grep -Eq -- "^[[:space:]]+(-[A-Za-z], )?$1(=|\[|[[:space:]]|\$)" <<<"$help"; }
+        # Ask omni-dev whether it accepts the flag instead of reading its `--help`: the help
+        # is a proxy, and a wrong one when omni-dev hides a deprecated flag it still accepts,
+        # or when a description line happens to begin with the flag's name. clap rejects an
+        # unknown argument before it reaches `--help`, and still recognises a hidden one, so
+        # `coverage diff <flag> x --help` answers. The value is a dummy that is never used: a
+        # flag that takes a value rejects `x` ("invalid value", or exit 0 for a free-form one)
+        # before any diff could run, and one that takes none reports `x` as the unexpected
+        # argument, not the flag. That needs no knowledge of the flag's values, which a valid
+        # one (`--output markdown`) would couple this step to.
+        #   missing: `error: unexpected argument '<flag>' found`, the same on every release
+        #            from 0.29.0, or `error: unrecognized subcommand` for an omni-dev below
+        #            0.29.0, which has no `coverage` (every flag probed is on `coverage diff`).
+        #   present: anything else. This fails open: if clap rewords the message the step
+        #            passes and a later step gets clap's own error, as before this guard
+        #            existed. The integration legs that expect a stop would go red.
+        # clap exits 2 whether the flag is there (the dummy value is invalid) or not, so the
+        # status says nothing. `-e` is off inside a function called from a condition, as this
+        # one always is; the `|| true` keeps a bare call from ending the step before either
+        # message. NO_COLOR is needed because a caller that sets CLICOLOR_FORCE gets the flag
+        # wrapped in escape codes (`'\e[33m--output\e[0m'`), which would never match; NO_COLOR
+        # wins over it. The version step above already proved the binary runs. A flag the run
+        # does not need is not asked about. When one is missing, the line that said so goes in
+        # the log.
+        has_flag() {
+          local said
+          said="$(NO_COLOR=1 omni-dev coverage diff "$1" x --help 2>&1 || true)"
+          if grep -Fq -e "error: unexpected argument '$1' found" -e 'error: unrecognized subcommand' <<<"$said"; then
+            echo "omni-dev said: $(head -n1 <<<"$said")"
+            return 1
+          fi
+        }
         status=0
         if [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ] \
           && ! has_flag --fail-under-lines; then
