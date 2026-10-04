@@ -112,11 +112,13 @@ The action is a composite action with two phases:
     mode would be two invocations in jobs the caller still writes, saving the shard job's
     install and partition steps (about 10 lines per shard job).
   - A reusable workflow has fixed inputs, where real callers need per-architecture setup and
-    steps around the action (succinctly's x86_64 leg reclaims disk first; its ARM64 leg sets
-    `use-prebuilt: false`). A local `uses: ./` inside one resolves against the caller's
-    checkout, so it could not be tested against a pull request's own `action.yml`.
+    steps around the action (succinctly's x86_64 leg reclaims disk first; its ARM64 leg builds
+    omni-dev from source, `use-prebuilt-binary: false`). A local `uses: ./` inside one resolves
+    against the caller's checkout, so it could not be tested against a pull request's own
+    `action.yml`.
   - Nobody had adopted `shard-reports` when this was decided. rust-works/succinctly, the case
-    behind it, still ran fat mode, pinned to omni-dev 0.43.0; `shard-reports` needs 0.45.0.
+    behind it, still ran fat mode, pinned to omni-dev 0.43.0 with `fail-under-lines: 55`; in
+    thin mode that gate needs 0.45.0 or later (`shard-reports` itself uses no omni-dev flag).
   - nextest stays the caller's choice (the action never runs it), and the caller owns
     `--partition count:i/N`. `setup-commands` and `extra-test-commands` stay fat-mode inputs.
   - nextest skips doctests. One more job on nightly, `cargo llvm-cov --doc --lcov`, uploading
