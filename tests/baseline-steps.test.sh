@@ -99,6 +99,7 @@ step_run() {
 
 FIND='Find baseline coverage'
 DOWNLOAD='Download baseline coverage'
+RECOMPUTE='Compute baseline from merge-base (fallback)'
 DIFF='Build coverage diff'
 
 # --- "Find baseline coverage" ---------------------------------------------------------------
@@ -170,6 +171,13 @@ for key in commit workflow branch event pr ref check_artifacts search_artifacts;
   eq "download: no '$key' filter beside the run id" "" "$(map_value "$WITH" "$key")"
 done
 
+# --- "Compute baseline from merge-base (fallback)" says when it built the baseline ----------------
+
+eq "recompute: it has the id the diff step reads" recompute "$(step_field "$RECOMPUTE" id)"
+has "recompute: it says when it built the baseline" "$(step_run "$RECOMPUTE")" 'echo "recomputed=true" >> "$GITHUB_OUTPUT"'
+recompute_reads="$(grep -o 'steps\.recompute\.outputs\.[a-z-]*' "$ACTION" | sed 's/.*outputs\.//' | sort -u | paste -sd' ' -)"
+eq "recompute: the only output any step reads is the one it writes" recomputed "$recompute_reads"
+
 # --- the note "Build coverage diff" adds to the comment -----------------------------------------
 
 DIFF_SCRIPT="$(step_run "$DIFF")"
@@ -180,6 +188,7 @@ fi
 DIFF_ENV="$(step_map "$DIFF" env)"
 eq "diff: it reads the baseline's commit" '${{ steps.baseline-lookup.outputs.sha }}' "$(map_value "$DIFF_ENV" BASELINE_SHA)"
 eq "diff: and its distance" '${{ steps.baseline-lookup.outputs.distance }}' "$(map_value "$DIFF_ENV" BASELINE_DISTANCE)"
+eq "diff: and whether the file is the merge-base's own recompute" '${{ steps.recompute.outputs.recomputed }}' "$(map_value "$DIFF_ENV" BASELINE_RECOMPUTED)"
 
 # A stub omni-dev: the two renderings the step asks for, and a log of what it was asked.
 BIN="$WORK/bin"
@@ -195,11 +204,11 @@ esac
 EOF
 chmod +x "$BIN/omni-dev"
 
-# run_diff <distance> <baseline present: yes|no>: runs the diff step in an empty directory as the
+# run_diff <distance> <baseline present: yes|no> [recomputed: true]: runs the diff step in an empty directory as the
 # runner would, with the inputs it reads replaced by their defaults. Sets STATUS, COMMENT
 # (coverage.md), OUT (its $GITHUB_OUTPUT) and CALLS (what the stub omni-dev was asked).
 run_diff() {
-  local distance="$1" present="$2" script dir
+  local distance="$1" present="$2" recomputed="${3:-}" script dir
   script="$DIFF_SCRIPT"
   script="${script//'${{ inputs.report }}'/coverage-head.lcov}"
   script="${script//'${{ inputs.collapse-ranges }}'/true}"
@@ -220,6 +229,7 @@ run_diff() {
       ARTIFACT_URL=https://example/artifact RUN_URL=https://example/run BASE_SHA=0000000000000000000000000000000000000001 \
       HEAD_SHA=0000000000000000000000000000000000000002 COMMIT_URL=https://example/commit \
       BASELINE_SHA=1234567890abcdef1234567890abcdef12345678 BASELINE_DISTANCE="$distance" \
+      BASELINE_RECOMPUTED="$recomputed" \
       bash --noprofile --norc -eo pipefail -c "$script" >"$dir/stdout" 2>&1
   )
   STATUS=$?
@@ -257,6 +267,15 @@ has "diff: three commits, plural" "$COMMENT" ", 3 commits before the merge-base"
 run_diff 3 no
 eq "diff: no baseline file, so no note, whatever the lookup said" $'# Coverage\nTotal: **71.4%**' "$COMMENT"
 lacks "diff: and no baseline is passed to omni-dev" "$CALLS" "--baseline-report"
+
+# The lookup found an ancestor's, but the download left no file under this report's name and the
+# recompute built one at the merge-base: the baseline is the merge-base's own, whatever the
+# distance says.
+run_diff 3 yes true
+eq "diff: a recomputed baseline: no note, whatever the lookup's distance" $'# Coverage\nTotal: **71.4%**' "$COMMENT"
+has "diff: and it is still passed to omni-dev" "$CALLS" "--baseline-report baseline/coverage-head.lcov"
+run_diff 3 yes ''
+has "diff's control, not recomputed: the same distance gets its note" "$COMMENT" "3 commits before the merge-base"
 
 echo
 echo "$passed passed, $failed failed"

@@ -115,7 +115,7 @@ inputs:
     required: false
     default: '10'
   recompute-baseline:
-    description: 'On a baseline-download miss, recompute coverage at the merge-base in a git worktree (fat mode only)'
+    description: 'When no baseline is found (the merge-base''s, or an ancestor''s within `baseline-ancestor-depth`), recompute coverage at the merge-base in a git worktree (fat mode only)'
     required: false
     default: 'true'
   worktree-system-deps:
@@ -614,6 +614,9 @@ runs:
         if_no_artifact_found: warn
 
     - name: Compute baseline from merge-base (fallback)
+      # Sets `recomputed` when it builds the baseline, so the comment does not call it an
+      # ancestor's: the lookup can have found one whose download left no file under this
+      # report's name (it expired in between, or the report was renamed since).
       # Runs when no baseline is in reach: none for the merge-base or for any of the
       # `baseline-ancestor-depth` ancestors tried (cold start, expired artifacts). Builds
       # coverage at the merge-base itself in a worktree so the comparison stays correct.
@@ -621,12 +624,13 @@ runs:
       # Uses only `test-args` — `setup-commands`/`extra-test-commands` are NOT
       # replayed here: gated suites/fixtures may not exist at an old merge-base,
       # and the normal path downloads a baseline that already includes them.
+      id: recompute
       if: github.event_name == 'pull_request' && inputs.run-coverage == 'true' && inputs.recompute-baseline == 'true'
       shell: bash
       run: |
         REPORT_BASENAME="$(basename "${{ inputs.report }}")"
         if [ -f "baseline/$REPORT_BASENAME" ]; then
-          echo "baseline already present for the merge-base; skipping recompute"
+          echo "a baseline was downloaded; skipping recompute"
           exit 0
         fi
         # Optional system deps for building historical commits (e.g. a merge-base
@@ -642,6 +646,7 @@ runs:
         # `omni-dev coverage diff` strips one prefix for both head and baseline.
         sed "s#$(cd ../base && pwd)/#$GITHUB_WORKSPACE/#g" \
           "../base/$REPORT_BASENAME" > "baseline/$REPORT_BASENAME"
+        echo "recomputed=true" >> "$GITHUB_OUTPUT"
 
     - name: Build coverage diff
       # Single comprehensive comment: total + delta vs main, per-file before/after,
@@ -660,6 +665,7 @@ runs:
         IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
         BASELINE_SHA: ${{ steps.baseline-lookup.outputs.sha }}
         BASELINE_DISTANCE: ${{ steps.baseline-lookup.outputs.distance }}
+        BASELINE_RECOMPUTED: ${{ steps.recompute.outputs.recomputed }}
       run: |
         REPORT_BASENAME="$(basename "${{ inputs.report }}")"
         args=(coverage diff
@@ -696,8 +702,11 @@ runs:
         omni-dev "${args[@]}" -o markdown > coverage.md
         # omni-dev still calls the comparison merge-base -> head and the deltas "vs main",
         # so when the baseline is an ancestor's (`baseline-ancestor-depth`) the comment
-        # says which one. The patch is unaffected: it is merge-base..HEAD either way.
-        if [ -f "baseline/$REPORT_BASENAME" ] && [ "${BASELINE_DISTANCE:-0}" -gt 0 ]; then
+        # says which one, unless the file is the merge-base's own recompute, which is what the
+        # lookup's distance does not describe. The patch is unaffected: it is merge-base..HEAD
+        # either way.
+        if [ -f "baseline/$REPORT_BASENAME" ] && [ "${BASELINE_DISTANCE:-0}" -gt 0 ] \
+          && [ "$BASELINE_RECOMPUTED" != true ]; then
           if [ "$BASELINE_DISTANCE" -eq 1 ]; then commits='1 commit'; else commits="$BASELINE_DISTANCE commits"; fi
           printf '\n_Baseline: the report published for [`%s`](%s/%s), %s before the merge-base, which has none. The deltas also include whatever those commits changed._\n' \
             "${BASELINE_SHA:0:7}" "$COMMIT_URL" "$BASELINE_SHA" "$commits" >> coverage.md
