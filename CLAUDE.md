@@ -604,6 +604,28 @@ The action is a composite action with two phases:
     fourth awk copy would read the wrong thing without saying so. `run: |`, `|-` and `|+` are
     all read; an inline `run:` (`Print omni-dev version` is one), a folded `>`, a body not at
     8 spaces, a step with no `run:` and a name that is missing or doubled are refused.
+  - **`step_field <step> <key>` and `step_map <step> <key>` (#74)** read a step's own key
+    written on one line (`id`, `if`, `uses`, `shell`, an inline `run`) and the entries of its
+    `env:` or `with:`, as written. They refuse what `step_run` refuses (an unset or unreadable
+    `ACTION`; a step that is missing, doubled or at another indent) and a key the step does not
+    have, `step_field` a key with no value on its line, `step_map` a key that has one, an empty
+    map, an entry at another indent and an entry whose value goes on to a deeper line. That
+    last one is on purpose: the copy this replaced stopped at such a line without a word, so a
+    later entry looked absent. `action.yml` has one (the block `path:` of an upload step), so a
+    test that needs that map extends the reader first. `step_map` holds its entries until it
+    has read the whole map, so a refusal prints nothing. Where a call records one case per
+    call, check the status where it is read (`if ! script="$(step_run "$name")"; then bad ...`);
+    at the top of a file, `|| exit 1`. `map_value` (one entry out of what `step_map` printed) is
+    the one reader left local, in `baseline-steps.test.sh`.
+  - **A test is moved onto the libraries one file at a time, and its output must not change.**
+    #74 did the last six; each printed exactly what it printed before (temp paths aside) and
+    kept its case count, which is the check to repeat for the next. Two conventions came out of
+    it. A helper that reads the last run's output (`has <name> <fragment>`) is named `out_has`,
+    over the library's `has <name> <text> <fragment>`, so a name never means two things in a
+    file (`check-run-expressions.test.sh`). And `baseline-lib.test.sh` needs `assert-lib.sh`'s
+    `check` and `assert`, which is allowed because only the child shells that run the snippets
+    under test source it: the shell that records the cases has `test-lib.sh`, which has no
+    `check`, and the two are never in one shell.
   - A change to that layout is an edit to `step-lib.sh` and `step-lib.test.sh`, not to each
     test. A comment at 4 spaces or less in the middle of a step would end it early; there is
     none today.
