@@ -35,8 +35,15 @@ name: PR paths
 #     for the pull request's merge-base, which the first pull request after this
 #     workflow lands cannot have, and a recent merge-base may still be running. The
 #     lookup is asserted against what the Actions API says should be found.
-#   - Anything that changes the baseline lookup (#5: nearest-ancestor fallback)
-#     must change the expectations marked `#5` below, and nothing else.
+#   - The lookup falls back to the nearest first-parent ancestor of the merge-base that
+#     has a baseline (`baseline-ancestor-depth`, 10 by default), so a hit may be a
+#     baseline for an older commit and a miss means none within reach. What it should
+#     find is asked of tests/expected-baseline.sh, which reads the Actions API, and
+#     compared with the baseline's own `TN:` line, which names the commit it was
+#     published for. P7 and P8 make the walk deterministic: their base is a commit no
+#     run was ever for, so the exact lookup (P8, depth 0) must miss whatever main holds,
+#     and P7 can only be answered by an ancestor. The recompute job turns the walk off,
+#     because its synthetic base has no baseline by design.
 
 on:
   push:
@@ -172,6 +179,18 @@ jobs:
       - name: Write fixtures
         run: bash tests/write-pr-fixtures.sh head
 
+      # A commit that no run was ever for: the merge-base's child, with the merge-base's own
+      # tree, so a diff from it is the merge-base's and omni-dev reads it as any base. It is
+      # made with commit-tree, so it is on no branch and nothing else can see it. P7 and P8
+      # take it as `base-ref`.
+      - name: Make a commit that no baseline was published for
+        id: nobase
+        run: |
+          mb="$(git merge-base origin/main HEAD)"
+          sha="$(git -c user.name=integration-test -c user.email=integration-test@invalid \
+            commit-tree "$mb^{tree}" -p "$mb" -m 'test: a commit no baseline was published for')"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       # A comment left by an earlier run (a push, or a re-run) must not be able to
       # stand in for one this run is meant to post.
       - name: Clear the comment from an earlier run
@@ -275,6 +294,78 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/move-outputs.sh p4
 
+      # The walk. P7's base is a commit no run was ever for (its parent is the merge-base),
+      # so a baseline can only come from an ancestor. Whether one exists depends on what main
+      # has published, so the lookup is held to the Actions API, as P1's is.
+      - name: 'P7. A base commit with no baseline of its own'
+        id: p7
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p7/coverage-head.lcov
+          base-ref: ${{ steps.nobase.outputs.sha }}
+          fail-under-lines: 40
+          fail-under-patch: 70
+          all-files: true
+          comment: false
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-workflow: pr-paths.yml
+
+      - name: Move P7 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p7
+
+      # Control for P7: only the depth differs, and with it off the commit's own baseline is
+      # the only one that counts. It has none, so this misses on every run, whatever main holds.
+      - name: 'P8. The same, without the walk'
+        id: p8
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p8/coverage-head.lcov
+          base-ref: ${{ steps.nobase.outputs.sha }}
+          baseline-ancestor-depth: 0
+          fail-under-lines: 40
+          fail-under-patch: 70
+          all-files: true
+          comment: false
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-workflow: pr-paths.yml
+
+      - name: Move P8 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p8
+
+      # A workflow the API does not know, as one whose file is not on main yet is. That used
+      # to fail the step with `Not Found`; it must be a miss with a warning. The permissions
+      # are the README's, so this also shows the miss needs nothing more. P1 is the control:
+      # only the workflow's name differs.
+      - name: 'P9. A baseline workflow that does not exist'
+        id: p9
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p9/coverage-head.lcov
+          fail-under-lines: 40
+          fail-under-patch: 70
+          all-files: true
+          comment: false
+          upload-artifacts: false
+          publish-baseline: true
+          baseline-workflow: no-such-workflow.yml
+
+      - name: Move P9 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p9
+
       # Everything on: the sharded report, both gates, the comment, the baseline
       # lookup, and `publish-baseline: true`, which on a pull request must publish
       # nothing.
@@ -368,6 +459,10 @@ jobs:
           P4: ${{ steps.p4.outcome }}
           P5: ${{ steps.p5.outcome }}
           P6: ${{ steps.p6.outcome }}
+          P7: ${{ steps.p7.outcome }}
+          P8: ${{ steps.p8.outcome }}
+          P9: ${{ steps.p9.outcome }}
+          NOBASE_SHA: ${{ steps.nobase.outputs.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PATCH_PERCENT: ${{ steps.p1.outputs.patch-percent }}
           P5_PATCH_PERCENT: ${{ steps.p5.outputs.patch-percent }}
@@ -421,6 +516,10 @@ jobs:
               }' "$1" "$2"
           }
 
+          # distance_of, tn_of and check_note, which the baseline checks below use. They need
+          # `status`, `check` and `assert` from above.
+          source tests/baseline-lib.sh
+
           MB="$(git merge-base origin/main HEAD)"
 
           check "P1. everything on" success "$P1"
@@ -429,10 +528,15 @@ jobs:
           check "P4. comment off" success "$P4"
           check "P5. the patch gate with the second file filtered out" success "$P5"
           check "P6. the same without the filter" failure "$P6"
+          check "P7. a base commit with no baseline of its own" success "$P7"
+          check "P8. the same, without the walk" success "$P8"
+          check "P9. a baseline workflow that does not exist" success "$P9"
 
           # The patch is the 10 lines of patch-fixture.txt, 8 of them covered by
-          # the union of the shards. Each shard alone is under the gate P1 passes.
-          for s in p1 p2 p3 p4; do
+          # the union of the shards. Each shard alone is under the gate P1 passes. P7 and P8
+          # diff from a commit with the merge-base's tree, and P9 only looks elsewhere. (P5 and
+          # P6 add a second file to the patch, and are asserted on their own below.)
+          for s in p1 p2 p3 p4 p7 p8 p9; do
             assert "${s^^}: patch coverage is the shards' union (80%)" \
               jq -e '.patch_coverage.percent == 80 and .patch_coverage.total == 10' "out/$s/coverage.json"
           done
@@ -480,6 +584,43 @@ jobs:
             jq -e '.patch_coverage.percent == 40 and .patch_coverage.total == 20' out/p6/coverage.json
           assert "P6: the comment names the file P5 filtered out" grep -qF patch-extra.txt out/p6/coverage.md
 
+          # P8 is P7 with the walk off, from a commit no run was ever for: no baseline of its
+          # own, so a miss on every run, whatever main has published.
+          assert "P8: no baseline was found" test ! -e out/p8/baseline/coverage-head.lcov
+          assert "P8: without a baseline there is no project_delta" \
+            jq -e '.project_delta == null' out/p8/coverage.json
+          assert "P8: the comment says there is no baseline" grep -q 'No baseline available' out/p8/coverage.md
+          assert "P8: and makes no claim about one" \
+            test "$(grep -c 'before the merge-base, which has none' out/p8/coverage.md)" = 0
+
+          # P9 names a workflow the API does not know: a miss, on every run.
+          assert "P9: no baseline was found" test ! -e out/p9/baseline/coverage-head.lcov
+          assert "P9: without a baseline there is no project_delta" \
+            jq -e '.project_delta == null' out/p9/coverage.json
+          assert "P9: the comment says there is no baseline" grep -q 'No baseline available' out/p9/coverage.md
+
+          # P7: whatever it found came from the walk. Hit or miss is checked against the
+          # Actions API in the next step; here a hit must be internally sound.
+          base=out/p7/baseline/coverage-head.lcov
+          if [ -s "$base" ]; then
+            echo "note - P7 found a baseline: the walk found an ancestor's"
+            tn="$(tn_of "$base")"
+            check "P7: the baseline names one commit" 1 "$(printf '%s\n' "$tn" | grep -c .)"
+            assert "P7: that commit is on the first-parent line before the base" \
+              test -n "$(distance_of "$NOBASE_SHA" "$tn")"
+            assert "P7: the walk went back at least one commit: the base itself has no baseline" \
+              test "$(distance_of "$NOBASE_SHA" "$tn")" -ge 1
+            check_note P7 "$NOBASE_SHA" "$tn" out/p7/coverage.md
+            assert "P7: with a baseline, the comment has deltas" \
+              jq -e '.project_delta.total_after | type == "number"' out/p7/coverage.json
+            assert "P7: and differs from the one without" differ out/p7/coverage.md out/p8/coverage.md
+          else
+            echo "note - P7 found no baseline: nothing within reach"
+            assert "P7: without a baseline there is no project_delta" \
+              jq -e '.project_delta == null' out/p7/coverage.json
+            assert "P7: the comment says there is no baseline" grep -q 'No baseline available' out/p7/coverage.md
+          fi
+
           # P1's baseline, if the lookup found one. Hit or miss is checked against
           # the Actions API in the next step; here a hit must be internally sound.
           base=out/p1/baseline/coverage-head.lcov
@@ -487,8 +628,11 @@ jobs:
           # shellcheck disable=SC2016 # `$v` and `$l` are jq's, not the shell's
           if [ -s "$base" ]; then
             echo "note - P1 found a baseline: the hit path ran"
-            # #5: with an ancestor fallback this becomes "an ancestor of the merge-base".
-            assert "P1: the baseline was published for the merge-base" grep -qx "TN:$MB" "$base"
+            # The merge-base's own, or the nearest ancestor's that has one (the next step holds
+            # the choice to the Actions API). The comment says which.
+            tn="$(tn_of "$base")"
+            check "P1: the baseline names one commit" 1 "$(printf '%s\n' "$tn" | grep -c .)"
+            check_note P1 "$MB" "$tn" out/comment-p1.md
             before="$(bash tests/lcov-percent.sh "$base")"
             after="$(bash tests/lcov-percent.sh "$head")"
             assert "P1: total_before is the baseline's own coverage" \
@@ -519,6 +663,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
+          NOBASE_SHA: ${{ steps.nobase.outputs.sha }}
         run: |
           status=0
           check() { # <label> <expected> <actual>
@@ -535,40 +680,21 @@ jobs:
             --jq '[.artifacts[] | select(.name == "coverage-baseline")] | length')"
           check "a pull-request run publishes no baseline" 0 "$published"
 
-          # What the lookup should have found: the newest successful run of this
-          # workflow for the merge-base, and a live baseline artifact in that run
-          # (dawidd6/action-download-artifact looks in that one run only). There is
-          # deliberately no `event` or `branch` filter, because the action passes
-          # none: a filter here would make this disagree with the lookup in exactly
-          # the case where a run without the artifact shadows the one with it (#5).
+          # What the lookup should have found, from tests/expected-baseline.sh: the nearest
+          # of the start commit and its first-parent ancestors (within `baseline-ancestor-depth`,
+          # the action's default here) with a successful run of this workflow and a live
+          # baseline artifact. Any such run counts, not the newest, because a run without the
+          # artifact must not hide one with it. There is deliberately no `event` or `branch`
+          # filter, because the action passes none. `either` is a nearer run still in progress,
+          # which may publish between that call and the lookup. `held_to_the_api` is
+          # tests/baseline-lib.sh's.
+          source tests/baseline-lib.sh
+
           MB="$(git merge-base origin/main HEAD)"
-          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/pr-paths.yml/runs?head_sha=$MB&per_page=100" \
-            --jq '[.workflow_runs[] | {id, status, conclusion}]')"
-          newest_ok="$(jq -r '[.[] | select(.conclusion == "success")][0].id // empty' <<<"$runs")"
-          expected=miss
-          if [ -n "$newest_ok" ]; then
-            live="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$newest_ok/artifacts" \
-              --jq '[.artifacts[] | select(.name == "coverage-baseline" and (.expired | not))] | length')"
-            if [ "$live" -gt 0 ]; then expected=hit; fi
-          fi
-          # A run for the merge-base that has not finished may publish between the
-          # API call and the lookup, in either order. #5: with an ancestor
-          # fallback a `miss` here means "no baseline within reach", not "none".
-          if [ "$expected" = miss ] && [ "$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")" -gt 0 ]; then
-            expected=either
-          fi
-
-          observed=miss
-          if [ -s out/p1/baseline/coverage-head.lcov ]; then observed=hit; fi
-
-          echo "::notice::baseline lookup for merge-base ${MB:0:7}: expected $expected, observed $observed"
-          case "$expected:$observed" in
-            hit:hit | miss:miss | either:*) echo "ok   - the lookup found what the API says it should" ;;
-            *)
-              echo "::error::the lookup found a baseline: $observed; the API says: $expected"
-              status=1
-              ;;
-          esac
+          held_to_the_api "P1" pr-paths.yml coverage-baseline "$MB" out/p1/baseline/coverage-head.lcov
+          # P7's base has no baseline of its own, so a hit is at least one commit back, and a
+          # miss means none within reach.
+          held_to_the_api "P7" pr-paths.yml coverage-baseline "$NOBASE_SHA" out/p7/baseline/coverage-head.lcov
           exit "$status"
 
   recompute:
@@ -604,13 +730,16 @@ jobs:
             commit -q -am 'test: change the delta crate (head)'
 
       # No baseline artifact exists for the synthetic base, so the download warns
-      # and the worktree recompute has to produce the baseline.
+      # and the worktree recompute has to produce the baseline. The walk is off: the
+      # synthetic base has this pull request's commits and then main's behind it, so with
+      # it on the lookup could reach a baseline main published and never recompute.
       - name: 'R1. Baseline recomputed at the merge-base'
         id: r1
         uses: ./
         continue-on-error: true
         with:
           base-ref: ${{ steps.history.outputs.base }}
+          baseline-ancestor-depth: 0
           report: out/r1/coverage-head.lcov
           fail-under-lines: ''
           comment: false
@@ -629,6 +758,7 @@ jobs:
         continue-on-error: true
         with:
           base-ref: ${{ steps.history.outputs.base }}
+          baseline-ancestor-depth: 0
           report: out/r2/coverage-head.lcov
           fail-under-lines: ''
           recompute-baseline: false

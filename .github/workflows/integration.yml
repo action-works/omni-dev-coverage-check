@@ -30,6 +30,12 @@ name: Integration
 #     to fixed names, so each scenario's outputs are moved to out/<id>/ before the
 #     next one runs. Otherwise a later scenario's checks could pass on an earlier
 #     one's leftovers.
+#   - Every scenario passes `baseline-ancestor-depth: 0`. None is about the baseline, and
+#     this workflow publishes none, so with the walk on each lookup on a pull request would
+#     try the merge-base and ten ancestors and find nothing: about 150 requests a push
+#     against the 1,000 an hour a repository's token has. The walk and the baseline lookup
+#     are tested in pr-paths.yml and e2e-sharded.yml, and scripts/find-baseline.sh by
+#     tests/find-baseline.test.sh.
 #   - A message is read from the job's `##[error]` lines and nowhere else in the
 #     log. The log also echoes every step's script, which holds the same message
 #     text whether or not the step ran it, so a grep of the whole log would pass
@@ -104,6 +110,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: '2. Sharded, gate above the 75% union'
         id: s2
@@ -119,6 +126,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: '3. Single report with the gate'
         id: s3
@@ -133,6 +141,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: '4. A shard pattern that matches nothing'
         id: s4
@@ -148,6 +157,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Assert every outcome
         env:
@@ -233,6 +243,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       # The escape hatch the guard's own message recommends.
       - name: '5b. Same omni-dev, line gate disabled'
@@ -249,6 +260,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Assert every outcome
         env:
@@ -324,6 +336,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Assert the outcome
         env:
@@ -419,6 +432,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Assert the outcome
         env:
@@ -746,6 +760,7 @@ jobs:
           publish-baseline: false
           recompute-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Move F1 outputs aside
         if: always()
@@ -768,6 +783,7 @@ jobs:
           publish-baseline: false
           recompute-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Move F2 outputs aside
         if: always()
@@ -790,6 +806,7 @@ jobs:
           publish-baseline: false
           recompute-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Move F3 outputs aside
         if: always()
@@ -810,6 +827,7 @@ jobs:
           publish-baseline: false
           recompute-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Move F4 outputs aside
         if: always()
@@ -976,6 +994,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: 'D2. Pass the deprecated flag to omni-dev directly'
         run: |

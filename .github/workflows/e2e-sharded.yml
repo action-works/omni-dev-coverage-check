@@ -38,8 +38,13 @@ name: E2E sharded
 #     cannot have, and a recent merge-base may still be running. The lookup is
 #     asserted against what the Actions API says should be found, so both the hit
 #     and the miss path are tested whichever one a run takes.
-#   - Anything that changes the baseline lookup (#5: nearest-ancestor fallback)
-#     must change the expectations marked `#5` below, and nothing else.
+#   - The lookup falls back to the nearest first-parent ancestor of the merge-base that
+#     has a baseline (`baseline-ancestor-depth`, 10 by default), so a hit may be a
+#     baseline for an older commit and a miss means none within reach. What it should
+#     find is asked of tests/expected-baseline.sh, which reads the Actions API, and
+#     compared with the baseline's own `TN:` line, which names the commit it was
+#     published for. pr-paths.yml's P5 and P6 make the walk deterministic; this
+#     workflow only holds E1's lookup to the API.
 #   - E2 and E1 share a comment header and render the same comment on a miss, so
 #     E2's is read back and deleted before E1 runs. Otherwise an E1 that stopped
 #     posting would pass on E2's comment. E3-E5 post nothing.
@@ -415,6 +420,7 @@ jobs:
         run: |
           status=0
           source tests/assert-lib.sh
+          source tests/baseline-lib.sh
           # Both are called through `assert`. Command substitution ignores trailing
           # newlines, which the comment may or may not keep.
           # shellcheck disable=SC2329
@@ -524,8 +530,11 @@ jobs:
           # shellcheck disable=SC2016 # `$v` is jq's, not the shell's
           if [ -s "$base" ]; then
             echo "note - E1 found a baseline: the hit path ran"
-            # #5: with an ancestor fallback this becomes "an ancestor of the merge-base".
-            assert "E1: the baseline was published for the merge-base" grep -qx "TN:$MB" "$base"
+            # The merge-base's own, or the nearest ancestor's that has one (the next step
+            # holds the choice to the Actions API). The comment says which.
+            tn="$(tn_of "$base")"
+            check "E1: the baseline names one commit" 1 "$(printf '%s\n' "$tn" | grep -c .)"
+            check_note E1 "$MB" "$tn" out/comment-e1.md
             check "E1: the baseline is the combined report of both shards" 2 "$(grep -c '^SF:' "$base")"
             before="$(bash tests/lcov-percent.sh "$base")"
             assert "E1: total_before is the baseline's own coverage" \
@@ -567,38 +576,14 @@ jobs:
             --jq '[.artifacts[] | select(.name == "coverage-baseline-e2e-sharded")] | length')"
           check "a pull-request run publishes no baseline" 0 "$published"
 
-          # What the lookup should have found: the newest successful run of this
-          # workflow for the merge-base, and a live baseline artifact in that run
-          # (dawidd6/action-download-artifact looks in that one run only). There is
-          # deliberately no `event` or `branch` filter, because the action passes
-          # none: a filter here would make this disagree with the lookup in exactly
-          # the case where a run without the artifact shadows the one with it (#5).
+          # What the lookup should have found, from tests/expected-baseline.sh: the nearest
+          # of the merge-base and its first-parent ancestors (within `baseline-ancestor-depth`,
+          # the action's default here) with a successful run of this workflow and a live
+          # baseline artifact. Any such run counts, not the newest, because a run without the
+          # artifact must not hide one with it. There is deliberately no `event` or `branch`
+          # filter, because the action passes none. `either` is a nearer run still in
+          # progress, which may publish between that call and the lookup.
+          source tests/baseline-lib.sh
           MB="$(git merge-base origin/main HEAD)"
-          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/e2e-sharded.yml/runs?head_sha=$MB&per_page=100" \
-            --jq '[.workflow_runs[] | {id, status, conclusion}]')"
-          newest_ok="$(jq -r '[.[] | select(.conclusion == "success")][0].id // empty' <<<"$runs")"
-          expected=miss
-          if [ -n "$newest_ok" ]; then
-            live="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$newest_ok/artifacts" \
-              --jq '[.artifacts[] | select(.name == "coverage-baseline-e2e-sharded" and (.expired | not))] | length')"
-            if [ "$live" -gt 0 ]; then expected=hit; fi
-          fi
-          # A run for the merge-base that has not finished may publish between the
-          # API call and the lookup, in either order. #5: with an ancestor
-          # fallback a `miss` here means "no baseline within reach", not "none".
-          if [ "$expected" = miss ] && [ "$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")" -gt 0 ]; then
-            expected=either
-          fi
-
-          observed=miss
-          if [ -s out/e1/baseline/coverage-head.lcov ]; then observed=hit; fi
-
-          echo "::notice::baseline lookup for merge-base ${MB:0:7}: expected $expected, observed $observed"
-          case "$expected:$observed" in
-            hit:hit | miss:miss | either:*) echo "ok   - the lookup found what the API says it should" ;;
-            *)
-              echo "::error::the lookup found a baseline: $observed; the API says: $expected"
-              status=1
-              ;;
-          esac
+          held_to_the_api "E1" e2e-sharded.yml coverage-baseline-e2e-sharded "$MB" out/e1/baseline/coverage-head.lcov
           exit "$status"
