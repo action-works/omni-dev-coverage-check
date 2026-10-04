@@ -160,24 +160,6 @@ run_resolve() {
   SLEEPS="${SLEEPS% }"
 }
 
-# arg_present <name> <arg>: some curl call received exactly that argument.
-arg_present() {
-  if grep -qxF -- "$2" <<<"$CURLS"; then ok "$1"; else bad "$1" "no argument '$2' in: $CURLS"; fi
-}
-
-# arg_after <name> <flag> <value>: a curl call received <flag> with <value> right after.
-arg_after() {
-  local got
-  got="$(grep -A1 -xF -- "$2" <<<"$CURLS" | sed -n 2p)"
-  if [ "$got" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2 $3', got '$2 $got' in: $CURLS"; fi
-}
-
-# call_args <n>: the arguments of the nth curl call, one per line. The three API
-# attempts are calls 1 to 3 and the redirect, when they all fail, is call 4.
-call_args() {
-  awk -v n="$1" '$0 == "call " n { on = 1; next } /^call / { on = 0 } on' <<<"$CURLS"
-}
-
 # call_present <name> <call> <arg>: the call received exactly that argument.
 call_present() {
   if grep -qxF -- "$3" <<<"$2"; then ok "$1"; else bad "$1" "no argument '$3' in: $2"; fi
@@ -188,6 +170,18 @@ call_after() {
   local got
   got="$(grep -A1 -xF -- "$3" <<<"$2" | sed -n 2p)"
   if [ "$got" = "$4" ]; then ok "$1"; else bad "$1" "expected '$3 $4', got '$3 $got' in: $2"; fi
+}
+
+# arg_present <name> <arg>: some curl call received exactly that argument.
+arg_present() { call_present "$1" "$CURLS" "$2"; }
+
+# arg_after <name> <flag> <value>: a curl call received <flag> with <value> right after.
+arg_after() { call_after "$1" "$CURLS" "$2" "$3"; }
+
+# call_args <n>: the arguments of the nth curl call, one per line. The three API
+# attempts are calls 1 to 3 and the redirect, when they all fail, is call 4.
+call_args() {
+  awk -v n="$1" '$0 == "call " n { on = 1; next } /^call / { on = 0 } on' <<<"$CURLS"
 }
 
 # --- a pinned version never asks GitHub --------------------------------------
@@ -296,7 +290,7 @@ eq "redirect: the version comes from the tag in the Location" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
 has "redirect: attempt 3 is still warned about" "$LOG" "::warning::Attempt 3/3:"
 has "redirect: a warning says the redirect answered and why the API did not" "$LOG" \
-  "::warning::The GitHub API did not answer after 3 attempts (API: API rate limit exceeded for 10.0.0.1."
+  "::warning::The GitHub API gave no release after 3 attempts (API: API rate limit exceeded for 10.0.0.1."
 has "redirect: the warning names the release it resolved" "$LOG" \
   "was resolved from the github.com releases/latest redirect instead: v0.46.1."
 has "redirect: the warning offers the ways out, since the job passed on a failing API" "$LOG" \
@@ -325,6 +319,9 @@ release-tag=v10.20.300" "$OUT"
 run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v0.46.1-rc.1"
 eq "redirect: a pre-release suffix is part of the tag" "version=0.46.1-rc.1
 release-tag=v0.46.1-rc.1" "$OUT"
+run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v1.0.0-rc-1.x-2"
+eq "redirect: a pre-release identifier may hold a hyphen, as in semver" "version=1.0.0-rc-1.x-2
+release-tag=v1.0.0-rc-1.x-2" "$OUT"
 
 run_resolve latest "" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v0.46.1"
 eq "redirect, no token: the step succeeds" 0 "$STATUS"
@@ -377,13 +374,23 @@ expect_location "redirect fails: a tag with build metadata" "$TAG_URL/v0.46.1+bu
 expect_location "redirect fails: a path below the tag" "$TAG_URL/v0.46.1/extra"
 expect_location "redirect fails: a query after the tag" "$TAG_URL/v0.46.1?x=1"
 expect_location "redirect fails: a fragment after the tag" "$TAG_URL/v0.46.1#x"
+# A valid tag URL inside a longer string is not the Location itself.
+expect_location "redirect fails: a tag URL in the query of another URL" "https://example.com/?u=$TAG_URL/v0.46.1"
+expect_location "redirect fails: a tag URL after leading text" "x$TAG_URL/v0.46.1"
+# The version's dots are dots, and the suffix is a semver pre-release and nothing else.
+expect_location "redirect fails: a letter where a dot belongs" "$TAG_URL/v1x2y3"
+expect_location "redirect fails: a suffix that is a command" "$TAG_URL/v0.46.1-x;id"
+expect_location "redirect fails: a suffix of one dot" "$TAG_URL/v0.46.1-."
+expect_location "redirect fails: a suffix with an empty identifier" "$TAG_URL/v0.46.1-rc..1"
+expect_location "redirect fails: a suffix that ends in a dot" "$TAG_URL/v0.46.1-rc."
+expect_location "redirect fails: a suffix with an escaped newline" "$TAG_URL/v0.46.1-%0A"
 expect_location "redirect fails: a newline smuggled in, escaped" "$TAG_URL/v0.46.1%0Aversion=9.9.9"
 expect_location "redirect fails: a command after the tag" "$TAG_URL/v0.46.1;id"
 
 # The one error names both failures and both ways out.
 run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "429 "
-has "both fail: the error says the API did not answer, after how many attempts" "$LOG" \
-  "::error::Could not determine latest omni-dev version. The GitHub API did not answer after 3 attempts"
+has "both fail: the error says the API gave no release, after how many attempts" "$LOG" \
+  "::error::Could not determine latest omni-dev version. The GitHub API gave no release after 3 attempts"
 has "both fail: the error carries the API's reason" "$LOG" \
   "(API: API rate limit exceeded for 10.0.0.1."
 has "both fail: the error says what the redirect gave" "$LOG" \
