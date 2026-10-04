@@ -926,6 +926,13 @@ The action is a composite action with two phases:
       note say so; do not let a later edit read it as a check. Rejected: the expected names. A
       matrix's display names come from its entries, and a list of them kept by hand is what the
       step reading "every job" was written to avoid.
+    - `RUN_JOBS_MIN` unset is no minimum, and SET BUT EMPTY is refused (exit 2): the step's
+      count comes from `jq 'length + 1' <<<"$NEEDS"`, which prints nothing if the `NEEDS:` env
+      line is ever deleted, and reading that as "no bound" would drop the bound without a word
+      (found in review). Any disagreement with `total_count` is retried, longer or shorter.
+      The wiring cases pin the step's TEXT; none executes the step, so the nesting around
+      `names` and the red-on-failure branch were checked by running the extracted step against
+      stubs (in review), not by a test.
     - `job-log.sh` keeps its own listing, on purpose: its retry also covers a list with no job of
       the NAME, in the same loop as the failed call and the log read, and the tests that pin its
       messages and mixed sequences (`job-errors.test.sh`) would all have to move. Moving it onto

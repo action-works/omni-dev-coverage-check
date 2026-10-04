@@ -36,6 +36,7 @@ fresh() {
 # FAKE_SEQ="fail html nojobs empty short ok ..." scripts read 1, 2, 3 ... one by one (reads
 # past the end are ok):
 #   fail    502, with the JSON body gh prints
+#   fail2   a failure whose message is two lines
 #   html    200 with an HTML page
 #   nojobs  200 with JSON that has no `jobs` (a rate-limit answer)
 #   empty   200 with a list that has no jobs
@@ -55,6 +56,10 @@ case "${seq[$((n - 1))]:-ok}" in
   fail)
     echo "gh: Server Error (HTTP 502)" >&2
     echo '{"message":"Server Error"}'
+    exit 1
+    ;;
+  fail2)
+    printf 'gh: first line of the failure\nsecond line of the failure\n' >&2
     exit 1
     ;;
   html) echo "<html><body>502 Bad Gateway</body></html>" ;;
@@ -199,14 +204,14 @@ eq "  after every attempt" 3 "$READS"
 eq "  printing nothing on stdout" "" "$OUT"
 has "  with the error naming the run and the attempts" "$ERR" "::error::could not list the jobs of run 42 after 3 attempts: the list holds 3 jobs and the run has at least 4"
 
-for none in 0 ""; do
-  d=$(fresh)
-  page "$d" page-1.json 3 1:Alpha '2:Beta (x)' 3:Gamma
-  run_jobs "$d" "RUN_JOBS_MIN=$none"
-  eq "a minimum of '$none': no bound" 0 "$STATUS"
-done
+d=$(fresh)
+page "$d" page-1.json 3 1:Alpha '2:Beta (x)' 3:Gamma
+run_jobs "$d" RUN_JOBS_MIN=0
+eq "a minimum of 0: no bound" 0 "$STATUS"
+run_jobs "$d"
+eq "no minimum set: no bound" 0 "$STATUS"
 
-for bad in x -1 1.5 " 3" 3x; do
+for bad in x -1 1.5 " 3" 3x ""; do
   d=$(fresh)
   page "$d" page-1.json 3 1:Alpha '2:Beta (x)' 3:Gamma
   run_jobs "$d" "RUN_JOBS_MIN=$bad"
@@ -244,6 +249,15 @@ eq "an empty list and then a 502: exits 1" 1 "$STATUS"
 has "  the error carries the last look's reason" "$ERR" "after 2 attempts: gh: Server Error (HTTP 502)"
 has "  and the first look's is in the log above it" "$ERR" "(attempt 1 of 2): the list holds no job"
 
+# More jobs than the API counts is as wrong as fewer, and is looked at again.
+d=$(fresh)
+page "$d" page-1.json 3 1:Alpha '2:Beta (x)' 3:Gamma
+page "$d" short-1.json 2 1:Alpha '2:Beta (x)' 3:Gamma
+run_jobs "$d" "FAKE_SEQ=short ok" JOB_LOG_ATTEMPTS=3
+eq "a list longer than the API's count, then a good one: exits 0 on the second look" 0 "$STATUS"
+eq "  asked twice" 2 "$READS"
+has "  and says the numbers disagree" "$ERR" "the list holds 3 jobs and the API counts 2"
+
 d=$(fresh)
 page "$d" short-1.json 5 1:Alpha
 run_jobs "$d" "FAKE_SEQ=short short" JOB_LOG_ATTEMPTS=2
@@ -254,6 +268,13 @@ d=$(fresh)
 run_jobs "$d" "FAKE_SEQ=html html" JOB_LOG_ATTEMPTS=2
 eq "an HTML body that stays one: exits 1" 1 "$STATUS"
 eq "  printing nothing on stdout" "" "$OUT"
+
+# A failure whose message has two lines is one line in the annotation, and in the log.
+d=$(fresh)
+run_jobs "$d" "FAKE_SEQ=fail2 fail2" JOB_LOG_ATTEMPTS=2
+eq "a two-line failure: exits 1" 1 "$STATUS"
+has "  the error is one line" "$ERR" "::error::could not list the jobs of run 42 after 2 attempts: gh: first line of the failure second line of the failure"
+eq "  and so is each look's line" 2 "$(grep -c 'could not be listed (attempt' <<<"$ERR")"
 
 # One attempt: it asks once and does not wait.
 d=$(fresh)

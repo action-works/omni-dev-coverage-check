@@ -5,7 +5,10 @@
 # Usage: run-jobs.sh
 # Environment: GH_TOKEN (with `actions: read`), GITHUB_REPOSITORY, GITHUB_RUN_ID
 #   RUN_JOBS_MIN      optional: the fewest jobs the run is known to have. A shorter list is
-#                     looked at again, as one that is short in any other way is (default 0)
+#                     looked at again, as one that is short in any other way is. Unset means
+#                     no minimum; SET BUT EMPTY is refused, since an empty value is how a
+#                     caller whose count failed to compute arrives, and reading it as "no
+#                     bound" would drop the bound without a word (default: unset)
 #   JOB_LOG_ATTEMPTS  how many times to try (default 6); the same variable as job-log.sh
 #   JOB_LOG_DELAY     seconds between tries (default 10)
 #
@@ -22,9 +25,10 @@
 #   - a failed call (a 502, a missing permission);
 #   - a body that is not JSON, or JSON with no `jobs` (a rate-limit answer is one);
 #   - no job at all (the job that is reading is itself in the run);
-#   - fewer jobs than the API says it has: the answer carries `total_count`, and a page that
-#     holds fewer than that is cut short. Only the first page's count is read, and a
-#     response without one is not held to it;
+#   - a number of jobs that is not the API's own: the answer carries `total_count`, and a
+#     list that holds fewer than that is cut short (one that holds more is wrong in some other
+#     way, and is looked at again too). Only the first page's count is read, and a response
+#     without one is not held to it;
 #   - fewer jobs than RUN_JOBS_MIN, the one thing a caller can know without the list: a job
 #     that `needs` N others runs after them, so the run has at least N + 1 jobs with itself.
 #
@@ -45,7 +49,7 @@ set -euo pipefail
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}" "${GITHUB_RUN_ID:?GITHUB_RUN_ID is not set}"
 attempts="${JOB_LOG_ATTEMPTS:-6}"
 delay="${JOB_LOG_DELAY:-10}"
-min="${RUN_JOBS_MIN:-0}"
+min="${RUN_JOBS_MIN-0}"
 case "$min" in
   '' | *[!0-9]*)
     echo "::error::RUN_JOBS_MIN must be a whole number, got '${min}'" >&2
@@ -86,6 +90,9 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
     problem="$(<"$err")"
   fi
   problem="${problem:-no message}"
+  # One line: a workflow command is read a line at a time, and only the first line of a
+  # multi-line ::error:: would be the annotation.
+  problem="${problem//$'\n'/ }"
   echo "the jobs of run ${GITHUB_RUN_ID} could not be listed (attempt ${attempt} of ${attempts}): ${problem}" >&2
   [ "$attempt" -eq "$attempts" ] || sleep "$delay"
 done
