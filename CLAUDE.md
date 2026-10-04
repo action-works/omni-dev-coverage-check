@@ -22,7 +22,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the three step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
@@ -206,9 +206,39 @@ The action is a composite action with two phases:
   them. A new release
   asset is one more case in the script and in `tests/omni-dev-asset.test.sh`.
   `arm64-release-without-asset` runs on a real ARM64 runner against `OLD_OMNI_DEV` (which
-  never gets an ARM64 asset), with 5b as its control. The ARM64 install that succeeds
-  needs a release carrying the asset (#20), and until then nothing checks the ARM64 asset's
-  name against a real release.
+  never gets an ARM64 asset), with 5b as its control. The install that succeeds is the
+  ARM64 legs of `thin-mode` (#20): they run the thin-mode scenarios on `ubuntu-24.04-arm`
+  against `0.46.0`, the first release that publishes `omni-dev-linux-arm64.tar.gz`
+  (rust-works/omni-dev#2148), and against `latest`, so the asset's name, the archive layout
+  `tar -xzf … -C /tmp; mv /tmp/omni-dev` relies on (`omni-dev` at the archive root, beside
+  `omni-dev-mcp`, `LICENSE` and `README.md`) and the binary itself are held to a real
+  release, when the install runs (see the cache rule below). Rules:
+  - The `0.46.0` leg is the floor for the ARM64 pre-built install and stays put, as
+    `0.45.0` does for the gate; unlike `OLD_OMNI_DEV` it does not wait on anything. The
+    matrix cannot read `env`, so the version is a literal and `failure-messages` repeats
+    it (with the leg's job name, `Thin mode (omni-dev 0.46.0, ARM64)`: the x86_64 legs
+    keep the names they had, so no lookup or required check moved).
+  - The legs run on `ubuntu-24.04-arm`, not an older ARM image: omni-dev's Linux binaries,
+    the x86_64 ones too, need glibc 2.39 (the highest `GLIBC_` version in each binary's
+    version-needs table, read from the 0.45.0 and 0.46.0 releases), Ubuntu 24.04's, so an
+    older runner image fails at `Print omni-dev version`. Every leg checks it ran on the
+    architecture it names (`runner.arch` and `uname -m`), as job 6 does, so a leg cannot
+    pass as ARM64 on another runner.
+  - **A cache hit skips the install.** `actions/cache` restores `~/.cargo/bin/omni-dev` and
+    "Download pre-built binary" is then skipped; the key holds the version, not the action's
+    code. That holds for every leg, x86_64 included, and none works around it: the asset's
+    name, the archive layout and the binary are exercised on the first run for a version (a
+    new release, or an entry that was evicted or never written for that ref), not on each
+    run. A `cache-prefix` made of a hash of `action.yml` and `scripts/*.sh` was tried on the
+    ARM64 legs and dropped: the gap is not ARM64's, so fixing it there alone leaves the
+    matrix inconsistent; the glob has to be kept in step with the install code by hand; the
+    weekly run would still hit an entry; and each miss reinstalls once per scenario, since
+    the entry is saved only in the post step. If it is wanted, do it for every leg that
+    exists to run the install, and decide the schedule and a run-id prefix then.
+  - The `latest` ARM64 leg shares the release-asset lag the other `latest` legs have, and
+    may see it for longer or shorter, as the asset can be uploaded by another job than the
+    x86_64 one: a red `latest` leg right after an omni-dev release, with "has no pre-built
+    omni-dev-linux-arm64.tar.gz", is a re-run, not a regression.
 - **Version resolution (#1, #40)**: `version: latest` costs one call to the GitHub API
   (`.../repos/rust-works/omni-dev/releases/latest`), and one more request if the API gives no
   release in any attempt (the redirect fallback, below); a pinned version makes none. Made
@@ -299,7 +329,8 @@ The action is a composite action with two phases:
     install and partition steps (about 10 lines per shard job).
   - A reusable workflow has fixed inputs, where real callers need per-architecture setup and
     steps around the action (succinctly's x86_64 leg reclaims disk first; its ARM64 leg builds
-    omni-dev from source, `use-prebuilt-binary: false`). A local `uses: ./` inside one resolves
+    omni-dev from source, `use-prebuilt-binary: false`, which it can drop on omni-dev 0.46.0
+    or later, #20). A local `uses: ./` inside one resolves
     against the caller's checkout, so it could not be tested against a pull request's own
     `action.yml`.
   - Nobody had adopted `shard-reports` when this was decided. rust-works/succinctly, the case

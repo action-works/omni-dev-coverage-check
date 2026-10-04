@@ -294,12 +294,14 @@ have; a runner without it fails first, saying so.)
 A pinned `version` makes no request, and may be written as a release tag is, with a leading `v`: `v0.45.0` and
 `0.45.0` give the same `version` (`0.45.0`) and `release-tag` (`v0.45.0`) outputs and share one cache entry.
 
-The pre-built binary is chosen from the runner's OS and architecture: Linux x64, macOS ARM64 and Windows today,
-and Linux ARM64 from the first omni-dev release that publishes `omni-dev-linux-arm64.tar.gz` (built since
-[rust-works/omni-dev#2116](https://github.com/rust-works/omni-dev/issues/2116)). Until then an ARM64 Linux runner
-on the default `use-prebuilt-binary: 'true'` fails at the install step. So does a platform with no pre-built binary
-(macOS x64, a 32-bit Linux runner). The message names the platform or the missing asset: set
-`use-prebuilt-binary: 'false'` to build omni-dev from source instead, or `version` to a release that has the asset.
+The pre-built binary is chosen from the runner's OS and architecture: Linux x64, Linux ARM64, macOS ARM64 and
+Windows. Linux ARM64 needs omni-dev 0.46.0 or later, the first release that publishes
+`omni-dev-linux-arm64.tar.gz` ([rust-works/omni-dev#2148](https://github.com/rust-works/omni-dev/pull/2148)): on an
+ARM64 Linux runner, `use-prebuilt-binary: 'true'` with `version` pinned to an earlier release fails at the install
+step. So does a platform with no pre-built binary (macOS x64, a 32-bit Linux runner). The message names the platform
+or the missing asset: set `use-prebuilt-binary: 'false'` to build omni-dev from source instead, or `version` to a
+release that has the asset. A workflow that set `use-prebuilt-binary: 'false'` only to get omni-dev onto an ARM64
+Linux runner can drop it, on `latest` or on `0.46.0` or later.
 
 ### Coverage run (fat mode)
 
