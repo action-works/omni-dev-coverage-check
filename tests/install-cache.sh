@@ -3,6 +3,7 @@
 #
 # Usage: install-cache.sh prefix
 #        install-cache.sh check <omni-dev-cache-hit>
+#        install-cache.sh check-fresh <omni-dev-cache-hit>
 #
 # `actions/cache` restores ~/.cargo/bin/omni-dev on a hit and the platform and download
 # steps are then skipped. The key holds the version and not the action's code, so a job
@@ -40,6 +41,17 @@
 #               run, so a hit means the prefix never reached the action; or any other value.
 #            2  no value: how a step that failed (and so exposed no output) arrives.
 #          Every failure prints an `::error::` line on stderr.
+#
+# check-fresh
+#          The same read of the output, for a job whose `cache-prefix` is unique to the run on
+#          EVERY event (`version-pin`: its key holds the run, the attempt and its pin), where a
+#          hit is always wrong. `check` cannot say that, because its rule depends on the event.
+#            0  `false`: the install ran in this job.
+#            1  `true`, which means the prefix never reached the action and nothing could have
+#               saved the entry; or any other value.
+#            2  no value, as for `check`.
+#          Every failure prints an `::error::` line on stderr. It needs no event, so it does not
+#          read GITHUB_EVENT_NAME.
 #
 # Why a hash of whole files and not of the install steps: the install code is action.yml
 # and what it runs from scripts/, and hashing less would be a list kept in step by hand.
@@ -91,8 +103,10 @@ prefix() {
   echo "install-${INSTALL_CODE_HASH:0:16}-${leg:+$leg-}"
 }
 
+# check <omni-dev-cache-hit> [fresh]: `fresh` says the job's prefix is unique to the run on every
+# event, so a hit is wrong whatever the event is.
 check() {
-  local hit="${1:-}"
+  local hit="${1:-}" fresh="${2:-}"
   if [ -z "$hit" ]; then
     # Matching an empty value against everything would pass whatever the action did.
     err "check needs the action's omni-dev-cache-hit output; got none. Did the scenario fail, so that it exposed no outputs?"
@@ -103,6 +117,10 @@ check() {
       echo "ok   - omni-dev was installed in this job: no cache entry for this prefix, so the download and the extraction ran"
       ;;
     true)
+      if [ "$fresh" = fresh ]; then
+        err "omni-dev was restored from the cache in a job whose cache-prefix is unique to the run on every event, so nothing could have saved it; the prefix did not reach the action and the install did not run"
+        return 1
+      fi
       if [ -z "${GITHUB_EVENT_NAME:-}" ]; then
         err "GITHUB_EVENT_NAME is not set, so whether a cache hit is allowed is unknown"
         return 1
@@ -129,8 +147,12 @@ case "${1:-}" in
     [ "$#" -le 2 ] || { echo "usage: install-cache.sh check <omni-dev-cache-hit>" >&2; exit 2; }
     check "${2:-}"
     ;;
+  check-fresh)
+    [ "$#" -le 2 ] || { echo "usage: install-cache.sh check-fresh <omni-dev-cache-hit>" >&2; exit 2; }
+    check "${2:-}" fresh
+    ;;
   *)
-    echo "usage: install-cache.sh prefix | check <omni-dev-cache-hit>" >&2
+    echo "usage: install-cache.sh prefix | check <omni-dev-cache-hit> | check-fresh <omni-dev-cache-hit>" >&2
     exit 2
     ;;
 esac

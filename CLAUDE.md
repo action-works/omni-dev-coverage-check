@@ -45,7 +45,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/baseline-lib.sh` - Checks of a baseline's `TN:` commit, the comment's ancestor note and the lookup against `expected-baseline.sh`, sourced by `pr-paths.yml` and `e2e-sharded.yml` (`tests/baseline-lib.test.sh` tests it, including against the real diff step; `test.yml` runs that)
 - `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
 - `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
-- `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run and attempt on `schedule` and `workflow_dispatch`, and the leg in both) and checks the action's `omni-dev-cache-hit` output (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
+- `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run and attempt on `schedule` and `workflow_dispatch`, and the leg in both) and checks the action's `omni-dev-cache-hit` output (`check` for the `thin-mode` legs, `check-fresh`, which refuses a hit on every event, for `version-pin`) (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
 - `tests/ci-gate.sh` - What the `ci-gate` job of `integration.yml` runs: fails unless every job it needs finished `success`, from `toJSON(needs)` in `$NEEDS`
 - `tests/merge-queue.test.sh` - Tests `ci-gate.sh`, and reads the workflows to check what the merge queue relies on: `ci-gate` needs every job of `integration.yml` and runs `always()`, `merge_group` is a trigger of the three workflows a required check comes from and of neither path-filtered one, and the required checks' names are still the jobs' names (`test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
@@ -333,11 +333,12 @@ The action is a composite action with two phases:
     - **The step's fixed `/tmp` is rewritten in the script text, not made a variable.** The
       #83 options were `HOME` plus the real `/tmp`, or `${RUNNER_TEMP:-/tmp}` in the step. The
       second would change what the step does on every runner to serve a test: `version-pin`
-      still reads the archive at `/tmp/<asset>` (#84), and a Windows `runner.temp` is a
-      backslash path nobody has run. So the test replaces `/tmp` with a directory of the case's
-      own and checks that the archive (the main tarball and zip cases) and the extraction (both
-      branches) landed there; that moves where the step writes and nothing it does. If the step ever writes somewhere else outside `HOME`, the test must
-      learn it.
+      read the archive at `/tmp/<asset>` until #84 (it reads the `omni-dev-cache-hit` output
+      now), and a Windows `runner.temp` is a backslash path nobody has run. So the test replaces
+      `/tmp` with a directory of the case's own and checks that the archive (the main tarball and
+      zip cases) and the extraction (both branches) landed there; that moves where the step
+      writes and nothing it does. If the step ever writes somewhere else outside `HOME`, the test
+      must learn it.
     - **No Windows leg, decided in #82.** Nothing here runs on Windows: the rest of the action
       (awk, `sudo`, `~`, `/tmp` in Git Bash, the fat-mode cargo steps) has never run there either,
       so a leg would be a project of its own and nobody has asked for it. The Windows install is
@@ -385,8 +386,13 @@ The action is a composite action with two phases:
       install ran, logs a hit on unchanged code as correct, and FAILS a hit on `schedule` or
       `workflow_dispatch`, where the prefix is unique to the run and a hit means it never
       reached the action. It is an output because a composite action's steps are invisible to
-      the workflow that calls it. `version-pin` proves the same thing by the archive the
-      download leaves in `/tmp`; moving it onto the output is a follow-up, not done in #66.
+      the workflow that calls it. `version-pin` reads the same output and calls
+      `install-cache.sh check-fresh`, which fails on a hit whatever the event (#84): its
+      key holds the run, the attempt and its pin, so it is unique on every event and `check`,
+      whose rule depends on the event, cannot say that. It used to look for the archive the
+      download step leaves in `/tmp`, a side effect of that step. `install-cache.test.sh` holds the
+      mode's cases and the job's wiring (the output read, the call and its `|| status=1`, the
+      key's run and attempt, no `/tmp`), each checked against a mutation that fails it.
     - The hash covers the whole of `action.yml` and `scripts/*.sh`, not just the install
       steps: a change elsewhere in `action.yml` reinstalls once, which costs seconds, and a
       list of install files kept by hand is what the ARM64-only attempt in #65 was dropped
@@ -824,8 +830,10 @@ The action is a composite action with two phases:
       and download steps are skipped on a cache hit, and on the default key (the `ignore-filename-regex`
       job's `0.45.0` leg saves it, and `v0.45.0` resolves to it) every run after the first on `main`
       would hit and check only the outputs: the very path this job exists for would not run. The
-      assertion step checks the archive the download step leaves in `/tmp`, so a leg that stops
-      forcing the install fails instead of passing. If that step stops leaving it, follow the step.
+      assertion step reads the action's `omni-dev-cache-hit` output and calls
+      `install-cache.sh check-fresh` (#84), so a leg that stops forcing the install fails instead
+      of passing. It used to check the archive the download step leaves in `/tmp`; the output
+      asks the action directly, and does not depend on a side effect of one of its steps.
     - What that costs: nothing compares the two spellings' cache keys. A key built from
       `inputs.version` would make a duplicate cache entry, not a failure, and no test sees it.
     - The last step removes `~/.cargo/bin/omni-dev` so the cache's post step saves nothing: a key

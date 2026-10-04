@@ -214,6 +214,50 @@ has "  and names it" "$ERR" "'maybe'"
 run pull_request 100 1 "$HASH_A" check True
 eq "True is not true: exits 1" 1 "$STATUS"
 
+# --- check-fresh: a job whose prefix is unique to the run on every event -------------
+
+# `version-pin` (#84): its key holds the run, the attempt and its pin, so on EVERY event a
+# hit is wrong. `check` accepts one on a pull request and a push, which is the case this
+# mode exists to refuse.
+for event in pull_request push schedule workflow_dispatch; do
+  run "$event" 100 1 "$HASH_A" check-fresh false
+  eq "check-fresh, $event, no cache hit: exits 0" 0 "$STATUS"
+  has "  and says the install ran" "$OUT" "omni-dev was installed in this job"
+  eq "  and says nothing on stderr" "" "$ERR"
+
+  run "$event" 100 1 "$HASH_A" check-fresh true
+  eq "check-fresh, $event, cache hit: exits 1" 1 "$STATUS"
+  has "  and says the prefix did not reach the action" "$ERR" "the prefix did not reach the action"
+  has "  and says the key is unique to the run on every event" "$ERR" "unique to the run on every event"
+  has "  and is an error annotation" "$ERR" "::error::install-cache.sh:"
+  eq "  and prints nothing on stdout" "" "$OUT"
+done
+
+# It needs no event: the rule does not depend on it.
+run "" 100 1 "$HASH_A" check-fresh true
+eq "check-fresh, no event, cache hit: still exits 1, for the hit" 1 "$STATUS"
+lacks "  and does not ask for the event" "$ERR" "GITHUB_EVENT_NAME"
+run "" 100 1 "$HASH_A" check-fresh false
+eq "check-fresh, no event, no cache hit: exits 0" 0 "$STATUS"
+
+# The two modes differ on exactly this: a pull request's hit on unchanged code.
+run pull_request 100 1 "$HASH_A" check true
+eq "the same hit on a pull request: check accepts it" 0 "$STATUS"
+
+run pull_request 100 1 "$HASH_A" check-fresh ""
+eq "check-fresh, no value: exits 2, as a usage error" 2 "$STATUS"
+has "  and says what it needed" "$ERR" "omni-dev-cache-hit output"
+eq "  and prints nothing on stdout" "" "$OUT"
+run pull_request 100 1 "$HASH_A" check-fresh
+eq "check-fresh, no argument: exits 2" 2 "$STATUS"
+run pull_request 100 1 "$HASH_A" check-fresh maybe
+eq "check-fresh, a value that is neither: exits 1" 1 "$STATUS"
+has "  and names it" "$ERR" "'maybe'"
+run pull_request 100 1 "$HASH_A" check-fresh True
+eq "check-fresh, True is not true: exits 1" 1 "$STATUS"
+run pull_request 100 1 "$HASH_A" check-fresh true false
+eq "check-fresh with two arguments: exits 2" 2 "$STATUS"
+
 # --- usage ---------------------------------------------------------------------------
 
 run pull_request 100 1 "$HASH_A"
@@ -316,5 +360,26 @@ has "the checking step reads the output of the first scenario" "$THIN" \
   "CACHE_HIT: \${{ steps.s1.outputs.omni-dev-cache-hit }}"
 has "the checking step calls check, and a failure is counted" "$THIN" \
   'bash tests/install-cache.sh check "$CACHE_HIT" || status=1'
+
+# --- wiring: version-pin proves its install by the output, not by a side effect (#84) ---
+
+PIN_JOB="$(awk '
+  /^  version-pin:$/ { in_job = 1; next }
+  in_job && /^  [A-Za-z0-9_-]+:$/ { exit }
+  in_job { print }
+' "$WORKFLOW")"
+pass "integration.yml: found the version-pin job" test -n "$PIN_JOB"
+has "version-pin: the checking step reads the install's omni-dev-cache-hit output" "$PIN_JOB" \
+  "CACHE_HIT: \${{ steps.pin.outputs.omni-dev-cache-hit }}"
+has "version-pin: it calls check-fresh, and a failure is counted" "$PIN_JOB" \
+  'bash tests/install-cache.sh check-fresh "$CACHE_HIT" || status=1'
+# Its key is unique to the run on every event, which is the premise of check-fresh. A prefix
+# that did not hold the run would make a hit possible, and `check-fresh` would then be wrong
+# about an event it does not look at.
+has "version-pin: its cache key holds the run and the attempt" "$PIN_JOB" \
+  "cache-prefix: version-pin-\${{ matrix.pin }}-\${{ github.run_id }}-\${{ github.run_attempt }}-"
+# The archive in /tmp was a side effect of the download step, and the output says the same.
+lacks "version-pin: it no longer looks for the archive in /tmp" "$PIN_JOB" 'test -f "/tmp/'
+lacks "version-pin: it no longer asks the asset script for the archive's name" "$PIN_JOB" "scripts/omni-dev-asset.sh"
 
 summary
