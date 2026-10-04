@@ -15,6 +15,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `scripts/find-baseline.sh` - Decides which run's baseline artifact a pull request downloads: the merge-base's, else the nearest first-parent ancestor's (`tests/find-baseline.test.sh` tests it against a stub `curl` and throwaway git repositories; `test.yml` runs that)
 - `tests/baseline-steps.test.sh` - Reads the lookup, download and diff steps out of `action.yml` and checks the wiring (the variables the script requires, the run id handed to the download, the comment's ancestor note) (`test.yml` runs that)
 - `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl`, with the variables the steps' `env:` blocks fill set directly (`test.yml` runs that)
+- `tests/download-step.test.sh` - Runs the "Download pre-built binary" script read out of `action.yml` against a stub `curl` that serves a tarball and a zip with the layout of the real release assets, and a stub `find` that lists in either order, with `HOME` and every `/tmp` in the script pointed at a directory of the case's own: the file left at `~/.cargo/bin/omni-dev` is the right one, by content, and executable, and an archive with no `omni-dev.exe` fails with a message (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/print-version-step.test.sh` - Runs the "Print omni-dev version" script read out of `action.yml` against a stub `omni-dev` that replays the captured loader output in `tests/fixtures/omni-dev-loader/` and a stub `getconf`: the glibc the binary needs, the one the runner has and the two ways out (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
@@ -234,8 +235,10 @@ The action is a composite action with two phases:
     (remove each guard, unset, `set -f` or quote in a copy of `action.yml`) is how its coverage
     was checked.
   - Not covered by a unit test: the pull-request paths on a real runner (`pr-paths.yml`,
-    `e2e-sharded.yml`, `integration.yml`'s fat-mode job) and the download step (it writes to
-    `/tmp`; `platform-step.test.sh` covers what picks its URL).
+    `e2e-sharded.yml`, `integration.yml`'s fat-mode job). The download step is unit-tested
+    (`download-step.test.sh`, #83: what it leaves at `~/.cargo/bin/omni-dev` for each archive
+    layout; `platform-step.test.sh` covers what picks its URL), not on a real runner: its zip
+    branch has never run on Windows (see the Windows zip bullet under "Pre-built asset").
 - **Shard join**: `cargo llvm-cov` writes no newline after its final `end_of_record`,
   so a bare `cat` of shards glues records and a consumer can silently drop a file.
   `combine-shards.sh` always puts a newline between shards; keep that if you touch it.
@@ -302,6 +305,47 @@ The action is a composite action with two phases:
   `tar -xzf … -C /tmp; mv /tmp/omni-dev` relies on (`omni-dev` at the archive root, beside
   `omni-dev-mcp`, `LICENSE` and `README.md`) and the binary itself are held to a real
   release, when the install runs (see the cache rule below). Rules:
+  - **The Windows zip is read by name, not by glob (#82), and the step is unit-tested (#83).**
+    The release zip holds `omni-dev.exe` beside `omni-dev-mcp.exe`, and the zip branch took the
+    first file `find` listed for `omni-dev*`, in directory order. NTFS lists by name and
+    `omni-dev-mcp.exe` sorts before `omni-dev.exe` (`-` is before `.`), so a Windows runner was
+    likely to install the MCP binary as `omni-dev` (reasoned from the listing and seen on macOS,
+    where it came first; no runner has run the branch). It now finds `-name omni-dev.exe` and
+    installs that, still as `~/.cargo/bin/omni-dev` with no `.exe`, because that is the path the
+    cache step saves and restores. With no such file it fails with one `::error::` that names the
+    archive and lists what it held (sorted with `LC_ALL=C`, so the message does not depend on the
+    runner's locale). The old `find | head | xargs` ran nothing for an empty result and the step
+    then failed on `chmod` with a bare "No such file or directory", naming neither the archive nor
+    the file; it "succeeded" only when it had installed the wrong binary. A name that only starts like the binary's
+    (`omni-dev.exe.sig`) is not it. The tarball branch names its file already and is unchanged.
+    Rules, so they are not re-derived:
+    - `tests/download-step.test.sh` runs the step's own script against archives of the real
+      layout (a few bytes each, named as the release's; the content says which file it stands
+      for, so omni-dev is told from omni-dev-mcp by what was installed). It fails on the old zip
+      branch (`omni-dev-mcp.exe` installed, and the zip with no binary installing it too) and
+      was checked against mutations of the new one: `chmod` dropped, the name globbed again, the
+      empty check dropped, the first-line cut dropped (a zip with two `omni-dev.exe` is what
+      holds it), the tarball's `mv` of another file.
+    - The zip cases run with a stub `find` that lists in ascending, descending (`LC_ALL=C`, so
+      `-` sorts before `.`) and the filesystem's own order. Which file the old step picked
+      depended on the listing, so without the stub the test would pass or fail with the
+      machine it ran on.
+    - **The step's fixed `/tmp` is rewritten in the script text, not made a variable.** The
+      #83 options were `HOME` plus the real `/tmp`, or `${RUNNER_TEMP:-/tmp}` in the step. The
+      second would change what the step does on every runner to serve a test: `version-pin`
+      still reads the archive at `/tmp/<asset>` (#84), and a Windows `runner.temp` is a
+      backslash path nobody has run. So the test replaces `/tmp` with a directory of the case's
+      own and checks that the archive (the main tarball and zip cases) and the extraction (both
+      branches) landed there; that moves where the step writes and nothing it does. If the step ever writes somewhere else outside `HOME`, the test must
+      learn it.
+    - **No Windows leg, decided in #82.** Nothing here runs on Windows: the rest of the action
+      (awk, `sudo`, `~`, `/tmp` in Git Bash, the fat-mode cargo steps) has never run there either,
+      so a leg would be a project of its own and nobody has asked for it. The Windows install is
+      covered by the unit test only, which pins the extraction and not that the result runs. Not
+      verified: that a PE file named `omni-dev`, with no `.exe`, starts from bash on a Windows
+      runner (Cygwin and MSYS bash run one by passing the name to the loader, which would make
+      it work; nothing has shown it). If someone installs on Windows and `Print omni-dev
+      version` fails, that is where to look.
   - The `0.46.0` leg is the floor for the ARM64 pre-built install and stays put, as
     `0.45.0` does for the gate; unlike `OLD_OMNI_DEV` it does not wait on anything. The
     matrix cannot read `env`, so the version is a literal and `failure-messages` repeats
@@ -373,11 +417,11 @@ The action is a composite action with two phases:
       The `latest` legs do not cover themselves (a new release is a new key; a change to the
       install code is not). The weekly run installs on every `thin-mode` leg, pinned included.
     - Not run on a runner when this was written: the `schedule` and `workflow_dispatch`
-      branches, only unit-tested, until the Monday run or a manual one. Not covered at all: a
+      branches, only unit-tested, until the Monday run or a manual one. #66 left out a
       stub-`curl` test of "Download pre-built binary" with a tarball of the real layout
       (`omni-dev`, `omni-dev-mcp`, `LICENSE`, `README.md`) and one of the Windows zip's, which
-      would pin the extraction on every pull request whatever the cache holds, including the
-      `.zip` branch no runner exercises. It complements the prefix and was left out of #66.
+      pins the extraction on every pull request whatever the cache holds, including the
+      `.zip` branch no runner exercises: it is `tests/download-step.test.sh` now (#83).
   - The `latest` ARM64 leg shares the release-asset lag the other `latest` legs have, and
     may see it for longer or shorter, as the asset can be uploaded by another job than the
     x86_64 one: a red `latest` leg right after an omni-dev release, with "has no pre-built
