@@ -9,7 +9,8 @@ name: PR paths
 #   publish       push to main: publishes the combined sharded report as the
 #                 `coverage-baseline` artifact.
 #   pull-request  a pull request: the sticky comment, the baseline lookup (a hit or
-#                 a miss, both are legitimate), the patch gate and its ordering.
+#                 a miss, both are legitimate), the patch gate and its ordering,
+#                 and `ignore-filename-regex` reaching both the comment and the gate.
 #   recompute     a pull request, fat mode: the baseline rebuilt at the merge-base
 #                 in a git worktree.
 #
@@ -305,6 +306,75 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/move-outputs.sh p1
 
+      # `ignore-filename-regex` must reach the patch gate as well as the comment, or the
+      # gate measures files the comment does not show. A second file joins the patch with
+      # every added line uncovered: the patch is 8 of 20 lines (40%), and 8 of 10 (80%)
+      # once that file is filtered out, so a gate of 70 tells the two apart. Emptying the
+      # patch instead would prove nothing: omni-dev lets a patch with no measured line
+      # through the gate, which is vacuous. The file and its report come after P1 to P4
+      # have run, so they do not see it, and P5 and P6 leave no comment to read back.
+      - name: Add a second file to the patch
+        run: |
+          if [ -e patch-extra.txt ] || [ -e shards/shard-3.lcov ]; then
+            echo "::error::patch-extra.txt or shards/shard-3.lcov already exists; refusing to overwrite it"
+            exit 1
+          fi
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            echo "extra $i"
+          done >patch-extra.txt
+          git add patch-extra.txt
+          git -c user.name=integration-test -c user.email=integration-test@invalid \
+            commit -q -m 'test: add a second file with known added lines'
+          # Every line uncovered, and no newline after the last record, as llvm-cov writes it.
+          {
+            printf 'SF:%s/patch-extra.txt\n' "$GITHUB_WORKSPACE"
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              printf 'DA:%d,0\n' "$i"
+            done
+            printf 'end_of_record'
+          } >shards/shard-3.lcov
+
+      - name: 'P5. The patch gate with the second file filtered out'
+        id: p5
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p5/coverage-head.lcov
+          fail-under-lines: ''
+          fail-under-patch: 70
+          ignore-filename-regex: 'patch-extra\.txt'
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: pr-paths.yml
+
+      - name: Move P5 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p5
+
+      # Control for P5: only the filter differs, so the gate sees the 40% and fails.
+      # The line gate is off in both, so the patch gate is the only one that can fail.
+      - name: 'P6. The same without the filter'
+        id: p6
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p6/coverage-head.lcov
+          fail-under-lines: ''
+          fail-under-patch: 70
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: pr-paths.yml
+
+      - name: Move P6 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p6
+
       - name: Assert every outcome
         if: ${{ !cancelled() }}
         env:
@@ -314,8 +384,11 @@ jobs:
           P2: ${{ steps.p2.outcome }}
           P3: ${{ steps.p3.outcome }}
           P4: ${{ steps.p4.outcome }}
+          P5: ${{ steps.p5.outcome }}
+          P6: ${{ steps.p6.outcome }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PATCH_PERCENT: ${{ steps.p1.outputs.patch-percent }}
+          P5_PATCH_PERCENT: ${{ steps.p5.outputs.patch-percent }}
           LINE_PERCENT: ${{ steps.p1.outputs.line-percent }}
           COMMENT_PATH: ${{ steps.p1.outputs.comment-path }}
           VERSION: ${{ steps.p1.outputs.version }}
@@ -345,6 +418,8 @@ jobs:
           same() { [ "$(cat "$1")" = "$(cat "$2")" ]; }
           # shellcheck disable=SC2329
           differ() { ! same "$@"; }
+          # shellcheck disable=SC2329
+          absent() { ! grep -qF -- "$1" "$2"; }
           # Lines of <file> whose covered state differs between two reports.
           flipped() { # <before> <after> <file>
             awk -F'[:,]' -v want="$3" '
@@ -368,6 +443,8 @@ jobs:
           check "P2. patch gate above the patch coverage" failure "$P2"
           check "P3. a baseline artifact name that does not exist" success "$P3"
           check "P4. comment off" success "$P4"
+          check "P5. the patch gate with the second file filtered out" success "$P5"
+          check "P6. the same without the filter" failure "$P6"
 
           # The patch is the 10 lines of patch-fixture.txt, 8 of them covered by
           # the union of the shards. Each shard alone is under the gate P1 passes.
@@ -403,6 +480,21 @@ jobs:
           rc=0
           bash tests/read-sticky-comment.sh --delete integration-test-off out/comment-p4.md || rc=$?
           check "P4: no comment under its header (read-sticky-comment exit status)" 3 "$rc"
+
+          # P5 and P6: `ignore-filename-regex` and the patch gate. patch-fixture.txt has 8 of
+          # its 10 added lines covered and patch-extra.txt none, so the patch is 40% of 20
+          # lines until the filter takes the second file out and leaves 80% of 10.
+          assert "P5: the comment diff dropped the filtered file: 80% of 10 lines" \
+            jq -e '.patch_coverage.percent == 80 and .patch_coverage.total == 10' out/p5/coverage.json
+          assert "P5: the comment names nothing from the filtered file" absent patch-extra.txt out/p5/coverage.md
+          # The gate passed at 70, which it does only over the 80%, so the gated figure is
+          # the commented one. jq keeps a literal such as 80.0, so compare as numbers.
+          check "P5: the patch-percent output is 80" true "$(jq -n --arg p "$P5_PATCH_PERCENT" '($p | tonumber) == 80')"
+          # P6 stopped at the patch gate: the diff was rendered, over both files.
+          assert "P6: stopped at the gate: coverage.md written" test -s out/p6/coverage.md
+          assert "P6: without the filter the patch is 40% of 20 lines" \
+            jq -e '.patch_coverage.percent == 40 and .patch_coverage.total == 20' out/p6/coverage.json
+          assert "P6: the comment names the file P5 filtered out" grep -qF patch-extra.txt out/p6/coverage.md
 
           # P1's baseline, if the lookup found one. Hit or miss is checked against
           # the Actions API in the next step; here a hit must be internally sound.
