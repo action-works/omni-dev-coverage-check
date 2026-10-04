@@ -28,9 +28,10 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo (runs on `merge_group` too: `Validate Commit Messages` is a required check of the merge queue)
 - `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; the `old-glibc` job runs the pre-built binary on ubuntu-22.04, whose glibc is too old for it, with ubuntu-24.04 as its control (#67); a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
-- `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API (the job list and the log are each retried); `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
+- `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API (the job list and the log are each retried); `job-errors.sh`, `job-deprecations.sh` and `job-warnings.sh` pick their lines from it (`tests/job-errors.test.sh` tests all four against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/run-jobs.sh` - Prints the jobs of the current run as one JSON array (`id`, `name`, `status`, `conclusion`), looking again at a failed call, a body that is not JSON, an empty list, a list short of the API's `total_count` and one shorter than `RUN_JOBS_MIN`; the deprecation step reads it (`tests/run-jobs.test.sh` tests it against a fake `gh` and reads `integration.yml` for the wiring; `test.yml` runs that)
+- `tests/job-warnings.sh` - Prints the `##[warning]` lines one job of the current run logged, anchored on the runner's timestamp (the runner's own notices included: the caller picks the one it means; `tests/job-errors.test.sh` tests it, and reads the workflow and `action.yml` to keep the assertion's fragments and the action's warning in step)
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place); `src/ignored.rs` is the file nothing reaches, which F5 excludes and F6 keeps
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
@@ -621,9 +622,29 @@ The action is a composite action with two phases:
       must agree. A second run of the action is not the control: with the fallback it would use the
       redirect too whenever the API failed, and a second `latest` install would break the one
       omni-dev version per job rule. The 401 is recorded just before 10 and asserted at the end,
-      because a job cannot read its own log. What 10's log says (the warning) is pinned only by the
-      unit test, as is that `github-token` reaches the step; nothing in `failure-messages` reads a
-      `##[warning]` line, and a reader for one would let it assert the warning.
+      because a job cannot read its own log. What 10's log says is now asserted too (#61):
+      `failure-messages` reads the job's `##[warning]` lines with `tests/job-warnings.sh` and
+      requires ONE warning to hold the API's reason (`(API: Bad credentials)`), the redirect
+      answering (`so latest omni-dev was resolved from the github.com releases/latest redirect
+      instead: v`) and the way out (`set 'version' to a release to skip the lookup`). The job's log
+      holds four warnings that name the API's reason (three `Attempt n/3` and the fallback's), so
+      the checks hold the fallback's own words and all three must be in the same warning: the
+      attempts alone, which a run whose redirect never answered would also log, cannot pass. A
+      reworded warning, or the workflow token reaching 10 so that the API answers and no fallback
+      is logged, fails it. That `github-token` reaches the step is still pinned only by the unit
+      test.
+      - The assertion's fragments are fixed strings, and the warning holds two values the runner
+        fills in (the API's reason, the tag), so `job-errors.test.sh` pairs each fragment with the
+        text of `action.yml`'s script for it, read from the files and not copied (the tag's `v` is
+        the redirect shape check's, `Bad credentials` is what the API says to 10's token), and fails
+        when either side is edited alone.
+      - Checked by hand, not on a runner: the real resolve step run locally with
+        `GH_TOKEN=not-a-token` against the live API gave exactly the four warnings #61 quotes
+        (v0.46.0), and the workflow's own `expect` calls passed on them; with the fallback's wording
+        changed, with no warnings, and with only the three `Attempt` lines each of the three checks
+        failed. The runner's first run of it is the pull request that adds it.
+      - The reader only reads: a warning is not a failure, so nothing turns a job red for logging
+        one, and `job-deprecations.sh` still skips `##[warning]` lines on purpose.
 - **No first-class shard mode (decided in #24)**: there is no `mode: shard` / `mode: report`,
   and none should be built until a real adopter has a sharded workflow on this action and
   names what was awkward. The README's sharded example, kept honest by `e2e-sharded.yml`, is
@@ -868,13 +889,18 @@ The action is a composite action with two phases:
   the same for the `--ignore-filename-regex` guard (0.33.0 floor, both ways out); and
   that the resolve step's refusal of a `version` that names no release (#51) names the
   input, quotes what it got and offers both ways out, for the empty and the lone-`v` leg
-  of the `version-input` job (on every event).
+  of the `version-input` job (on every event); and, from the `##[warning]` lines of the
+  `latest-redirect` job read with `tests/job-warnings.sh` (#61), that scenario 10's fallback
+  warning names the API's reason, says the redirect answered and offers pinning `version` (on
+  every event; see the `latest-redirect` rules under "Version resolution").
   Match the found version as its own fragment: `omni-dev --version` can carry a
   commit and date after the number. Rules:
-  - Read only the `##[error]` lines. The log also echoes every step's script, which
+  - Read only the `##[error]` lines (or, for the one assertion about a warning, only the
+    `##[warning]` lines). The log also echoes every step's script, which
     holds the same message text whether or not the step ran it, so grepping the whole
     log passes for the wrong reason.
-  - Each check needs all its fragments in ONE message, so two errors cannot add up.
+  - Each check needs all its fragments in ONE message, so two errors (or two warnings) cannot
+    add up.
   - `gh` 2.97 and later refuse to print an API response that holds terminal escape
     sequences, and a runner log is full of ANSI colour. `job-log.sh` passes
     `--allow-escape-sequences` when `gh api --help` lists it (an older `gh` has

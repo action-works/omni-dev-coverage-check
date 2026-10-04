@@ -1792,10 +1792,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           status=0
-          # expect <label> <error messages> <fragment>...: passes when ONE message
-          # holds every fragment (each fragment narrows the lines to those that
-          # contain it), so two different errors cannot add up to a pass. Fragments
-          # are fixed strings.
+          # expect <label> <messages> <fragment>...: passes when ONE message holds
+          # every fragment (each fragment narrows the lines to those that contain
+          # it), so two different messages cannot add up to a pass. Fragments are
+          # fixed strings. The messages are a job's errors, or its warnings (10).
           expect() {
             local label=$1 errors=$2 matching=$2 line fragment
             shift 2
@@ -1806,12 +1806,12 @@ jobs:
               echo "ok   - $label"
               return 0
             fi
-            echo "::error::$label: no single error message holds all of:$(printf " '%s'" "$@")"
+            echo "::error::$label: no single message holds all of:$(printf " '%s'" "$@")"
             echo "the job logged:"
             if [ -n "$errors" ]; then
               while IFS= read -r line; do echo "  $line"; done <<<"$errors"
             else
-              echo "  (no error lines)"
+              echo "  (no lines)"
             fi
             status=1
           }
@@ -1925,6 +1925,27 @@ jobs:
             else
               status=1
             fi
+          fi
+          # 10: with a token the API refuses, the resolve step logs one warning that
+          # says the redirect answered in its place (#61). The scenario's own checks
+          # show the outcome (the API refused, the release equals the API's); this is
+          # what shows that the redirect answered and not the API, which the outcome
+          # alone does not. The job's log holds three `Attempt n/3` warnings that name
+          # the API's reason too, so every check holds the fallback's own words and
+          # all of them must be in ONE warning: the reason, the redirect, and the way out.
+          # A reworded warning, or the workflow token reaching the scenario (so that the
+          # API answers and no fallback is logged), fails these. The job name is the one
+          # `latest-redirect` sets above.
+          fallback="so latest omni-dev was resolved from the github.com releases/latest redirect instead: v"
+          if warnings="$(bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)')"; then
+            expect "10: the fallback's warning names the API's reason" "$warnings" \
+              "$fallback" "(API: Bad credentials)"
+            expect "10: the fallback's warning says the redirect answered, with the tag" "$warnings" \
+              "(API: Bad credentials)" "$fallback"
+            expect "10: the fallback's warning offers pinning 'version'" "$warnings" \
+              "$fallback" "set 'version' to a release to skip the lookup"
+          else
+            status=1
           fi
           # 12: a version that names no release is refused by the resolve step, whose one
           # message names the input, quotes what it got and offers both ways out. Every

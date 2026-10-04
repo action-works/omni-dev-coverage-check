@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for tests/job-errors.sh and tests/job-deprecations.sh, which pick their
-# lines out of the log that tests/job-log.sh reads. Plain bash, no framework:
+# Tests for tests/job-errors.sh, tests/job-deprecations.sh and tests/job-warnings.sh, which
+# pick their lines out of the log that tests/job-log.sh reads. Plain bash, no framework:
 #   tests/job-errors.test.sh
 # Exits non-zero if any case fails.
 #
@@ -17,6 +17,8 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$DIR/job-errors.sh"
 DEPRECATIONS="$DIR/job-deprecations.sh"
+WARNINGS="$DIR/job-warnings.sh"
+ROOT="$(cd "$DIR/.." && pwd)"
 LOG="$DIR/job-log.sh"
 
 # shellcheck source-path=SCRIPTDIR
@@ -174,6 +176,12 @@ run_deprecations() {
   local dir=$1 name=$2
   shift 2
   run_script "$DEPRECATIONS" "$dir" "$name" "$@"
+}
+
+run_warnings() {
+  local dir=$1 name=$2
+  shift 2
+  run_script "$WARNINGS" "$dir" "$name" "$@"
 }
 
 # The log of a job that ran the guard and the shard combine, and failed them
@@ -510,6 +518,139 @@ $WARN_CAPITAL
 $WARN_UPPER
 $WARN_NOUN" "$OUT"
 eq "deprecations: the list was read three times" 3 "$(cat "$d/jobs-reads")"
+
+# --- reading the warnings ------------------------------------------------------
+
+# The warnings the resolve step logged in the `latest-redirect` job of PR #53 (job
+# 111359543489), as the runner printed them, with the other warnings that log holds: the
+# runner's own Node.js notice and another step's. The text of the last one is the shape
+# the assertion in `failure-messages` reads (#61).
+W_ATTEMPT1='Attempt 1/3: could not resolve latest omni-dev version (API: Bad credentials)'
+W_ATTEMPT2='Attempt 2/3: could not resolve latest omni-dev version (API: Bad credentials)'
+W_ATTEMPT3='Attempt 3/3: could not resolve latest omni-dev version (API: Bad credentials)'
+W_FALLBACK="The GitHub API gave no release after 3 attempts (API: Bad credentials), so latest omni-dev was resolved from the github.com releases/latest redirect instead: v0.45.0. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+W_NODE='Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4'
+W_OTHER='No artifacts found for the given name'
+
+# The shape of a real log: the echo of a step's script, which holds the same words as the
+# message it would print and is colour-coded, so it does not start with the marker; the
+# warnings as the runner printed them; and lines that mention a warning without being one.
+warning_log() {
+  printf '\357\273\277%s\n' "2026-10-04T04:12:20.1Z Current runner version: '2.329.0'"
+  printf '%s\n' \
+    "2026-10-04T04:12:29.0Z ${ESC}[36;1m  echo \"::warning::Attempt \${attempt}/3: could not resolve latest omni-dev version (API: \${api_message})\"${ESC}[0m" \
+    '2026-10-04T04:12:29.1Z ##[endgroup]' \
+    "2026-10-04T04:12:29.3Z ##[warning]$W_ATTEMPT1" \
+    "2026-10-04T04:12:32.4Z ##[warning]$W_ATTEMPT2" \
+    "2026-10-04T04:12:38.6Z ##[warning]$W_ATTEMPT3" \
+    "2026-10-04T04:12:38.8Z ##[warning]$W_FALLBACK" \
+    "2026-10-04T04:12:40.0Z ##[warning]$W_NODE" \
+    "2026-10-04T04:12:41.0Z ##[warning]$W_OTHER" \
+    '2026-10-04T04:12:42.0Z warning: --format is deprecated; use -o/--output instead' \
+    '2026-10-04T04:12:42.1Z ##[error]Process completed with exit code 1.' \
+    '2026-10-04T04:12:42.2Z a step printed ##[warning]this, which is not at the start of its line'
+}
+
+d=$(fresh)
+add_job "$d" 601 'Latest omni-dev (API refuses the token)'
+warning_log >"$d/logs/601"
+run_warnings "$d" 'Latest omni-dev (API refuses the token)'
+pass "warnings: reads a job's log" test "$STATUS" -eq 0
+eq "warnings: prints each ##[warning] line without its timestamp or marker" \
+  "$W_ATTEMPT1
+$W_ATTEMPT2
+$W_ATTEMPT3
+$W_FALLBACK
+$W_NODE
+$W_OTHER" "$OUT"
+pass "warnings: not the echoed script, which holds the same words" \
+  bash -c '! grep -qF "echo" <<<"$1"' _ "$OUT"
+pass "warnings: not a program's own warning: line" \
+  bash -c '! grep -qF "is deprecated; use -o/--output" <<<"$1"' _ "$OUT"
+pass "warnings: not an error" \
+  bash -c '! grep -qF "Process completed" <<<"$1"' _ "$OUT"
+pass "warnings: not a marker in the middle of a line" \
+  bash -c '! grep -qF "this, which is not" <<<"$1"' _ "$OUT"
+pass "fixture: the log does echo the warning's words outside a warning line" \
+  grep -qF 'echo "::warning::Attempt' "$d/logs/601"
+pass "fixture: the log does hold the marker in the middle of a line" \
+  grep -qF 'a step printed ##[warning]this' "$d/logs/601"
+
+# What a caller does with them is its own: each of the runner's lines is one the reader
+# prints, so a caller that wants the fallback's picks it by its words.
+pass "warnings: the fallback's warning is among them, whole" \
+  grep -qxF "$W_FALLBACK" <<<"$OUT"
+
+printf '%s\r\n' "2026-10-04T04:12:38.8Z ##[warning]$W_FALLBACK" >"$d/logs/601"
+run_warnings "$d" 'Latest omni-dev (API refuses the token)'
+eq "warnings: strips carriage returns" "$W_FALLBACK" "$OUT"
+
+printf '%s\n' "2026-10-04T04:12:42.0Z warning: --format is deprecated; use -o/--output instead" \
+  "2026-10-04T04:12:42.1Z ##[error]Process completed with exit code 1." >"$d/logs/601"
+run_warnings "$d" 'Latest omni-dev (API refuses the token)'
+pass "warnings: a log without one is not a failure" test "$STATUS" -eq 0
+eq "warnings: a log without one prints nothing" "" "$OUT"
+
+: >"$d/logs/601"
+run_warnings "$d" 'Latest omni-dev (API refuses the token)'
+pass "warnings: an empty log is not a failure" test "$STATUS" -eq 0
+eq "warnings: an empty log prints nothing" "" "$OUT"
+
+# The plumbing is job-log.sh's, shared with the other readers and tested above for it;
+# these show this one fails the same way, with no warning printed.
+run_warnings "$d" 'No such job'
+pass "warnings: a missing job fails the script" test "$STATUS" -ne 0
+pass "warnings: and is named" grep -q "0 jobs named 'No such job'" <<<"$ERR"
+eq "warnings: and prints nothing" "" "$OUT"
+
+d=$(fresh)
+add_job "$d" 602 'Job'
+warning_log >"$d/logs/602"
+run_warnings "$d" 'Job' FAKE_FAIL_FIRST=99 JOB_LOG_ATTEMPTS=2
+pass "warnings: a log that is never readable fails the script" test "$STATUS" -ne 0
+pass "warnings: and says so" grep -q "could not read the log of job 'Job' (602) after 2 attempts" <<<"$ERR"
+eq "warnings: and prints nothing" "" "$OUT"
+
+# --- the assertion in failure-messages reads what the action logs ----------------------
+
+# `failure-messages` asserts from ONE warning of scenario 10's job. The fragments it holds
+# are fixed strings, so a rewording of the action's warning would fail the assertion on a
+# runner; these hold the two ends to each other here, read from the files and not copied.
+# The warning is the `::warning::` line of the resolve step that says the redirect answered.
+# It holds two values the runner fills in, so each fragment of the workflow is paired with
+# the text the action's script has for it: the API's reason (`Bad credentials` is what the
+# API says to the token scenario 10 sends) and the tag, which the redirect's shape check
+# says starts with `v`.
+ACTION_TEXT="$(<"$ROOT/action.yml")"
+WORKFLOW_TEXT="$(<"$ROOT/.github/workflows/integration.yml")"
+FALLBACK_LINE="$(grep -F '::warning::The GitHub API gave no release after 3 attempts' <<<"$ACTION_TEXT")"
+pass "action.yml: the fallback's warning is logged, once" test "$(grep -c . <<<"$FALLBACK_LINE")" -eq 1
+has "workflow: failure-messages reads the warnings of scenario 10's job" "$WORKFLOW_TEXT" \
+  "bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)'"
+while IFS='|' read -r in_workflow in_action; do
+  has "action.yml: the warning holds '$in_action'" "$FALLBACK_LINE" "$in_action"
+  has "workflow: ... and the assertion asks for '$in_workflow'" "$WORKFLOW_TEXT" "\"$in_workflow\""
+done <<'EOF'
+(API: Bad credentials)|(API: ${api_message
+so latest omni-dev was resolved from the github.com releases/latest redirect instead: v|so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}
+set 'version' to a release to skip the lookup|set 'version' to a release to skip the lookup
+EOF
+# The three checks as written: each holds the fallback's own words, and each of the other two
+# fragments with it, so all three have to be in one warning (a fragment quoted by another call
+# does not stand in for one a call dropped).
+has "workflow: check 1 asks for the fallback and the reason, in one warning" "$WORKFLOW_TEXT" \
+  "            expect \"10: the fallback's warning names the API's reason\" \"\$warnings\" \\
+              \"\$fallback\" \"(API: Bad credentials)\""
+has "workflow: check 2 asks for the reason and the fallback with its tag, in one warning" "$WORKFLOW_TEXT" \
+  "            expect \"10: the fallback's warning says the redirect answered, with the tag\" \"\$warnings\" \\
+              \"(API: Bad credentials)\" \"\$fallback\""
+has "workflow: check 3 asks for the fallback and the way out, in one warning" "$WORKFLOW_TEXT" \
+  "            expect \"10: the fallback's warning offers pinning 'version'\" \"\$warnings\" \\
+              \"\$fallback\" \"set 'version' to a release to skip the lookup\""
+has "workflow: the fallback's words are defined once, as the action logs them" "$WORKFLOW_TEXT" \
+  '          fallback="so latest omni-dev was resolved from the github.com releases/latest redirect instead: v"'
+# The job's name is the one the `latest-redirect` job sets, and failure-messages needs the job.
+has "workflow: the job name is scenario 10's" "$WORKFLOW_TEXT" "    name: Latest omni-dev (API refuses the token)"
 
 # --- the log itself -----------------------------------------------------------
 
