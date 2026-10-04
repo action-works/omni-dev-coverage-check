@@ -29,7 +29,8 @@ name: Integration
 #     tests/assert-omni-dev-version.sh, which fails unless the binary on PATH is
 #     exactly the version the job pinned. `arm64-release-without-asset` installs
 #     nothing and `deprecation-control` has one install and asserts no outcome, so
-#     neither calls it.
+#     neither calls it, and `old-glibc`'s failing leg installs a binary that cannot
+#     start, so only its control does.
 #   - A job that exists to run the install does not run on a cached binary. A hit on
 #     `actions/cache` restores ~/.cargo/bin/omni-dev and skips the platform and download
 #     steps, and the key holds the version, not the action's code, so such a job would
@@ -493,10 +494,14 @@ jobs:
   #
   # What the leg shows that the unit test cannot: that the loader says, on a real old image,
   # what tests/fixtures/omni-dev-loader/ says it does, and that the step that prints the
-  # version is where the action stops. It keeps the cache like the jobs that exist for
-  # something else: the binary is the same whether it was restored or downloaded, so the
-  # outcome does not depend on which. If GitHub retires the ubuntu-22.04 image the leg ends
-  # at the runner, not at the assertion.
+  # version is where the action stops. It must run the install, not restore a binary: a cache
+  # hit skips the download step, and the download step is where a binary is first put in place
+  # (it ended by running the binary, so on a miss the loader's bare message stopped the action
+  # there, and the first version of this job passed only because it hit a cache that another
+  # job had saved). So each leg's `cache-prefix` holds the run and the attempt, as
+  # `version-pin`'s does, and the last step removes the binary so the post step saves an entry
+  # nothing would restore. If GitHub retires the ubuntu-22.04 image the leg ends at the
+  # runner, not at the assertion.
   old-glibc:
     name: Old glibc (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
@@ -530,6 +535,7 @@ jobs:
         continue-on-error: true
         with:
           version: '0.45.0'
+          cache-prefix: old-glibc-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}-
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/glibc.lcov
@@ -599,7 +605,16 @@ jobs:
             # Only a binary that starts has a version to check.
             bash tests/assert-omni-dev-version.sh 0.45.0 || status=1
           fi
+          # The key cannot hit (the prefix holds the run), so what the post step would save
+          # is never restored, and an entry of about 18 MiB per leg per run would push out the
+          # entries the other jobs reuse. After the checks above, which need the binary.
           exit "$status"
+
+      # Its own step, not the end of the one above: a failed assertion must not skip it, and a
+      # step that fails stops the job before the post step, which then saves nothing either.
+      - name: Remove the binary so the cache saves nothing
+        if: always()
+        run: rm -f "$HOME/.cargo/bin/omni-dev"
 
   # The pull-request half of the guard. The comment diff and the patch gate pass
   # `-o/--output` (omni-dev 0.32.0), and they run only on a `pull_request` event, so

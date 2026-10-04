@@ -372,7 +372,10 @@ runs:
 
         chmod +x ~/.cargo/bin/omni-dev
         echo "Successfully installed omni-dev from pre-built binary"
-        ~/.cargo/bin/omni-dev --version
+        # The binary is not run here: "Print omni-dev version" is the one step that runs it
+        # after every way of installing, and the one that says why a binary cannot start
+        # (#67). Run here, a binary the runner's glibc is too old for would stop this step
+        # first, with the loader's bare message, and that step would never run.
 
     - name: Fail if binary not available
       if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'false'
@@ -433,7 +436,17 @@ runs:
           else
             runner_has="an older glibc"
           fi
-          echo "::error::omni-dev $OMNI_DEV_VERSION cannot run on this runner ($OS $ARCH): it needs glibc $needed or newer, and the runner has $runner_has. Use a runner image with glibc $needed or newer (ubuntu-24.04, or ubuntu-24.04-arm), or set 'use-prebuilt-binary: false' to build omni-dev from source."
+          # The images are named only when they would do: ubuntu-24.04 has glibc 2.39, so for
+          # a binary that needs more, naming it would send the caller to another failure.
+          major="${needed%%.*}"
+          minor="${needed#*.}"
+          [ "$minor" != "$needed" ] || minor=0
+          minor="${minor%%.*}"
+          images=""
+          if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -le 39 ]; }; then
+            images=" (ubuntu-24.04, or ubuntu-24.04-arm)"
+          fi
+          echo "::error::omni-dev $OMNI_DEV_VERSION cannot run on this runner ($OS $ARCH): it needs glibc $needed or newer, and the runner has $runner_has. Use a runner image with glibc $needed or newer$images, or set 'use-prebuilt-binary: false' to build omni-dev from source."
         fi
         exit "$status"
 

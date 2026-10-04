@@ -41,12 +41,14 @@ BLOCK="$(step_block "$STEP")" || exit 1
 
 # The stubs. omni-dev replays $STUB_FIXTURE: the first line is `exit=<status>`, the rest is
 # what it printed, on stdout for a success and on stderr for a failure, as the loader and a
-# failing program do. getconf answers `GNU_LIBC_VERSION` with $STUB_GLIBC, and fails when
-# that is empty, as it does on a system that has no glibc.
+# failing program do, and logs each call's arguments to $STUB_CALLS. getconf answers
+# `GNU_LIBC_VERSION` with $STUB_GLIBC, and fails, with a message on stderr, when that is
+# empty, as it does on a system that has no glibc.
 BIN="$WORK/bin"
 mkdir "$BIN"
 cat >"$BIN/omni-dev" <<'EOF'
 #!/usr/bin/env bash
+echo "$*" >>"$STUB_CALLS"
 code="$(head -n 1 "$STUB_FIXTURE")"
 code="${code#exit=}"
 if [ "$code" = 0 ]; then sed 1d "$STUB_FIXTURE"; else sed 1d "$STUB_FIXTURE" >&2; fi
@@ -55,7 +57,7 @@ EOF
 cat >"$BIN/getconf" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = GNU_LIBC_VERSION ] || exit 1
-[ -n "${STUB_GLIBC:-}" ] || exit 1
+[ -n "${STUB_GLIBC:-}" ] || { echo "getconf: Unrecognized variable \`GNU_LIBC_VERSION'" >&2; exit 1; }
 echo "$STUB_GLIBC"
 EOF
 chmod +x "$BIN/omni-dev" "$BIN/getconf"
@@ -68,14 +70,16 @@ fixture() {
 }
 
 # run_step <fixture file> [glibc]: runs the step as the runner would (bash -eo pipefail) with
-# the variables its env: block fills. Sets STATUS, LOG (stdout and stderr together) and
-# ERRORS (how many `::error::` lines it printed).
+# the variables its env: block fills. Sets STATUS, LOG (stdout and stderr together), ERRORS
+# (how many `::error::` lines it printed) and RUNS (how many times it ran omni-dev).
 run_step() {
   local fixture=$1 glibc=${2-glibc 2.35}
-  LOG="$(PATH="$BIN:$PATH" STUB_FIXTURE="$fixture" STUB_GLIBC="$glibc" OMNI_DEV_VERSION=0.45.0 OS=Linux ARCH=X64 \
-    bash --noprofile --norc -eo pipefail -c "$SCRIPT" 2>&1)"
+  : >"$WORK/calls"
+  LOG="$(PATH="$BIN:$PATH" STUB_FIXTURE="$fixture" STUB_GLIBC="$glibc" STUB_CALLS="$WORK/calls" \
+    OMNI_DEV_VERSION=0.45.0 OS=Linux ARCH=X64 bash --noprofile --norc -eo pipefail -c "$SCRIPT" 2>&1)"
   STATUS=$?
   ERRORS="$(grep -c '^::error::' <<<"$LOG" || true)"
+  RUNS="$(grep -c . "$WORK/calls" || true)"
 }
 
 X86="$FIXTURES/0.45.0-x86_64-glibc-2.35.txt"
@@ -106,6 +110,7 @@ has "x86_64: the first way out is a newer runner image" "$LOG" \
   "Use a runner image with glibc 2.38 or newer (ubuntu-24.04, or ubuntu-24.04-arm)"
 has "x86_64: the second way out is to build from source" "$LOG" \
   "set 'use-prebuilt-binary: false' to build omni-dev from source."
+eq "x86_64: omni-dev was run once, and asked for its version" "1:--version" "$RUNS:$(cat "$WORK/calls")"
 
 # The ARM64 binary names 2.39 first and 2.38 second: the newest is the answer, and not the
 # first line or the last.
@@ -135,6 +140,34 @@ fixture three 1 \
   "omni-dev: /lib/libc.so.6: version \`GLIBC_2.38' not found (required by omni-dev)"
 run_step "$WORK/three.txt"
 has "a three-part version is read whole" "$LOG" "it needs glibc 2.38.1 or newer"
+fixture third 1 \
+  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.38.9' not found (required by omni-dev)" \
+  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.38.10' not found (required by omni-dev)"
+run_step "$WORK/third.txt"
+has "the third part is compared as a number: .10 beats .9" "$LOG" "it needs glibc 2.38.10 or newer"
+
+# ubuntu-24.04 has glibc 2.39. It is named as a way out only for a binary that needs no more
+# than that, so the advice does not send the caller to another failure.
+for need in 2.38 2.39; do
+  fixture "need-$need" 1 "omni-dev: /lib/libc.so.6: version \`GLIBC_$need' not found (required by omni-dev)"
+  run_step "$WORK/need-$need.txt"
+  has "needing $need: the newer images are named" "$LOG" "Use a runner image with glibc $need or newer (ubuntu-24.04, or ubuntu-24.04-arm), or set"
+done
+for need in 2.40 2.100 3.0 3; do
+  fixture "need-$need" 1 "omni-dev: /lib/libc.so.6: version \`GLIBC_$need' not found (required by omni-dev)"
+  run_step "$WORK/need-$need.txt"
+  has "needing $need: the glibc is asked for" "$LOG" "it needs glibc $need or newer"
+  has "needing $need: a newer runner image is still a way out" "$LOG" "Use a runner image with glibc $need or newer, or set 'use-prebuilt-binary: false'"
+  lacks "needing $need: but ubuntu-24.04, whose glibc is 2.39, is not named" "$LOG" "ubuntu-24.04"
+done
+fixture need-old 1 "omni-dev: /lib/libc.so.6: version \`GLIBC_1.9' not found (required by omni-dev)"
+run_step "$WORK/need-old.txt"
+has "needing 1.9: the newer images are named" "$LOG" "Use a runner image with glibc 1.9 or newer (ubuntu-24.04, or ubuntu-24.04-arm)"
+
+# Plain quotes, as other glibc versions print the same line.
+fixture plain-quotes 1 "omni-dev: /lib/x86_64-linux-gnu/libc.so.6: version 'GLIBC_2.38' not found (required by omni-dev)"
+run_step "$WORK/plain-quotes.txt"
+has "a loader that quotes with plain quotes is read too" "$LOG" "it needs glibc 2.38 or newer"
 
 # A weak version alone is not what stopped it: with nothing else to name, the step has no
 # glibc to ask for and says nothing of one.
@@ -152,6 +185,7 @@ eq "no getconf answer: the step still fails the same way" 1 "$STATUS"
 has "no getconf answer: it says the runner has an older glibc, and still what is needed" "$LOG" \
   "it needs glibc 2.38 or newer, and the runner has an older glibc."
 has "no getconf answer: both ways out are still given" "$LOG" "or set 'use-prebuilt-binary: false'"
+lacks "no getconf answer: getconf's own complaint is not added to the log" "$LOG" "Unrecognized variable"
 
 run_step "$X86" "glibc 2.31"
 has "another runner glibc is the one named" "$LOG" "and the runner has glibc 2.31."
@@ -174,11 +208,32 @@ fixture ok 0 "omni-dev 0.46.0 (b5445b9 2026-10-03)"
 run_step "$WORK/ok.txt"
 eq "a binary that runs: the step succeeds" 0 "$STATUS"
 eq "a binary that runs: it prints the version, as the step always did" "omni-dev 0.46.0 (b5445b9 2026-10-03)" "$LOG"
+eq "a binary that runs: omni-dev was run once" 1 "$RUNS"
 
 # Even when it runs and prints a loader-like word, nothing is made of a success.
 fixture ok-noisy 0 "omni-dev 0.46.0 (b5445b9 2026-10-03)" "note: version \`GLIBC_2.99' not found is only text here"
 run_step "$WORK/ok-noisy.txt"
 eq "a binary that runs: the output is not searched" 0 "$ERRORS"
+
+# --- no earlier step runs the binary ---------------------------------------------------------
+
+# This step is the one that says why a binary cannot start. A step before it that ran the
+# binary would stop first, with the loader's bare message, and this one would never run: the
+# download step ended on `omni-dev --version` and did exactly that on a cold cache, where the
+# install runs (a cache hit skips it, which is why a first run on a runner passed). So no line
+# of any step from the version to this one starts with the omni-dev command, bare or by path.
+# `mv`, `chmod` and `cargo install omni-dev` name the binary without running it and begin with
+# something else.
+INSTALL_STEPS="$(awk '
+  /^    - name: Resolve omni-dev version$/ { printing = 1 }
+  /^    - name: Print omni-dev version$/ { printing = 0 }
+  printing { print }
+' "$ACTION")"
+pass "the install steps were found, from the version up to this step" test -n "$INSTALL_STEPS"
+has "the install steps take in the download" "$INSTALL_STEPS" "    - name: Download pre-built binary"
+lacks "the install steps do not take in this step" "$INSTALL_STEPS" "    - name: $STEP"
+RUNS_BINARY="$(grep -nE '^[[:space:]]*(~/\.cargo/bin/|\$HOME/\.cargo/bin/)?omni-dev([[:space:]]|$)' <<<"$INSTALL_STEPS" || true)"
+eq "no step before this one runs omni-dev" "" "$RUNS_BINARY"
 
 # --- the wiring around the script -----------------------------------------------------------
 

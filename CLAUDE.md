@@ -309,7 +309,8 @@ The action is a composite action with two phases:
     keep the names they had, so no lookup or required check moved).
   - The legs run on `ubuntu-24.04-arm`, not an older ARM image: omni-dev's Linux binaries,
     the x86_64 ones too, need glibc 2.39 (the highest `GLIBC_` version in each binary's
-    version-needs table, read from the 0.45.0 and 0.46.0 releases), Ubuntu 24.04's, so an
+    version-needs table, read from the 0.45.0 and 0.46.0 releases), Ubuntu 24.04's (the x86_64
+    0.45.0 loader reports 2.38 as the hard requirement and 2.39 as a weak one, #67), so an
     older runner image fails at `Print omni-dev version`, which now says why (#67, below). Every leg checks it ran on the
     architecture it names (`runner.arch` and `uname -m`), as job 6 does, so a leg cannot
     pass as ARM64 on another runner.
@@ -415,8 +416,10 @@ The action is a composite action with two phases:
       `failure-messages` asserts the message of the failing leg (the release and platform, "needs
       glibc 2.38 or newer, and the runner has glibc 2.35.", and each way out). The version is a
       literal, `0.45.0`, because the matrix cannot read `env` and because the x86_64 capture is of
-      that release. It keeps the cache like the jobs that exist for something else: the binary is
-      the same whether restored or downloaded. If GitHub retires the `ubuntu-22.04` image the leg
+      that release. It runs the install and does not restore a binary, as a job whose point is the
+      install must (see the cache rule above): each leg's `cache-prefix` holds the run and the
+      attempt, as `version-pin`'s does, and a last step removes the binary so no entry is saved
+      that nothing would restore. If GitHub retires the `ubuntu-22.04` image the leg
       ends at the runner, not at an assertion. Both legs check out with `fetch-depth: 0`, as
       `output-flag` does: on a pull request the control goes on to "Determine merge-base", which
       needs `origin/main`, and the job's first run died there (`fatal: Not a valid object name
@@ -425,7 +428,21 @@ The action is a composite action with two phases:
       0.45.0)**, the first time the action was seen on an older image: the loader printed exactly
       the captured text (``version `GLIBC_2.38' not found`` and the weak 2.39), the step logged
       the message with 2.38 and 2.35, and the leg's assertions held. What was inferred before that
-      from #80's capture (an Ubuntu 22.04 container) is now seen on the hosted image.
+      from #80's capture (an Ubuntu 22.04 container) is now seen on the hosted image. That run hit
+      the cache, which is the path the next bullet is about.
+    - **Nothing before "Print omni-dev version" may run the binary (found in review).** "Download
+      pre-built binary" used to end on `~/.cargo/bin/omni-dev --version`. The download step runs
+      only on a cache miss, and on a miss it ran the binary first: the loader's bare message
+      failed it, the action stopped there, and the step that explains never ran. A failed job
+      saves no cache, so the people this is for would have stayed on cold runs and never seen the
+      message; the first CI run passed only because the `ubuntu-22.04` leg hit a cache that
+      another job had saved. The line is gone, and `print-version-step.test.sh` fails if any line of
+      the steps from the version to this one starts with the omni-dev command (`mv`, `chmod` and
+      `cargo install omni-dev` begin with something else). The job above forces the cold path.
+    - **The newer images are named only when they would do.** ubuntu-24.04 has glibc 2.39, so for
+      a binary that needs more (a `GLIBC_2.40` or a `2.100`) the message asks for the glibc and
+      names no image: naming 24.04 would send the caller to another failure. This is the staleness
+      the rejected option 1 would have had, kept to one number in one sentence.
     - Not shown: the Windows and macOS runners (the loader's `GLIBC_` text does not exist there, so
       nothing is added and behaviour is as before), and an older runner image on ARM64 (the
       `ubuntu-22.04-arm` image would show the 2.39 case; the unit test replays its capture).
@@ -721,10 +738,11 @@ The action is a composite action with two phases:
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
   - The poisoned-cache rule is checked by `tests/assert-omni-dev-version.sh <version>`, which
-    the fourteen jobs that assert a scenario's outcome end on, in `integration.yml`,
+    the fifteen jobs that assert a scenario's outcome end on, in `integration.yml`,
     `pr-paths.yml` and `e2e-sharded.yml`. `arm64-release-without-asset` installs nothing
     and `deprecation-control` has one install and asserts no outcome, so neither calls
-    it. It needs the version line to start with `omni-dev <version>` and
+    it; `old-glibc`'s failing leg installs a binary that cannot start, so only its control
+    calls it. It needs the version line to start with `omni-dev <version>` and
     the number to end at a space or the end of the line (the line is `omni-dev 0.45.0
     (b5445b9 2026-10-03)`, so a plain equality check would be wrong). The old
     `grep -qF` was a substring match, which would have let a pin that is a prefix or a
