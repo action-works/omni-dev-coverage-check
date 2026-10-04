@@ -22,7 +22,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `tests/llvm-cov-ignore-steps.test.sh` - Runs the five steps that run `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate and the recompute's report), read out of `action.yml`, against a stub `cargo`, and checks the one `--ignore-filename-regex=<value>` each gets, or none when the input is empty; it fails when another step runs `cargo llvm-cov report` (`test.yml` runs that)
 - `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
-- `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the three step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
+- `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the four step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
 - `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
@@ -838,17 +838,26 @@ The action is a composite action with two phases:
   - It goes to every `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line
     gate, the recompute's), not to a `--no-report` run: the filter applies at report time.
     It does not change when the merge happens (see "One profile merge").
-    `tests/llvm-cov-ignore-steps.test.sh` pins the argument at each of the five and lists the
-    steps that run `cargo llvm-cov report`, so a sixth has to take it. It was checked against
-    mutations, each of which fails it: the flag dropped from one step (the summary, the
-    recompute), an unquoted expansion, the flag and value as two arguments, the flag passed
-    when empty, the input interpolated into a script, a new report step without it, the flag
+    `tests/llvm-cov-ignore-steps.test.sh` pins the argument at each of the five and scans
+    every step's whole block (so an inline `run:` counts, which `step_run` would refuse) for
+    `cargo llvm-cov report` calls, which must be those five, and for any other `cargo llvm-cov`
+    call, which must be `show-env`, `clean` or `--no-report`: a sixth report step, a
+    `cargo +nightly llvm-cov report`, a `cargo llvm-cov --lcov` or a `report` on the next line
+    fails it until it takes the filter. It also pins that the five run in fat mode only (as
+    text: no job sets the input in thin mode). Checked against mutations, each of which fails
+    it: the flag dropped from one step (the summary, the recompute), an unquoted expansion, the
+    flag and value as two arguments, the flag passed when empty, the input interpolated into a
+    script, the five new-step shapes above, a summary step without its fat-mode `if:`, the flag
     on the `--no-report` build, commas turned into `|`.
   - The head lcov is also what a push to `main` publishes, so the baseline is filtered from
     then on. A baseline published before it was set is not, which is why the README says to
     set `ignore-filename-regex` too: that one filters it at diff time. The recompute runs in
-    `../base`, not in the workspace, so a pattern anchored on the workspace's path matches
-    the head and not the baseline.
+    `../base`, not in the workspace, so a pattern that holds the workspace's path or the
+    checkout directory's name (`myrepo/src/gpu/`, or anything anchored on it) matches the head
+    and not the recomputed baseline, and the comment shows those files as removed. There is no
+    cheap fix: the paths are rewritten after llvm-cov has applied the filter, and nothing here
+    can evaluate an LLVM regex. It is documented, and R3 uses a fragment from inside the
+    repository.
   - Fat mode only; in thin mode it is ignored, like the other fat-mode inputs, with no warning.
   - Tests: the unit test above, `integration.yml` F5 (the filter, a gate of 53) and F6 (the
     control without it, which fails at the gate) for the lcov, `codecov.json`, the summary and

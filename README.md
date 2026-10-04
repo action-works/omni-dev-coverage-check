@@ -448,10 +448,10 @@ Code a CI runner cannot execute (a GPU path, a backend gated to one platform) sh
 near-zero coverage and reads as a regression in the comment. Two inputs drop those files,
 because two programs compute coverage here and they do not read a pattern alike:
 
-| Input                            | Filters                                                                                                                                         | Pattern                                       |
-|----------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------|
-| `ignore-filename-regex`          | `omni-dev coverage diff`: the comment, the `patch-percent` / `line-percent` outputs, the patch gate and the thin-mode line gate                 | Rust regexes, comma-separated, on the repo-relative path |
-| `llvm-cov-ignore-filename-regex` | `cargo llvm-cov report`, fat mode only: the head lcov, `codecov.json`, the summary, the `fail-under-lines` gate and the merge-base recompute     | ONE LLVM (POSIX extended) regex, on the absolute path |
+| Input                            | Filters                                                                                                                                      | Pattern                                                  |
+|----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------|
+| `ignore-filename-regex`          | `omni-dev coverage diff`: the comment, the `patch-percent` / `line-percent` outputs, the patch gate and the thin-mode line gate              | Rust regexes, comma-separated, on the repo-relative path |
+| `llvm-cov-ignore-filename-regex` | `cargo llvm-cov report`, fat mode only: the head lcov, `codecov.json`, the summary, the `fail-under-lines` gate and the merge-base recompute | ONE LLVM (POSIX extended) regex, on the absolute path    |
 
 **Set both** in fat mode. For an unanchored path fragment, the usual case, the string is the
 same:
@@ -508,9 +508,11 @@ report you upload elsewhere.
   passed as it is: a comma is part of it (`a{1,3}` is fine) and several patterns are
   joined with `|` (`src/gpu/|-sys/`). It is matched against the **absolute** path, so write a
   fragment of the path such as `src/gpu/`: `^src/gpu/` matches nothing, and the file stays in
-  the summary as it was. The recompute builds in a worktree next to the workspace, a different
-  directory, so a pattern anchored on the workspace's path would match the head and not the
-  baseline.
+  the summary as it was. The recompute builds in a worktree next to the workspace (`../base`),
+  a different directory, so a pattern that holds the workspace's path or the checkout
+  directory's name (`myrepo/src/gpu/`, or anything anchored on it) matches the head and not the
+  recomputed baseline, and the comment shows those files as removed. Use a fragment from
+  inside the repository.
 - The syntax is LLVM's POSIX extended regex, not Rust's. **A pattern LLVM cannot compile is
   ignored silently, together with `cargo-llvm-cov`'s own default exclusions** (a `(?i)` flag,
   `(?:…)`, a lazy `.*?`, an empty alternative as in `a||b`, an unbalanced `)`): nothing fails,
