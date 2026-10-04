@@ -964,17 +964,25 @@ The action is a composite action with two phases:
     - It is red unless every result is `success`: `skipped` and `cancelled` too. The issue said
       `failure` or `cancelled`; skipped is added on purpose. No job of `integration.yml` has an `if:`,
       so a skipped job is always downstream of a failure and this adds no red today, and a job
-      skipped on purpose later turns it red with the job named, where a pass would hide it.
+      skipped on purpose later turns it red with the job named, where a pass would hide it. The
+      reverse hole is `continue-on-error: true` on a job, which reports a red job as `success`: so
+      `tests/merge-queue.test.sh` fails on a job-level `if:` or `continue-on-error:` in any job the
+      gate needs (a step-level one is fine, and the scenarios use it).
     - An empty or malformed `needs` is refused (exit 2), not passed: a gate over no jobs is how a
-      deleted `needs:` would go unnoticed.
+      deleted `needs:` would go unnoticed. It also fails closed on its own tooling: the job list is
+      captured with its status checked, not read from a process substitution, because a `jq` that died
+      there left a loop over nothing, which counted no failure and passed a red job (found in review;
+      the test runs the script with a `jq` that dies after its first call).
     - **A new job in `integration.yml` goes in `ci-gate`'s `needs`**, or nothing waits for it.
       `tests/merge-queue.test.sh` fails until it does, and for a name in `needs` that is no job.
       Its readers are awk over the layout the file has (a block list under `needs:`, a block under
       `on:`) and refuse a flow-style one rather than read it as empty.
-  - **A `merge_group` run is a `push` run that publishes nothing.** Every event test in
+  - **A `merge_group` run is a `push` run that publishes no baseline.** Every event test in
     `integration.yml` and `action.yml` is `pull_request` or `push` to `main`, so the queue's commit
     gets the whole suite, the coverage and the overall line gate, and no comment, merge-base, patch
-    gate or baseline publish. The baseline lookup does not filter by event and looks in every
+    gate or baseline publish. The uploads have no event condition and do run: `upload-artifacts`, and
+    `codecov`, whose `fail_ci_if_error: true` would eject a pull request on a codecov outage. The
+    README tells a caller how to turn the latter off for the event. The baseline lookup does not filter by event and looks in every
     successful run of a commit, so the `merge_group` run, which shares its head SHA with the `push`
     run that publishes the baseline, cannot hide it (the shadowing case of `tests/find-baseline.test.sh` is that shape: a newer run with no artifact in front of an older one that has it; the event itself is not exercised). Commit
     Check on the queue's ref has `GITHUB_BASE_REF` empty and a ref other than `main`, so
@@ -993,7 +1001,10 @@ The action is a composite action with two phases:
   - **Decided in #76: the `latest` jobs gate.** After each omni-dev release every `version: latest` job
     is red for about 6 to 10 minutes (#64), and `ci-gate` needs them, so a queued pull request is
     ejected in that window and has to be enqueued again. Leaving them out would mean restructuring
-    `failure-messages` and `ci-gate`; #64 is the real fix. Each merge also runs Test, Commit Check and
+    `failure-messages` and `ci-gate`; #64 is the real fix. The same goes for anything else that reads
+    live state: `latest-redirect`, and `deprecation-control` (an omni-dev that removes `--format` or
+    rewords clap's message turns it red with no pull request at fault). Merges then wait for the
+    cause to be fixed, or for the admin bypass, which is what it is for. Each merge also runs Test, Commit Check and
     Integration a second time, about 2 minutes of latency, and the cache entries a queue ref saves are
     never restored by anyone (a queue entry has its own ref), so each merge adds a few that age out.
   - **Not verified** (the first queue run is the real test): plan eligibility, which came from secondary
