@@ -43,7 +43,7 @@ inputs:
     required: false
     default: ''
   test-args:
-    description: 'Arguments passed to `cargo test`/`cargo llvm-cov` under instrumentation (fat mode). Split on whitespace: quotes and shell expansions are not interpreted'
+    description: 'Arguments passed to `cargo test`/`cargo llvm-cov` under instrumentation (fat mode). Split on whitespace only: a value holding a quote, a backslash, `$` or a backtick fails the step instead of being interpreted'
     required: false
     default: '--all-features --workspace'
   setup-commands:
@@ -119,7 +119,7 @@ inputs:
     required: false
     default: 'true'
   worktree-system-deps:
-    description: 'Space-separated apt packages to install before the worktree recompute (e.g. libasound2-dev). Split on whitespace: quotes and shell expansions are not interpreted. Empty installs nothing'
+    description: 'Space-separated apt packages to install before the worktree recompute (e.g. libasound2-dev). Split on whitespace only: a value holding a quote, a backslash, `$` or a backtick, or a word starting with a dash, fails the step. Empty installs nothing'
     required: false
     default: ''
   publish-baseline:
@@ -358,7 +358,7 @@ runs:
         VERSION: ${{ steps.resolve-version.outputs.version }}
       run: |
         echo "Installing omni-dev $VERSION via cargo install..."
-        cargo install omni-dev --version "$VERSION"
+        env -u VERSION cargo install omni-dev --version "$VERSION"
 
     - name: Print omni-dev version
       shell: bash
@@ -500,8 +500,11 @@ runs:
         export LLVM_PROFILE_FILE=/dev/null
         # The input is shell by design. It is evaluated here, in this step's own shell
         # (bash -e -o pipefail, the instrumentation env loaded), so every line shares
-        # state; the runner never splices it into this script as an expression.
-        eval "$SETUP_COMMANDS"
+        # state; the runner never splices it into this script as an expression. The
+        # variable is dropped first so the commands do not see it in their environment.
+        commands="$SETUP_COMMANDS"
+        unset SETUP_COMMANDS
+        eval "$commands"
 
     - name: Run tests with coverage
       if: inputs.run-coverage == 'true'
@@ -509,11 +512,22 @@ runs:
       env:
         TEST_ARGS: ${{ inputs.test-args }}
       run: |
+        # The value is split on whitespace only: no quote removal, no expansion, no
+        # globbing. A value that used to rely on the shell parsing it fails here, loudly,
+        # rather than reaching cargo as different arguments from the ones written.
+        case "$TEST_ARGS" in
+          *[\"\'\\\`\$]*)
+            echo '::error::test-args holds a quote, a backslash, a dollar sign or a backtick. It is split on whitespace only and none of those is interpreted, so cargo would get arguments other than the ones written. Write plain whitespace-separated arguments.'
+            exit 1
+            ;;
+        esac
+        set -f
+        test_args=($TEST_ARGS)
+        set +f
+        # The caller's tests run next: they should not see the action's variable.
+        unset TEST_ARGS
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
-        # Split on whitespace only: no quote removal, no expansion, no globbing. `read`
-        # returns non-zero at the end of the input (there is no NUL), hence `|| true`.
-        read -r -d '' -a test_args <<<"$TEST_ARGS" || true
         cargo test "${test_args[@]}"
 
     - name: Run extra (gated) tests with coverage
@@ -529,7 +543,9 @@ runs:
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
         # Shell by design, evaluated in this step's own shell, as the setup commands are.
-        eval "$EXTRA_TEST_COMMANDS"
+        commands="$EXTRA_TEST_COMMANDS"
+        unset EXTRA_TEST_COMMANDS
+        eval "$commands"
 
     # The reports below, and the line gate at the end, share ONE profile merge.
     # Every `cargo llvm-cov report` runs `llvm-profdata merge` over all the raw
@@ -685,14 +701,32 @@ runs:
         fi
         # Optional system deps for building historical commits (e.g. a merge-base
         # that predates a native-dependency removal). No-op when unset. Packages and
-        # test arguments are split on whitespace only: no quote removal, no expansion,
-        # no globbing. `read` returns non-zero at the end of the input, hence `|| true`.
+        # test arguments are split on whitespace only: no quote removal, no expansion, no
+        # globbing. The test arguments passed the same check in "Run tests with coverage".
+        case "$WORKTREE_SYSTEM_DEPS" in
+          *[\"\'\\\`\$]*)
+            echo '::error::worktree-system-deps holds a quote, a backslash, a dollar sign or a backtick. It is split on whitespace only and none of those is interpreted. Write package names separated by spaces.'
+            exit 1
+            ;;
+        esac
+        set -f
+        system_deps=($WORKTREE_SYSTEM_DEPS)
+        test_args=($TEST_ARGS)
+        set +f
+        for dep in "${system_deps[@]}"; do
+          case "$dep" in
+            -*)
+              echo "::error::worktree-system-deps holds '$dep', which starts with a dash and would be read by apt-get as an option. Name packages only."
+              exit 1
+              ;;
+          esac
+        done
         if [ -n "$WORKTREE_SYSTEM_DEPS" ]; then
-          read -r -d '' -a system_deps <<<"$WORKTREE_SYSTEM_DEPS" || true
           sudo apt-get update && sudo apt-get install -y "${system_deps[@]}"
         fi
-        read -r -d '' -a test_args <<<"$TEST_ARGS" || true
         git worktree add ../base "$BASE_SHA"
+        # The merge-base's tests run next: they should not see the action's variables.
+        unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA
         ( cd ../base && cargo llvm-cov "${test_args[@]}" --no-report \
             && cargo llvm-cov report --lcov --output-path "$REPORT_BASENAME" )
         mkdir -p baseline
