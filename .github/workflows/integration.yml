@@ -509,7 +509,12 @@ jobs:
           - runner: ubuntu-24.04
             expect: success
     steps:
+      # The full history, as `output-flag` has it: on a pull request the control gets past the
+      # install and the guard to "Determine merge-base", which needs `origin/main`. The leg that
+      # fails stops long before that.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Write fixtures
         run: |

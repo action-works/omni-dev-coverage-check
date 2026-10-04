@@ -417,7 +417,15 @@ The action is a composite action with two phases:
       literal, `0.45.0`, because the matrix cannot read `env` and because the x86_64 capture is of
       that release. It keeps the cache like the jobs that exist for something else: the binary is
       the same whether restored or downloaded. If GitHub retires the `ubuntu-22.04` image the leg
-      ends at the runner, not at an assertion.
+      ends at the runner, not at an assertion. Both legs check out with `fetch-depth: 0`, as
+      `output-flag` does: on a pull request the control goes on to "Determine merge-base", which
+      needs `origin/main`, and the job's first run died there (`fatal: Not a valid object name
+      origin/main`, exit 128) on a shallow clone. The failing leg stops long before that.
+    - **Observed on a real runner (2026-10-04, `ubuntu-22.04` image 20260927.309.1, glibc 2.35, omni-dev
+      0.45.0)**, the first time the action was seen on an older image: the loader printed exactly
+      the captured text (``version `GLIBC_2.38' not found`` and the weak 2.39), the step logged
+      the message with 2.38 and 2.35, and the leg's assertions held. What was inferred before that
+      from #80's capture (an Ubuntu 22.04 container) is now seen on the hosted image.
     - Not shown: the Windows and macOS runners (the loader's `GLIBC_` text does not exist there, so
       nothing is added and behaviour is as before), and an older runner image on ARM64 (the
       `ubuntu-22.04-arm` image would show the 2.39 case; the unit test replays its capture).
