@@ -55,6 +55,17 @@ pipeline itself — exactly like a hand-rolled coverage job. You only check out 
 repo with `fetch-depth: 0`; the action handles the toolchain, `cargo-llvm-cov`
 install, instrumented test run, report generation, baseline, comment, and gates.
 
+The instrumented run's raw profiles (`*.profraw`) are merged **once**, however many
+outputs are produced. `cargo llvm-cov report` merges every raw profile each time it is
+called, which costs minutes per call for a suite that spawns many processes and leaves
+thousands of them. The action merges them with the first report (the lcov), removes the
+raw profiles, and lets the `codecov.json`, summary and line-gate calls read the merged
+profile. The outputs are unchanged. Once the action has run, the target directory holds
+the merged profile (`<workspace>.profdata`) and no `*.profraw`. A `cargo llvm-cov report`
+in your own steps afterwards still works and reads that profile; if you run more
+instrumented tests before it, it covers only those, because this run's raw profiles
+are gone.
+
 ### Thin mode
 
 `run-coverage: false` skips `cargo-llvm-cov` entirely. Produce the per-line lcov

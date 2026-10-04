@@ -467,8 +467,32 @@ runs:
         eval "$(cargo llvm-cov show-env --sh)"
         ${{ inputs.extra-test-commands }}
 
+    # The reports below, and the line gate at the end, share ONE profile merge.
+    # Every `cargo llvm-cov report` runs `llvm-profdata merge` over all the raw
+    # profiles it finds first, and a run that leaves thousands of them (tests that
+    # spawn processes) spends minutes there per call. So the first report merges
+    # and the raw profiles are then removed: a report that finds none skips the
+    # merge and reads the merged profile (`target/<name>.profdata`) instead.
+
+    - name: Generate head coverage report (lcov)
+      # Per-line lcov for the head commit: the input to `omni-dev coverage diff`.
+      # It is the first report because the first one pays for the merge, and this
+      # is the one a pull request cannot do without. Keep it ahead of every other
+      # `cargo llvm-cov report` step: one placed before it merges again.
+      if: inputs.run-coverage == 'true'
+      shell: bash
+      run: |
+        # shellcheck disable=SC1090
+        eval "$(cargo llvm-cov show-env --sh)"
+        cargo llvm-cov report --lcov --output-path "${{ inputs.report }}"
+        # Merged, so the raw profiles have done their job. The profile is kept
+        # (`--profraw-only`); the next run starts with `clean --workspace`, which
+        # removes it, so a stale one is never reused.
+        cargo llvm-cov clean --profraw-only
+
     - name: Generate codecov.json
       # Kept ready so the optional codecov.io upload below works when enabled.
+      # Reads the profile the lcov step merged.
       if: inputs.run-coverage == 'true'
       shell: bash
       run: |
@@ -476,18 +500,10 @@ runs:
         eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov report --codecov --output-path codecov.json
 
-    - name: Generate head coverage report (lcov)
-      # Per-line lcov for the head commit: the input to `omni-dev coverage diff`.
-      if: inputs.run-coverage == 'true'
-      shell: bash
-      run: |
-        # shellcheck disable=SC1090
-        eval "$(cargo llvm-cov show-env --sh)"
-        cargo llvm-cov report --lcov --output-path "${{ inputs.report }}"
-
     - name: Build coverage summary
       # Full per-file summary: appended to the run's Summary tab and published as
-      # a build artifact. Intentionally NOT inlined into the PR comment.
+      # a build artifact. Intentionally NOT inlined into the PR comment. Reads the
+      # profile the lcov step merged.
       if: inputs.run-coverage == 'true'
       shell: bash
       run: |
@@ -701,6 +717,7 @@ runs:
       if: inputs.run-coverage == 'true' && inputs.fail-under-lines != ''
       shell: bash
       run: |
+        # Reads the profile the lcov step merged; it does not merge again.
         # shellcheck disable=SC1090
         eval "$(cargo llvm-cov show-env --sh)"
         cargo llvm-cov report --summary-only --fail-under-lines "${{ inputs.fail-under-lines }}"
