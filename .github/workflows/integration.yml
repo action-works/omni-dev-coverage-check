@@ -16,7 +16,8 @@ name: Integration
 # runner against a release that has the ARM64 asset, and `arm64-release-without-asset`
 # against one that does not. One job resolves `version: latest` with a token the API
 # refuses, so that the fallback to the releases/latest redirect has to answer, and
-# compares it with the API's answer.
+# compares it with the API's answer. One pins `version: v0.45.0`, to show that the
+# whole install takes a release tag as written.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -36,7 +37,7 @@ name: Integration
 #     one's leftovers.
 #   - Every scenario passes `baseline-ancestor-depth: 0`. None is about the baseline, and
 #     this workflow publishes none, so with the walk on each lookup on a pull request would
-#     try the merge-base and ten ancestors and find nothing: up to about 175 requests per
+#     try the merge-base and ten ancestors and find nothing: up to about 200 requests per
 #     pull-request run, against the 1,000 an hour a repository's token has. The walk and the baseline lookup
 #     are tested in pr-paths.yml and e2e-sharded.yml, and scripts/find-baseline.sh by
 #     tests/find-baseline.test.sh.
@@ -851,6 +852,135 @@ jobs:
           bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
+  # A `version` written as a release tag, `v0.45.0`, through the whole install (#52).
+  # `tests/resolve-version-step.test.sh` runs the strip on its own; this runs what comes
+  # after it on a runner: the platform step's download URL, the install, and the
+  # `version` and `release-tag` outputs a caller reads. A step that read `inputs.version`
+  # instead of the resolved value would build `vv0.45.0`, which 404s (#38), and the unit
+  # test would stay green.
+  #
+  # Only a run that reaches the download can see that, and the platform and download
+  # steps are skipped on a cache hit. Left on the default key, which is the one the
+  # thin-mode job's 0.45.0 leg saves and a `v0.45.0` pin resolves to, this job would hit
+  # the cache after the first run on `main` and check only the outputs. So each leg
+  # builds its key from the run, the attempt and its own pin (`cache-prefix`): it cannot
+  # exist, and the install runs every time. The assertion step checks that it did, and
+  # the last step removes the binary so the cache's post step saves nothing, since
+  # nothing will ever restore a key like this. The price is that nothing here compares
+  # the two spellings' keys: one built from `inputs.version` would cost a duplicate cache
+  # entry, not a failure, and no test sees it.
+  #
+  # A leg per spelling, each its own job, so that the binary on PATH can only have come
+  # from that leg's install: in one job, a second install would put it there even if the
+  # first had failed at the 404. `0.45.0` is the control for `v0.45.0` (only `version`
+  # and the text of the prefix that carries it differ) and must give the same outputs.
+  # The matrix cannot read `env`, so the pins are literals; the outputs expected below
+  # are literals too, because both spellings must come out the same.
+  #
+  # Thin mode with the line gate off, so nothing but the install is in play, and no cargo
+  # build. The `use-prebuilt-binary: false` path compiles omni-dev and has no leg: cargo
+  # refuses `v0.45.0` outright (#38). It reads the resolved `version`, which the unit test
+  # pins has no `v`; nothing pins that it reads that and not `inputs.version`.
+  version-pin:
+    name: Pinned version (${{ matrix.pin }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pin: ['v0.45.0', '0.45.0']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write fixtures
+        run: printf 'SF:%s/README.md\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nend_of_record' "$GITHUB_WORKSPACE" > single.lcov
+
+      - name: '11. Install the pinned version'
+        id: pin
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.pin }}
+          cache-prefix: version-pin-${{ matrix.pin }}-${{ github.run_id }}-${{ github.run_attempt }}-
+          run-coverage: false
+          report: single.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
+
+      - name: Assert the outcome
+        env:
+          INSTALL: ${{ steps.pin.outcome }}
+          VERSION: ${{ steps.pin.outputs.version }}
+          RELEASE_TAG: ${{ steps.pin.outputs.release-tag }}
+          PIN: ${{ matrix.pin }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+          assert() { # <label> <command...>
+            local label="$1"
+            shift
+            if "$@" > /dev/null 2>&1; then
+              echo "ok   - $label"
+            else
+              echo "::error::$label"
+              status=1
+            fi
+          }
+
+          check "11 ($PIN): the install succeeded" success "$INSTALL"
+          check "11 ($PIN): the version output has no leading v" 0.45.0 "$VERSION"
+          check "11 ($PIN): the release-tag output is the v-prefixed tag" v0.45.0 "$RELEASE_TAG"
+
+          # The install ran in this job. The action leaves the archive it downloads in
+          # /tmp, and a cache hit downloads nothing, so the archive shows the platform
+          # and download steps ran; without it a cache hit would pass every check above.
+          # The name comes from the script the action uses, and an empty one would turn
+          # the path into the directory, which `test -f` rejects.
+          if asset="$(bash scripts/omni-dev-asset.sh "$RUNNER_OS" "$RUNNER_ARCH")" && [ -n "$asset" ]; then
+            assert "11 ($PIN): the release archive was downloaded, not restored from the cache (/tmp/$asset)" test -f "/tmp/$asset"
+          else
+            echo "::error::11 ($PIN): scripts/omni-dev-asset.sh has no asset for $RUNNER_OS $RUNNER_ARCH, so the download cannot be checked"
+            status=1
+          fi
+
+          # On a pull request the diffs run, and the failure-messages job reads this
+          # job's log for a deprecation warning from either. The files show they ran: a
+          # skipped step logs nothing, so a log without a warning proves nothing about a
+          # step that did not run.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            if [ ! -s coverage.md ] || ! jq -e 'type == "object"' coverage.json > /dev/null 2>&1; then
+              echo "::error::the pull-request diffs did not both run (coverage.md, coverage.json), so this job's log says nothing about deprecated flags"
+              status=1
+            fi
+          fi
+
+          # The binary on PATH is the version that was resolved. The action's output, not
+          # the pin: a pin written with a v is not a bare release number, and passing the
+          # pin without its v would repeat the action's own strip instead of testing it.
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          exit "$status"
+
+      # Last, so the assertions above see the binary. The cache key is unique to this
+      # run, so what the cache's post step would save is never restored: an entry of about
+      # 18 MiB per leg per run (0.45.0's is 17.66 MiB), against a repository cache of
+      # about 200 MB in all, which would push out the entries the other jobs reuse. With
+      # no file at the cached path it saves nothing and logs a warning about the missing
+      # path.
+      - name: Leave nothing for the cache to save
+        run: rm -f "$HOME/.cargo/bin/omni-dev"
+
   fat-mode:
     name: Fat mode (fixture crate)
     runs-on: ubuntu-latest
@@ -1196,6 +1326,7 @@ jobs:
       - ignore-filename-regex
       - ignore-filename-regex-flag
       - latest-redirect
+      - version-pin
       - fat-mode
       - deprecation-control
     runs-on: ubuntu-latest
