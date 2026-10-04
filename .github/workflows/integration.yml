@@ -368,8 +368,9 @@ jobs:
   #
   # Thin mode with the line gate off, so nothing but the `--output` need is in play,
   # and no cargo build. Two legs lack the flag in different ways: 0.31.0 has `coverage
-  # diff` without it, and 0.28.0 has no `coverage diff` to ask, so the guard's `--help`
-  # fails. Both must reach the same message.
+  # diff` without it (clap says the argument is unexpected), and 0.28.0 has no `coverage
+  # diff` to ask (clap says the subcommand is unrecognized). Both must reach the same
+  # message.
   output-flag:
     name: Output flag (omni-dev ${{ matrix.omni-dev }})
     runs-on: ubuntu-latest
@@ -378,7 +379,7 @@ jobs:
       matrix:
         include:
           # The newest release with no `coverage` subcommand at all (it arrived in
-          # 0.29.0), so `coverage diff --help` itself fails rather than lacking a flag.
+          # 0.29.0), so the guard's probe fails on the subcommand rather than the flag.
           - omni-dev: '0.28.0'
             has-output: false
           # The newest release with `coverage diff` but without `--output`.
@@ -1038,8 +1039,8 @@ jobs:
           # floor and the way out. Only a pull request runs it, so on any other event
           # the legs without the flag succeed and have no message to read. Both legs
           # without it must reach the same message: 0.31.0 has `coverage diff` without
-          # the flag, and 0.28.0 has no `coverage diff` at all, so its `--help` fails
-          # before anything is read. The job names are the ones `output-flag` sets
+          # the flag, and 0.28.0 has no `coverage diff` at all, so its probe fails on
+          # the subcommand before any flag is looked at. The job names are the ones `output-flag` sets
           # above; keep the versions in step with its matrix. The version is a fragment
           # of its own because `omni-dev --version` can carry a commit and date after it.
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
