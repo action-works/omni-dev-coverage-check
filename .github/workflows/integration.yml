@@ -11,9 +11,10 @@ name: Integration
 # said is asserted by the last job, which reads the finished jobs' logs through
 # the API. On a pull request it also asserts that none of the jobs that ran the
 # pull-request steps logged an omni-dev deprecation warning, and a control job
-# that logs one on purpose shows that reading can find it. One job runs on an
-# ARM64 Linux runner, to show that the pre-built binary is chosen by architecture.
-# One resolves `version: latest` with a token the API refuses, so that the fallback
+# that logs one on purpose shows that reading can find it. Two things run on an
+# ARM64 Linux runner, to show that the pre-built binary is chosen by architecture: the
+# ARM64 legs of `thin-mode`, on a release that has the ARM64 asset, and
+# `arm64-release-without-asset`, on one that does not. One resolves `version: latest` with a token the API refuses, so that the fallback
 # to the releases/latest redirect has to answer, and compares it with the API's answer.
 #
 # Rules that keep these tests honest:
@@ -74,19 +75,48 @@ env:
   OLD_OMNI_DEV: '0.44.0'
 
 jobs:
+  # The thin-mode scenarios on x86_64 and on ARM64 Linux. The ARM64 legs are the install
+  # that succeeds on ARM64 (#20): a release that carries `omni-dev-linux-arm64.tar.gz`,
+  # downloaded, extracted and run on a real ARM64 runner. Its control is
+  # `arm64-release-without-asset` below: the same runner and action inputs, a release
+  # without the asset, which must fail. They are legs of this job so that a scenario
+  # added here reaches ARM64 too. The x86_64 legs keep the names they always had; the
+  # ARM64 ones add `, ARM64`, which is what `failure-messages` looks them up by.
   thin-mode:
-    name: Thin mode (omni-dev ${{ matrix.omni-dev }})
-    runs-on: ubuntu-latest
+    name: Thin mode (omni-dev ${{ matrix.omni-dev }}${{ matrix.arch == 'ARM64' && ', ARM64' || '' }})
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        # 0.45.0 is the first release with `coverage diff --fail-under-lines`: the
-        # floor the README documents. `latest` catches a bad future release.
-        omni-dev: ['0.45.0', 'latest']
+        include:
+          # 0.45.0 is the first release with `coverage diff --fail-under-lines`: the
+          # floor the README documents. `latest` catches a bad future release.
+          - { omni-dev: '0.45.0', runner: ubuntu-latest, arch: X64 }
+          - { omni-dev: 'latest', runner: ubuntu-latest, arch: X64 }
+          # 0.46.0 is the first release that publishes omni-dev-linux-arm64.tar.gz
+          # (rust-works/omni-dev#2148), so it is the floor for the ARM64 pre-built
+          # install and stays put. `ubuntu-24.04-arm`: the binary needs the glibc of
+          # Ubuntu 24.04 (2.39), which an older ARM runner image lacks.
+          - { omni-dev: '0.46.0', runner: ubuntu-24.04-arm, arch: ARM64 }
+          - { omni-dev: 'latest', runner: ubuntu-24.04-arm, arch: ARM64 }
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # An ARM64 leg exists to run the install, and `actions/cache` restores
+      # ~/.cargo/bin/omni-dev on a hit, which skips "Download pre-built binary": a leg
+      # that hit would pass on a cached binary and never run the code a pull request
+      # changed. The cache key does not hold the action's code, so the ARM64 legs put a
+      # hash of it in the key (`cache-prefix`): the first run after a change to the
+      # install code installs for real, and runs on unchanged code reuse the entry. The
+      # x86_64 legs are left on the default key (see #20's follow-ups).
+      - name: Key the omni-dev cache to the install code (ARM64)
+        id: scope
+        if: ${{ matrix.arch == 'ARM64' }}
+        env:
+          INSTALL_CODE: ${{ hashFiles('action.yml', 'scripts/*.sh') }}
+        run: echo "prefix=install-$INSTALL_CODE-" >> "$GITHUB_OUTPUT"
 
       # Real llvm-cov shape: no newline after the final end_of_record. Each shard
       # alone covers 2 of 4 lines (50%); their union covers 3 of 4 (75%), so a gate
@@ -104,6 +134,7 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
+          cache-prefix: ${{ steps.scope.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/s1.lcov
@@ -120,6 +151,7 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
+          cache-prefix: ${{ steps.scope.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/s2.lcov
@@ -136,6 +168,7 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
+          cache-prefix: ${{ steps.scope.outputs.prefix }}
           run-coverage: false
           report: single.lcov
           fail-under-lines: 90
@@ -151,6 +184,7 @@ jobs:
         continue-on-error: true
         with:
           version: ${{ matrix.omni-dev }}
+          cache-prefix: ${{ steps.scope.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/missing-*.lcov
           report: out/s4.lcov
@@ -168,6 +202,8 @@ jobs:
           S3: ${{ steps.s3.outcome }}
           S4: ${{ steps.s4.outcome }}
           VERSION: ${{ steps.s1.outputs.version }}
+          ARCH: ${{ runner.arch }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
           status=0
           check() { # <label> <expected> <actual>
@@ -178,6 +214,18 @@ jobs:
               status=1
             fi
           }
+
+          # A leg is about the architecture it names only if it ran on it: an ARM64 leg
+          # that landed on an x86_64 runner would show nothing about the ARM64 asset.
+          case "$EXPECTED_ARCH" in
+            ARM64) machine=aarch64 ;;
+            *) machine=x86_64 ;;
+          esac
+          if [ "$ARCH" != "$EXPECTED_ARCH" ] || [ "$(uname -m)" != "$machine" ]; then
+            echo "::error::this leg is for $EXPECTED_ARCH but ran on runner.arch $ARCH, uname -m $(uname -m)"
+            status=1
+          fi
+
           check "1. sharded, gate below the union" success "$S1"
           check "2. sharded, gate above the union" failure "$S2"
           check "3. single report with the gate" success "$S3"
@@ -307,8 +355,9 @@ jobs:
   # have downloaded a binary it cannot execute and failed later, at the version
   # check, and never said why. It must now stop at the install step and name the
   # asset it looked for. The control is 5b: the same action inputs on an x86_64
-  # runner, which must succeed. The install that succeeds on ARM64 needs a release that
-  # carries the asset, which does not exist yet (#20).
+  # runner, which must succeed. The install that succeeds on ARM64 is the ARM64 legs of
+  # `thin-mode` above (#20): this job is their control, the same runner and action inputs
+  # on a release without the asset.
   arm64-release-without-asset:
     name: Pre-built binary (ARM64 Linux, omni-dev without the ARM64 asset)
     runs-on: ubuntu-24.04-arm
@@ -1193,12 +1242,13 @@ jobs:
             status=1
           }
 
-          # 4: a shard pattern that matches nothing names the pattern. Both legs of
-          # the thin-mode matrix run it; keep the versions in step with that matrix.
-          # The pattern is the one in scenario 4's `shard-reports`.
-          for version in 0.45.0 latest; do
-            if errors="$(bash tests/job-errors.sh "Thin mode (omni-dev $version)")"; then
-              expect "4 (omni-dev $version): the pattern that matched nothing is named" "$errors" \
+          # 4: a shard pattern that matches nothing names the pattern. Every leg of
+          # the thin-mode matrix runs it; keep the legs in step with that matrix (each is
+          # the job's name with the version, then `, ARM64` on an ARM64 runner). The
+          # pattern is the one in scenario 4's `shard-reports`.
+          for leg in '0.45.0' 'latest' '0.46.0, ARM64' 'latest, ARM64'; do
+            if errors="$(bash tests/job-errors.sh "Thin mode (omni-dev $leg)")"; then
+              expect "4 (omni-dev $leg): the pattern that matched nothing is named" "$errors" \
                 "shard-reports pattern 'shards/missing-*.lcov' matched no files"
             else
               status=1
