@@ -42,6 +42,8 @@ fi
 STEP_NAME='Resolve omni-dev version'
 BLOCK="$(step_block "$STEP_NAME")" || exit 1
 RESOLVE="$(step_run "$STEP_NAME")" || exit 1
+TOKEN_INPUT="$(input_block github-token)" || exit 1
+VERSION_INPUT="$(input_block version)" || exit 1
 
 BIN="$WORK/bin"
 mkdir "$BIN"
@@ -393,13 +395,13 @@ has "shell: the step runs under bash, as these cases do" "$BLOCK" "      shell: 
 has "env: the step reads the token from the github-token input" "$BLOCK" \
   '        GH_TOKEN: ${{ inputs.github-token }}'
 # shellcheck disable=SC2016
-has "input: github-token defaults to the workflow token" "$(input_block github-token)" \
+has "input: github-token defaults to the workflow token" "$TOKEN_INPUT" \
   '    default: ${{ github.token }}'
 has "input: github-token is optional, so a workflow needs no configuration" \
-  "$(input_block github-token)" "    required: false"
+  "$TOKEN_INPUT" "    required: false"
 # The v is accepted, so the input must say so: a caller who copies a release tag
 # should not have to read the script to learn it works.
-has "input: version says a leading v is accepted" "$(input_block version)" \
+has "input: version says a leading v is accepted" "$VERSION_INPUT" \
   "with or without a leading v (e.g., 0.45.0 or v0.45.0)"
 
 # The runner evaluates every expression in a `run:` script before bash sees it,

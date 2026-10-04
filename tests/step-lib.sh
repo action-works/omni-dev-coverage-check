@@ -34,8 +34,9 @@
 # a key after the list), so another step's `run:` is never read as this one's. The same
 # line ends an input's block at 2 spaces. That reads a comment at those indents as the end,
 # so a comment there in the middle of a step would cut it short: action.yml has none.
-# A body ends at the first non-blank line indented less than it, and a whitespace-only line
-# inside it is an empty line.
+# A body ends at the first non-blank line indented less than it. A whitespace-only line
+# inside it is an empty line, or, if it is longer than the indent, the spaces past column 8
+# (as YAML reads it).
 #
 # The awk is POSIX (no regex intervals, no gensub): the ubuntu runners' default awk is mawk.
 # tests/step-lib.test.sh tests this file.

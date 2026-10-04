@@ -134,6 +134,12 @@ ACTION="$WORK/blank.yml"
 read_with step_run Alpha
 is_read "step_run: a blank line and a whitespace-only line do not end the body" $'echo a\n\n\necho b'
 
+# Past the body's indent, spaces are the line's own, as YAML reads them.
+printf 'runs:\n  steps:\n    - name: Alpha\n      run: |\n        echo a\n            \n        echo b\n' >"$WORK/blank-long.yml"
+ACTION="$WORK/blank-long.yml"
+read_with step_run Alpha
+is_read "step_run: a whitespace-only line longer than the indent keeps the spaces past it" $'echo a\n    \necho b'
+
 for style in '|' '|-' '|+'; do
   yaml "style" <<EOF
 runs:
@@ -472,30 +478,43 @@ is_read "step_run: a backslash in the name is not an escape" "echo matched"
 # --- the real action.yml ---------------------------------------------------------------
 
 # Its steps are not any one layout, so no step is named here: each must be read whole or
-# refused, never half-read, and the reader must reach more than none of them.
+# refused, never half-read. What each reader should reach is counted without the readers:
+# a step whose `run:` is a literal block is read, so the count of those lines is the count
+# of scripts read (every step here is named; an unnamed step with a block script would be
+# counted and not read, which this would report). And a script's last line must be inside
+# its step_block, so a block cut short before the script ends is caught.
 ACTION="$ROOT/action.yml"
 steps=0 read_steps=0 broken=""
 while IFS= read -r name; do
   steps=$((steps + 1))
   read_with step_block "$name"
-  if [ "$STATUS" -ne 0 ] || [ "$(head -n1 <<<"$OUT")" != "    - name: $name" ]; then
+  block="$OUT"
+  if [ "$STATUS" -ne 0 ] || [ "$(head -n1 <<<"$block")" != "    - name: $name" ]; then
     broken+=" [step_block $name]"
   fi
   read_with step_run "$name"
   if [ "$STATUS" -eq 0 ]; then
     read_steps=$((read_steps + 1))
-    if [ -z "$OUT" ] || [ -n "$ERR" ]; then broken+=" [step_run read nothing: $name]"; fi
+    if [ -z "$OUT" ] || [ -n "$ERR" ]; then
+      broken+=" [step_run read nothing: $name]"
+    elif ! grep -qxF -- "        $(tail -n1 <<<"$OUT")" <<<"$block"; then
+      broken+=" [step_block ends before the script does: $name]"
+    fi
   elif [ -n "$OUT" ] || [ -z "$ERR" ]; then
     broken+=" [step_run refused unclearly: $name]"
   fi
 done < <(sed -n 's/^    - name: //p' "$ACTION")
 eq "action.yml: every step is read whole or refused cleanly" "" "$broken"
 pass "action.yml: the file has steps to read" test "$steps" -gt 0
-pass "action.yml: some of them have a script the reader gets" test "$read_steps" -gt 0
+eq "action.yml: every step with a literal-block run: is read" \
+  "$(grep -cE '^      run: [|][-+]? *$' "$ACTION")" "$read_steps"
 
-# An input of the real file, from its own name line and no further than its own keys.
+# An input of the real file, from its own name line and no further than its own keys. The
+# next input is found without the reader: the first key at the inputs' indent below it.
+next_input="$(sed -n '/^  version:$/,$p' "$ACTION" | sed 1d | grep -m1 -E '^  [a-z][a-z0-9-]*:$')"
+pass "action.yml: there is an input after version to stop before" test -n "$next_input"
 read_with input_block version
 eq "action.yml: input_block starts at the input's name line" "  version:" "$(head -n1 <<<"$OUT")"
-lacks "action.yml: and stops before the next input" "$OUT" "  github-token:"
+lacks "action.yml: and stops before the next input" "$OUT" "$next_input"
 
 summary
