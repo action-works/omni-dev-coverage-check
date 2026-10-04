@@ -17,6 +17,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl`, with the variables the steps' `env:` blocks fill set directly (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
+- `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
 - `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
@@ -158,31 +159,49 @@ The action is a composite action with two phases:
   and `env:` are where expressions belong). Rules:
   - A new step that needs a value adds it to `env:`. Name it for the input, upper-cased
     (`REPORT`, `STRIP_PREFIX`); `BASE_SHA` is the merge-base commit, `BASE_REF` the `base-ref`
-    input. Not `RUNNER_*` or `GITHUB_*`: the runner reserves those names.
-  - The check's `ALLOWED` list (`step name|expression|reason`) is empty and only shrinks: an
-    entry that matches nothing fails it. Do not add one for a value a caller supplies.
+    input. Not `RUNNER_*` or `GITHUB_*`: the runner reserves those names for setting. The
+    built-ins are mapped explicitly rather than read (`OS`, `ARCH`, `ACTION_PATH`) so a step's
+    inputs are in one block, and the tests pin each mapping.
+  - The check's `ALLOWED` list (`step name :: expression :: reason`, separator ` :: ` because an
+    expression often holds `||`) is empty and only shrinks: an entry that matches nothing fails
+    it. Do not add one for a value a caller supplies.
   - `setup-commands` and `extra-test-commands` are shell by design, so they are not allowlisted
-    but run as `eval "$SETUP_COMMANDS"` in the step's own shell: the same `-e -o pipefail`, the
+    but run as `eval "$commands"` in the step's own shell: the same `-e -o pipefail`, the
     exported instrumentation env, one shell for every line. Rejected: `bash file` or `bash -c`
     (a child shell has neither `-e` nor `pipefail` unless re-added, and loses non-exported
     state). `eval` does not make these two inputs safe (a value in them still runs as shell, as
     before); it takes the runner's substitution out of the script text, and the README says never
     to wire an untrusted value into either.
-  - `test-args` and `worktree-system-deps` are split on whitespace with
-    `read -r -d '' -a words <<<"$VAR" || true` and used as `"${words[@]}"`: no quote removal,
-    expansion or globbing. The `|| true` is needed because `read` returns non-zero at the end of
-    its input. This changed `test-args` for a caller who wrote shell quoting or `$VAR` in it
-    (`--features "a b"`); a newline in either now separates words, where it used to end the
-    command. Rejected: `eval "cargo test $TEST_ARGS"` (the hole itself) and a quote-aware
-    splitter (`xargs` differs between GNU and BSD, and bash 3.2 has no `mapfile`).
-  - The step tests (`platform-step`, `guard-step`, `resolve-version-step`) set the variables
-    and assert that each step's `env:` block fills them from the right place, and that the
-    script holds no expression: setting variables alone would pass if `env:` were wired wrong.
-  - Not covered by a unit test: the steps that run only on a pull request or a push
-    (merge-base, recompute, diff, gates, setup/extra/test commands). `integration.yml`,
-    `pr-paths.yml` and `e2e-sharded.yml` run them on a real runner. `apt-get install -y
-    "${words[@]}"` still takes a package name that starts with `-` as an option; that is not an
-    expression-evaluation hole and was left alone.
+  - `test-args` and `worktree-system-deps` are split on whitespace into an array with
+    `set -f; words=($VAR); set +f`: no quote removal, expansion or globbing, and no `|| true`
+    (an earlier `read -r -d '' -a` needed one, which also hid real read failures). A value that
+    holds a quote, a backslash, `$` or a backtick is REFUSED with an `::error::` rather than
+    split: both inputs used to be shell-parsed, and splitting `--skip "slow test"` into
+    `--skip`, `"slow` and `test"` ran zero tests and still exited 0. `worktree-system-deps` also
+    refuses a word that starts with `-`, since `apt-get` reads one as an option (`-o
+    DPkg::Pre-Invoke::=...` runs a command as root). This is a breaking change for a caller who
+    wrote shell quoting or `$VAR` in `test-args`; the README says how to upgrade. A newline in
+    either now separates words, where it used to end the command. Rejected:
+    `eval "cargo test $TEST_ARGS"` (the hole itself) and a quote-aware splitter (`xargs` differs
+    between GNU and BSD, and bash 3.2 has no `mapfile`).
+  - The variables are generic names, and `cargo`, a dependency's build scripts and the caller's
+    commands inherit a step's environment, so the steps that run them drop the action's
+    variables first: `unset TEST_ARGS` and the command variables (copied into `commands`), `env
+    -u VERSION cargo install`, and `unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA` before
+    the merge-base's `cargo llvm-cov`. `tests/input-steps.test.sh` asserts it.
+  - The step tests set the variables and assert that each step's `env:` block fills them from
+    the right place, and that the script holds no expression: setting variables alone would
+    pass if `env:` were wired wrong. `tests/input-steps.test.sh` runs every other step that
+    reads an input against stub `cargo`, `git`, `omni-dev` and `sudo` and asserts the
+    arguments, with a canary command in each hostile value that must never run. A mutation run
+    (remove each guard, unset, `set -f` or quote in a copy of `action.yml`) is how its coverage
+    was checked.
+  - Not covered by a unit test: the pull-request paths on a real runner (`pr-paths.yml`,
+    `e2e-sharded.yml`, `integration.yml`'s fat-mode job) and the download step (it writes to
+    `/tmp`; `platform-step.test.sh` covers what picks its URL).
+  - Left alone, found in review: the pinned `version` is not validated, so a value holding a
+    newline or `/..` can write extra lines to `$GITHUB_OUTPUT` or steer the download URL. That
+    predates #39 and is not an expression-evaluation hole; it is a follow-up, not done here.
 - **Shard join**: `cargo llvm-cov` writes no newline after its final `end_of_record`,
   so a bare `cat` of shards glues records and a consumer can silently drop a file.
   `combine-shards.sh` always puts a newline between shards; keep that if you touch it.
