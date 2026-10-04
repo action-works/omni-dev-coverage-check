@@ -176,8 +176,11 @@ runs:
         if [ "$VERSION" = "latest" ]; then
           # Authenticate the API call so it draws on the 1000/hr authenticated
           # rate limit rather than the 60/hr unauthenticated, shared-runner-IP
-          # limit that intermittently fails this step. The token is passed via
-          # the environment, so it never appears in the command line.
+          # limit that intermittently fails this step. The token comes in through
+          # the environment, not as an expression in this script, so the runner
+          # never writes it into the script text. It does reach curl's arguments.
+          # Keep expressions out of this script's comments and messages too: the
+          # runner evaluates every one it finds, escaped or not.
           auth=()
           if [ -n "$GH_TOKEN" ]; then
             auth=(-H "Authorization: Bearer $GH_TOKEN")
@@ -196,7 +199,7 @@ runs:
             if [ "$attempt" -lt 3 ]; then sleep $((attempt * 3)); fi
           done
           if [ -z "$RELEASE_TAG" ]; then
-            echo "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts. If this is a rate limit, ensure a github-token is available (it defaults to \${{ github.token }})."
+            echo "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts. If this is a rate limit, ensure a github-token is available (the input defaults to the workflow token)."
             exit 1
           fi
           VERSION="${RELEASE_TAG#v}"

@@ -28,6 +28,9 @@ jobs:
       - name: Test the guard step of action.yml
         run: bash tests/guard-step.test.sh
 
+      - name: Test the resolve-version step of action.yml
+        run: bash tests/resolve-version-step.test.sh
+
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
 
