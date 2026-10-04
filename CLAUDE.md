@@ -22,7 +22,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `tests/llvm-cov-ignore-steps.test.sh` - Runs the five steps that run `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate and the recompute's report), read out of `action.yml`, against a stub `cargo`, and checks the one `--ignore-filename-regex=<value>` each gets, or none when the input is empty; it fails when another step runs `cargo llvm-cov report` (`test.yml` runs that)
 - `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail`, the closing `summary` and `work_dir` (the scratch directory) (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
-- `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the four step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
+- `tests/step-lib.sh` - `step_run`, `step_block`, `step_field`, `step_map` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo (runs on `merge_group` too: `Validate Commit Messages` is a required check of the merge queue)
 - `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
@@ -604,6 +604,30 @@ The action is a composite action with two phases:
     fourth awk copy would read the wrong thing without saying so. `run: |`, `|-` and `|+` are
     all read; an inline `run:` (`Print omni-dev version` is one), a folded `>`, a body not at
     8 spaces, a step with no `run:` and a name that is missing or doubled are refused.
+  - **`step_field <step> <key>` and `step_map <step> <key>` (#74)** read a step's own key
+    written on one line (`id`, `if`, `uses`, `shell`, an inline `run`) and the entries of its
+    `env:` or `with:`, as written. They refuse what `step_run` refuses (an unset or unreadable
+    `ACTION`; a step that is missing, doubled or at another indent) and a key the step does not
+    have, `step_field` a key with no value on its line and a value that is a block scalar (`|`
+    or `>`, which it would otherwise hand back as the bare indicator), `step_map` a key that has
+    a value, an empty map, an entry at another indent and an entry whose value goes on to a
+    deeper line. That last one is on purpose: the copy this replaced stopped at such a line
+    without a word, so a later entry looked absent. A comment line inside a map is skipped at
+    any indent (YAML ignores it), which is the other way a later entry could have looked absent. `action.yml` has one (the block `path:` of an upload step), so a
+    test that needs that map extends the reader first. `step_map` holds its entries until it
+    has read the whole map, so a refusal prints nothing. Where a call records one case per
+    call, check the status where it is read (`if ! script="$(step_run "$name")"; then bad ...`);
+    at the top of a file, `|| exit 1`. `map_value` (one entry out of what `step_map` printed) is
+    the one reader left local, in `baseline-steps.test.sh`.
+  - **A test is moved onto the libraries one file at a time, and its output must not change.**
+    #74 did the last six; each printed exactly what it printed before (temp paths aside) and
+    kept its case count, which is the check to repeat for the next. Two conventions came out of
+    it. A helper that reads the last run's output (`has <name> <fragment>`) is named `out_has`,
+    over the library's `has <name> <text> <fragment>`, so a name never means two things in a
+    file (`check-run-expressions.test.sh`). And `baseline-lib.test.sh` needs `assert-lib.sh`'s
+    `check` and `assert`, which is allowed because only the child shells that run the snippets
+    under test source it: the shell that records the cases has `test-lib.sh`, which has no
+    `check`, and the two are never in one shell.
   - A change to that layout is an edit to `step-lib.sh` and `step-lib.test.sh`, not to each
     test. A comment at 4 spaces or less in the middle of a step would end it early; there is
     none today.

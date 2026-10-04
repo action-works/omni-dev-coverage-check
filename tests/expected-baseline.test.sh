@@ -13,32 +13,11 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$ROOT/tests/expected-baseline.sh"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
-passed=0
-failed=0
-
-ok() {
-  passed=$((passed + 1))
-  echo "ok   - $1"
-}
-
-bad() {
-  failed=$((failed + 1))
-  echo "FAIL - $1"
-  [ -z "${2:-}" ] || echo "       $2"
-}
-
-# eq <name> <expected> <actual>
-eq() {
-  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi
-}
-
-# has <name> <text> <fragment>: the text contains the fragment (a fixed string).
-has() {
-  if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "no '$3' in: $2"; fi
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+work_dir
 
 # --- the repository: c1 (oldest) .. c14 (newest) --------------------------------------------
 
@@ -315,6 +294,4 @@ STATUS=$?
 eq "too few arguments: it fails" 1 "$STATUS"
 has "too few arguments: and says how to call it" "$out" "usage: expected-baseline.sh"
 
-echo
-echo "$passed passed, $failed failed"
-[ "$failed" -eq 0 ]
+summary
