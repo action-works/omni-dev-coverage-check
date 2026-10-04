@@ -134,7 +134,7 @@ The action is a composite action with two phases:
   - Each commit tried costs at least one API request, plus one per successful run it
     has; a full miss spends `depth + 1`. `GITHUB_TOKEN` has 1,000 an hour per
     repository, which is why `integration.yml` passes `baseline-ancestor-depth: 0` (up to
-    16 lookups per pull-request run, and none finds anything), and why the depth is a bound.
+    18 lookups per pull-request run, and none finds anything), and why the depth is a bound.
   - The recompute stays the last resort and runs only when nothing is in reach, so the
     `recompute` job of `pr-paths.yml` turns the walk off: its synthetic base has none.
 - **`worktree-system-deps`** generalizes the one omni-dev-specific wrinkle from
@@ -269,31 +269,8 @@ The action is a composite action with two phases:
     and a `cargo install --version` that cargo refuses ("not a valid SemVer requirement"). Only one `v`,
     and only a leading one: `0.46.0-dev` keeps its. Keep the strip out of the `latest` branch, or a pin
     skips it; `tests/resolve-version-step.test.sh` runs both spellings and checks the input says so.
-    That test reads the step alone, so a later step that read `inputs.version` instead of the
-    resolved value would leave it green while a `v0.45.0` caller hit the 404 again (#52). The
-    `version-pin` job in `integration.yml` runs both spellings through the whole install on a
-    runner and asserts the install's outcome, `version` is `0.45.0`, `release-tag` is `v0.45.0`, and
-    the binary on PATH. Rules:
-    - Each leg's `cache-prefix` holds the run and the attempt, so the key cannot hit. The platform
-      and download steps are skipped on a cache hit, and on the default key (the thin-mode
-      job's `0.45.0` leg saves it, and `v0.45.0` resolves to it) every run after the first on `main`
-      would hit and check only the outputs: the very path this job exists for would not run. The
-      assertion step checks the archive the download step leaves in `/tmp`, so a leg that stops
-      forcing the install fails instead of passing. If that step stops leaving it, follow the step.
-    - The last step removes `~/.cargo/bin/omni-dev` so the cache's post step saves nothing: a key
-      like this is never restored, and two entries of about 30 MB per run would push out the ones the
-      other jobs reuse. It runs after the assertions, which need the binary.
-    - A leg per spelling, each its own job, so the binary on PATH can only have come from that leg's
-      install; `0.45.0` is the control and must give the same outputs. The existing thin-mode
-      `0.45.0` leg is not the control: it differs in more than `version`, and in cache state.
-    - The assertion step ends on `assert-omni-dev-version.sh "$VERSION"` with the action's `version`
-      output, not the pin: a `v` pin is not a bare release number, and stripping it in the workflow
-      would repeat the action's own strip instead of testing it.
-    - No `use-prebuilt-binary: false` leg: it compiles omni-dev, cargo refuses `v0.45.0` at argument
-      parsing (#38), and the unit test pins that the install step reads a `version` with no `v`.
-    - The job is in `failure-messages`' `needs`, so its log is read for deprecation warnings like the
-      other green jobs; it asserts no message, so nothing else there names it. On a pull request it
-      shows with `coverage.md` and `coverage.json` that the diffs ran.
+    That test reads the step alone; the `version-pin` job in `integration.yml` runs both spellings
+    through the whole install on a runner (see "Integration workflow").
   - The release-asset downloads stay unauthenticated on purpose. They are `github.com/.../releases/
     download/` URLs, not API calls, so the limit in #1 does not apply to them, and curl drops
     `Authorization` on the redirect to the asset CDN: the header would only send the token somewhere
@@ -503,6 +480,39 @@ The action is a composite action with two phases:
   - On the failing leg, the file check is that no report and no `coverage.md` exist:
     the scenario is sharded, the guard runs before the combine, and clap's failure in
     the comment step would leave a combined report and an empty `coverage.md`.
+  - A pin written as a release tag (#52): the `version-pin` job runs `version: v0.45.0`, and its
+    control `0.45.0`, through the whole install on a runner. `tests/resolve-version-step.test.sh`
+    reads the resolve step alone, so a later step that read `inputs.version` instead of the resolved
+    value would leave it green while a `v0.45.0` caller hit the 404 again. Each leg asserts the
+    install's outcome, `version` is `0.45.0`, `release-tag` is `v0.45.0`, and the binary on PATH.
+    Rules:
+    - Each leg's `cache-prefix` holds the run and the attempt, so the key cannot hit. The platform
+      and download steps are skipped on a cache hit, and on the default key (the thin-mode
+      job's `0.45.0` leg saves it, and `v0.45.0` resolves to it) every run after the first on `main`
+      would hit and check only the outputs: the very path this job exists for would not run. The
+      assertion step checks the archive the download step leaves in `/tmp`, so a leg that stops
+      forcing the install fails instead of passing. If that step stops leaving it, follow the step.
+    - What that costs: nothing compares the two spellings' cache keys. A key built from
+      `inputs.version` would make a duplicate cache entry, not a failure, and no test sees it.
+    - The last step removes `~/.cargo/bin/omni-dev` so the cache's post step saves nothing: a key
+      like this is never restored, and a binary of tens of megabytes per leg per run (the release
+      archive is 31 MB) would push out the entries the other jobs reuse. It runs after the
+      assertions, which need the binary. The post step then logs `Path Validation Error: Path(s)
+      specified in the action for caching do(es) not exist`, as a warning; `arm64-release-without-asset`
+      logs the same on every run, having installed nothing.
+    - A leg per spelling, each its own job, so the binary on PATH can only have come from that leg's
+      install; `0.45.0` is the control and must give the same outputs. The existing thin-mode
+      `0.45.0` leg is not the control: it differs in more than `version`, and in cache state.
+    - The assertion step ends on `assert-omni-dev-version.sh "$VERSION"` with the action's `version`
+      output, not the pin: a `v` pin is not a bare release number, and stripping it in the workflow
+      would repeat the action's own strip instead of testing it.
+    - No `use-prebuilt-binary: false` leg: it compiles omni-dev, and cargo refuses `v0.45.0` at
+      argument parsing (#38). The source-install step reads the resolved `version`, which the unit
+      test pins has no `v`; nothing pins that it reads that output and not `inputs.version`.
+    - The job is in `failure-messages`' `needs`, so its log is read for deprecation warnings like the
+      other green jobs; it asserts no message, so nothing else there names it. On a pull request it
+      shows with `coverage.md` and `coverage.json` that the diffs ran.
+    - Like every scenario here it passes `baseline-ancestor-depth: 0`.
 - **Failure-message assertions**: a step cannot read its own job's log and a composite
   action exposes no output for a failing step, so the outcome and file checks pin
   the step order, not the text a user reads. The `failure-messages` job (`needs`

@@ -2,10 +2,9 @@ name: Integration
 
 # Runs the action itself (`uses: ./`) on a real runner on every change: in thin
 # mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
-# `ignore-filename-regex`, the `--output` floor a pull request needs, and a `version`
-# pinned as a release tag, `v0.45.0`), and in fat mode against a fixture crate (the
-# instrumented test run, the three report outputs and the one profile merge they
-# share, the fat-mode line gate,
+# `ignore-filename-regex`, and the `--output` floor a pull request needs), and in
+# fat mode against a fixture crate (the instrumented test run, the three report
+# outputs and the one profile merge they share, the fat-mode line gate,
 # `setup-commands`/`extra-test-commands`). Each scenario's outcome is asserted
 # at the end of its job; the scenarios are `continue-on-error` so one regression
 # does not hide the rest. What the five scenarios that exist for their message
@@ -17,7 +16,8 @@ name: Integration
 # runner against a release that has the ARM64 asset, and `arm64-release-without-asset`
 # against one that does not. One job resolves `version: latest` with a token the API
 # refuses, so that the fallback to the releases/latest redirect has to answer, and
-# compares it with the API's answer.
+# compares it with the API's answer. One pins `version: v0.45.0`, to show that the
+# whole install takes a release tag as written.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -37,7 +37,7 @@ name: Integration
 #     one's leftovers.
 #   - Every scenario passes `baseline-ancestor-depth: 0`. None is about the baseline, and
 #     this workflow publishes none, so with the walk on each lookup on a pull request would
-#     try the merge-base and ten ancestors and find nothing: up to about 175 requests per
+#     try the merge-base and ten ancestors and find nothing: up to about 200 requests per
 #     pull-request run, against the 1,000 an hour a repository's token has. The walk and the baseline lookup
 #     are tested in pr-paths.yml and e2e-sharded.yml, and scripts/find-baseline.sh by
 #     tests/find-baseline.test.sh.
@@ -854,10 +854,10 @@ jobs:
 
   # A `version` written as a release tag, `v0.45.0`, through the whole install (#52).
   # `tests/resolve-version-step.test.sh` runs the strip on its own; this runs what comes
-  # after it on a runner: the cache key, the platform step's download URL, the install,
-  # and the `version` and `release-tag` outputs a caller reads. A step that read
-  # `inputs.version` instead of the resolved value would build `vv0.45.0`, which 404s
-  # (#38), and the unit test would stay green.
+  # after it on a runner: the platform step's download URL, the install, and the
+  # `version` and `release-tag` outputs a caller reads. A step that read `inputs.version`
+  # instead of the resolved value would build `vv0.45.0`, which 404s (#38), and the unit
+  # test would stay green.
   #
   # Only a run that reaches the download can see that, and the platform and download
   # steps are skipped on a cache hit. Left on the default key, which is the one the
@@ -866,7 +866,9 @@ jobs:
   # builds its key from the run, the attempt and its own pin (`cache-prefix`): it cannot
   # exist, and the install runs every time. The assertion step checks that it did, and
   # the last step removes the binary so the cache's post step saves nothing, since
-  # nothing will ever restore a key like this.
+  # nothing will ever restore a key like this. The price is that nothing here compares
+  # the two spellings' keys: one built from `inputs.version` would cost a duplicate cache
+  # entry, not a failure, and no test sees it.
   #
   # A leg per spelling, each its own job, so that the binary on PATH can only have come
   # from that leg's install: in one job, a second install would put it there even if the
@@ -877,8 +879,8 @@ jobs:
   #
   # Thin mode with the line gate off, so nothing but the install is in play, and no cargo
   # build. The `use-prebuilt-binary: false` path compiles omni-dev and has no leg: cargo
-  # refuses `v0.45.0` outright (#38), and the unit test pins that the install step reads
-  # a `version` with no `v`.
+  # refuses `v0.45.0` outright (#38). It reads the resolved `version`, which the unit test
+  # pins has no `v`; nothing pins that it reads that and not `inputs.version`.
   version-pin:
     name: Pinned version (${{ matrix.pin }})
     runs-on: ubuntu-latest
@@ -908,6 +910,7 @@ jobs:
           upload-artifacts: false
           publish-baseline: false
           baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
 
       - name: Assert the outcome
         env:
