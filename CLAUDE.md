@@ -737,10 +737,10 @@ The action is a composite action with two phases:
   without it the thin-mode gate would disagree with the comment's total. A new `coverage
   diff` call site takes it, with `--strip-prefix` and `--report-format`, or its
   percentage is measured over other files than the comment's. Rules:
-  - The value goes in through `env:` and is read as `"$IGNORE_FILENAME_REGEX"`, not
-    interpolated into the script as `strip-prefix` is: a regex is full of `\`, `$` and
-    quotes that bash reinterprets inside double quotes (`\\` becomes `\`). The guard
-    step reads it the same way.
+  - The value goes in through `env:` and is read as `"$IGNORE_FILENAME_REGEX"`, as every
+    input is since #39 (this was the first): a regex is full of `\`, `$` and quotes that
+    bash reinterprets inside double quotes (`\\` becomes `\`) once it is part of the
+    script text. The guard step reads it the same way.
   - It is passed as `--ignore-filename-regex=<value>`, one argument. As two, a pattern
     that starts with `-` (`-sys/`, for the `*-sys` crates) is read by clap as a flag
     and the step fails with "unexpected argument '-s'". Integration scenario 8a's first

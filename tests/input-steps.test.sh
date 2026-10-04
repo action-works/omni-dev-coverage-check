@@ -197,17 +197,20 @@ Build coverage diff|ALL_FILES|inputs.all-files
 Build coverage diff|STRIP_PREFIX|inputs.strip-prefix
 Build coverage diff|REPORT_FORMAT|inputs.report-format
 Build coverage diff|BASE_SHA|steps.mb.outputs.sha
+Build coverage diff|IGNORE_FILENAME_REGEX|inputs.ignore-filename-regex
 Enforce patch-coverage gate|REPORT|inputs.report
 Enforce patch-coverage gate|BASE_SHA|steps.mb.outputs.sha
 Enforce patch-coverage gate|FAIL_UNDER_PATCH|inputs.fail-under-patch
 Enforce patch-coverage gate|STRIP_PREFIX|inputs.strip-prefix
 Enforce patch-coverage gate|REPORT_FORMAT|inputs.report-format
+Enforce patch-coverage gate|IGNORE_FILENAME_REGEX|inputs.ignore-filename-regex
 Enforce line-coverage gate|FAIL_UNDER_LINES|inputs.fail-under-lines
 Enforce line-coverage gate (thin mode)|REPORT|inputs.report
 Enforce line-coverage gate (thin mode)|BASE_SHA|steps.mb.outputs.sha
 Enforce line-coverage gate (thin mode)|FAIL_UNDER_LINES|inputs.fail-under-lines
 Enforce line-coverage gate (thin mode)|STRIP_PREFIX|inputs.strip-prefix
-Enforce line-coverage gate (thin mode)|REPORT_FORMAT|inputs.report-format'
+Enforce line-coverage gate (thin mode)|REPORT_FORMAT|inputs.report-format
+Enforce line-coverage gate (thin mode)|IGNORE_FILENAME_REGEX|inputs.ignore-filename-regex'
 while IFS='|' read -r step var expr; do
   # shellcheck disable=SC2016
   has "env: $step: $var is $expr" "$(step_block "$step")" "        $var: \${{ $expr }}"
@@ -427,7 +430,7 @@ refused_deps "a backtick" 'libfoo`touch @CANARY@`' "::error::worktree-system-dep
 DIFF="Build coverage diff"
 diff_env=(REPORT=coverage-head.lcov BASE_SHA=mergebase0123456789 ARTIFACT_URL=https://example/artifact
   RUN_URL=https://example/run HEAD_SHA=headsha COMMIT_URL=https://example/commit
-  COLLAPSE_RANGES=true ALL_FILES=false STRIP_PREFIX="" REPORT_FORMAT="")
+  COLLAPSE_RANGES=true ALL_FILES=false STRIP_PREFIX="" REPORT_FORMAT="" IGNORE_FILENAME_REGEX="")
 DIFF_COMMON='[--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--artifact-url] [https://example/artifact] [--run-url] [https://example/run] [--base-sha] [mergebase0123456789] [--head-sha] [headsha] [--commit-url] [https://example/commit]'
 
 run_step "$DIFF" "${diff_env[@]}"
@@ -469,6 +472,21 @@ has "diff, hostile values: report-format reaches omni-dev as one argument, as wr
   "[--report-format] [\$(touch $c)]"
 absent "diff, hostile values: nothing ran" "$c"
 
+# A regex is full of backslashes, dollars and quotes, and may start with a dash (`-sys/`): it is
+# one `--flag=value` argument, so clap cannot read it as a flag and the shell never sees it.
+# shellcheck disable=SC2016
+REGEX='-sys/,^src/a\.rs$,"q",$HOME,`x`'
+run_step "$DIFF" "${diff_env[@]}" IGNORE_FILENAME_REGEX="$REGEX"
+has "diff: ignore-filename-regex is one --flag=value argument, as written" "$CALLS" "[--ignore-filename-regex=$REGEX]"
+c="$(canary)"
+# shellcheck disable=SC2016
+run_step "$DIFF" "${diff_env[@]}" IGNORE_FILENAME_REGEX="a,\$(touch $c)"
+# shellcheck disable=SC2016
+has "diff, hostile regex: it is one argument, as written" "$CALLS" "[--ignore-filename-regex=a,\$(touch $c)]"
+absent "diff, hostile regex: nothing ran" "$c"
+run_step "$DIFF" "${diff_env[@]}"
+lacks "diff: no regex, no flag" "$CALLS" "--ignore-filename-regex"
+
 run_step "$DIFF" "${diff_env[@]}" OMNI_EXIT=1
 eq "diff: a failing comment diff fails the step" 1 "$STATUS"
 
@@ -479,7 +497,7 @@ eq "diff: and it writes no percentages" "comment-path=coverage.md" "$GH_OUTPUT"
 # --- Enforce patch-coverage gate -----------------------------------------------------------
 
 PATCH="Enforce patch-coverage gate"
-patch_env=(REPORT=coverage-head.lcov BASE_SHA=mergebase0123456789 FAIL_UNDER_PATCH=80 STRIP_PREFIX="" REPORT_FORMAT="")
+patch_env=(REPORT=coverage-head.lcov BASE_SHA=mergebase0123456789 FAIL_UNDER_PATCH=80 STRIP_PREFIX="" REPORT_FORMAT="" IGNORE_FILENAME_REGEX="")
 run_step "$PATCH" "${patch_env[@]}"
 eq "patch gate: the step succeeds" 0 "$STATUS"
 eq "patch gate: the threshold and the merge-base reach omni-dev" \
@@ -495,6 +513,9 @@ c="$(canary)"
 run_step "$PATCH" "${patch_env[@]}" FAIL_UNDER_PATCH="80; touch $c" STRIP_PREFIX="\$(touch $c)"
 has "patch gate, hostile values: the threshold is one argument, as written" "$CALLS" "[--fail-under-patch] [80; touch $c]"
 absent "patch gate, hostile values: nothing ran" "$c"
+
+run_step "$PATCH" "${patch_env[@]}" IGNORE_FILENAME_REGEX="$REGEX"
+has "patch gate: the regex mirrors the comment diff, as one argument" "$CALLS" "[--ignore-filename-regex=$REGEX]"
 
 run_step "$PATCH" "${patch_env[@]}" OMNI_EXIT=1
 eq "patch gate: omni-dev failing the gate fails the step" 1 "$STATUS"
@@ -514,7 +535,7 @@ absent "line gate, hostile value: nothing ran" "$c"
 # --- Enforce line-coverage gate (thin mode) -------------------------------------------------
 
 THIN="Enforce line-coverage gate (thin mode)"
-thin_env=(REPORT=coverage-head.lcov BASE_SHA=mergebase0123456789 FAIL_UNDER_LINES=55 STRIP_PREFIX="" REPORT_FORMAT="")
+thin_env=(REPORT=coverage-head.lcov BASE_SHA=mergebase0123456789 FAIL_UNDER_LINES=55 STRIP_PREFIX="" REPORT_FORMAT="" IGNORE_FILENAME_REGEX="")
 run_step "$THIN" "${thin_env[@]}"
 eq "thin gate: a pull request diffs against the merge-base" \
   'omni-dev [coverage] [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-lines] [55] [-o] [json]' "$CALLS"
@@ -531,6 +552,9 @@ run_step "$THIN" "${thin_env[@]}" FAIL_UNDER_LINES="55; touch $c" REPORT="r.lcov
 has "thin gate, hostile values: the threshold is one argument, as written" "$CALLS" "[--fail-under-lines] [55; touch $c]"
 has "thin gate, hostile values: the report is one argument, as written" "$CALLS" "[--report] [r.lcov; touch $c]"
 absent "thin gate, hostile values: nothing ran" "$c"
+
+run_step "$THIN" "${thin_env[@]}" IGNORE_FILENAME_REGEX="$REGEX"
+has "thin gate: the regex mirrors the comment diff, as one argument" "$CALLS" "[--ignore-filename-regex=$REGEX]"
 
 run_step "$THIN" "${thin_env[@]}" OMNI_EXIT=1
 eq "thin gate: omni-dev failing the gate fails the step" 1 "$STATUS"
