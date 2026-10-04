@@ -343,12 +343,11 @@ runs:
         # (the `if:` guarantees a flag is needed), so it never sits beside a green step.
         help="$(omni-dev coverage diff --help || true)"
         found="$(omni-dev --version)"
-        # Match the flag's definition line, not any occurrence: clap lays an option out
-        # as an optional short flag, the long flag, then a value or the end of the line.
-        # A bare substring would count `--output-file` or prose that mentions `--output`
-        # as the flag being there, and the run would then fail later with clap's bare
-        # `unexpected argument`, which is the failure this step replaces.
-        has_flag() { grep -Eq -- "^[[:space:]]+(-[A-Za-z], )?$1([[:space:]]|\$)" <<<"$help"; }
+        # Match the flag's definition line, not any occurrence: `--output-file`, or prose
+        # that names the flag, must not count as the flag being there. That line is an
+        # optional short flag, the long flag, then a value (after a space, `=` or `[=`) or
+        # the end of the line. $1 is a plain long flag, used as is in the pattern.
+        has_flag() { grep -Eq -- "^[[:space:]]+(-[A-Za-z], )?$1(=|\[|[[:space:]]|\$)" <<<"$help"; }
         status=0
         if [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ] \
           && ! has_flag --fail-under-lines; then

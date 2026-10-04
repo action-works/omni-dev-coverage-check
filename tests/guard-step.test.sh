@@ -12,8 +12,16 @@
 # by name, rather than leaving a test of a copy.
 #
 # The option lines below have the layout of the real `omni-dev coverage diff --help` (clap:
-# an optional short flag, the long flag, a value, the description on the lines after).
+# an optional short flag, the long flag, a value, the description on the lines after), and
+# tests/fixtures/omni-dev-help/ holds the real help of the releases either side of each
+# floor, so the pattern is also held to what omni-dev prints. Refresh one with
+#   omni-dev coverage diff --help > tests/fixtures/omni-dev-help/<version>.txt
 # Every failing case has a control that differs only in the help text.
+#
+# What this does not reach: the step's `if:`, which decides whether it runs at all. The
+# script calls `--help` whatever the event, so the "flag not needed" cases show it does
+# not demand a flag the run does not use, not that it is skipped. The `output-flag` job
+# of integration.yml runs on every event and covers the `if:`.
 
 set -uo pipefail
 
@@ -67,6 +75,13 @@ step_run() {
 GUARD="$(step_run 'Check omni-dev supports the flags this run uses')"
 if [ -z "$GUARD" ]; then
   echo "FAIL - could not read the guard step out of action.yml"
+  exit 1
+fi
+# step_run stops at the first line indented less than the body, so a key or comment placed
+# after `run:` would cut the script short and every case below would test the stump.
+# shellcheck disable=SC2016 # the script's own last line, to be compared as text
+if [ "$(tail -n1 <<<"$GUARD")" != 'exit "$status"' ]; then
+  echo "FAIL - the guard step's script does not end where this test expects; read only part of it?"
   exit 1
 fi
 
@@ -131,7 +146,11 @@ help_with() {
 OUTPUT_OPTION=$'  -o, --output <OUTPUT>\n          Output format: md or json.'
 OUTPUT_LONG_ONLY=$'      --output <OUTPUT>\n          Output format: md or json.'
 OUTPUT_NO_VALUE=$'  -o, --output\n          Output format: md or json.'
+# How clap writes an option that needs `=` or takes an optional value.
+OUTPUT_EQUALS=$'      --output=<OUTPUT>\n          Output format: md or json.'
+OUTPUT_OPTIONAL=$'  -o, --output[=<OUTPUT>]\n          Output format: md or json.'
 LINES_OPTION=$'      --fail-under-lines <PCT>\n          Exit non-zero when the line total is below this percentage.'
+LINES_OPTIONAL=$'      --fail-under-lines[=<PCT>]\n          Exit non-zero when the line total is below this percentage.'
 
 # Text that holds the flag name without defining the flag.
 OUTPUT_FILE_ONLY=$'      --output-file <PATH>\n          Write the diff to a file.'
@@ -187,6 +206,12 @@ expect_pass "--output defined as a long flag only"
 run_guard pull_request true '' "$(help_with "$OUTPUT_NO_VALUE")"
 expect_pass "--output defined with no value"
 
+run_guard pull_request true '' "$(help_with "$OUTPUT_EQUALS")"
+expect_pass "--output defined with a value after '='"
+
+run_guard pull_request true '' "$(help_with "$OUTPUT_OPTIONAL")"
+expect_pass "--output defined with an optional value"
+
 run_guard pull_request true '' "$(help_with "$OUTPUT_FILE_ONLY")"
 expect_only "only --output-file" "$OUTPUT_MSG"
 
@@ -207,6 +232,9 @@ has "the --output error says how to fix it" "$ERRORS" "set 'version' to 0.32.0 o
 
 run_guard push false 80 "$(help_with "$LINES_OPTION")"
 expect_pass "--fail-under-lines defined"
+
+run_guard push false 80 "$(help_with "$LINES_OPTIONAL")"
+expect_pass "--fail-under-lines defined with an optional value"
 
 run_guard push false 80 "$(help_with "$LINES_PER_FILE_ONLY")"
 expect_only "only --fail-under-lines-per-file" "$LINES_MSG"
@@ -238,7 +266,7 @@ expect_only "--output defined, --fail-under-lines not" "$LINES_MSG"
 run_guard pull_request false 80 "$(help_with "$LINES_OPTION")"
 expect_only "--fail-under-lines defined, --output not" "$OUTPUT_MSG"
 
-# --- a flag the run does not need is not probed -------------------------------------------
+# --- a flag the run does not need is not demanded -----------------------------------------
 
 run_guard push true '' ""
 expect_pass "a fat-mode push, with no help text at all"
@@ -263,6 +291,37 @@ has "a failing --help: what omni-dev said stays in the log" "$OUT" "unrecognized
 
 run_guard push true '' "" "omni-dev 0.28.0" 2
 expect_pass "a failing --help on a fat-mode push, which needs no flag"
+
+# --- the real help of the releases either side of each floor -------------------------------
+# 0.31.0 is the newest release without --output, 0.32.0 the floor; 0.44.0 the newest
+# without --fail-under-lines, 0.45.0 the floor. The 0.28.0 case above stands for a release
+# with no `coverage` subcommand: its --help is an error, not a text.
+
+FIXTURES="$ROOT/tests/fixtures/omni-dev-help"
+# real_help_case <version> <expect --output: yes|no> <expect --fail-under-lines: yes|no>
+real_help_case() {
+  local version=$1 want_output=$2 want_lines=$3 help
+  help="$(cat "$FIXTURES/$version.txt")"
+  # --output is needed on a pull request, --fail-under-lines in thin mode with the gate on:
+  # one run per flag, so each answer is read on its own.
+  run_guard pull_request true '' "$help" "omni-dev $version"
+  if [ "$want_output" = yes ]; then
+    expect_pass "real $version help: --output is found"
+  else
+    expect_only "real $version help: --output is missing" "$OUTPUT_MSG"
+  fi
+  run_guard push false 80 "$help" "omni-dev $version"
+  if [ "$want_lines" = yes ]; then
+    expect_pass "real $version help: --fail-under-lines is found"
+  else
+    expect_only "real $version help: --fail-under-lines is missing" "$LINES_MSG"
+  fi
+}
+
+real_help_case 0.31.0 no no
+real_help_case 0.32.0 yes no
+real_help_case 0.44.0 yes no
+real_help_case 0.45.0 yes yes
 
 # --- how it asks -------------------------------------------------------------------------
 
