@@ -31,6 +31,9 @@ jobs:
       - name: Test the resolve-version step of action.yml
         run: bash tests/resolve-version-step.test.sh
 
+      - name: Test find-baseline.sh
+        run: bash tests/find-baseline.test.sh
+
       - name: Test job-errors.sh
         run: bash tests/job-errors.test.sh
 
