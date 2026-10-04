@@ -10,6 +10,10 @@
 #
 #   step_run <step name>    the step's `run:` script, dedented
 #   step_block <step name>  the whole step, from its `- name:` line, as written
+#   step_field <step name> <key>  the value of one of the step's own keys written on one
+#                           line (`id`, `if`, `uses`, `shell`, an inline `run`), as written
+#   step_map <step name> <key>    the entries of a map key (`env`, `with`), one per line,
+#                           dedented, each `name: value` as written
 #   input_block <name>      the input's block under `inputs:`, as written
 #
 # They read the text, not the YAML, so they depend on the layout action.yml has: a step is
@@ -28,6 +32,12 @@
 #     `|+`, which give the same script once `$(...)` strips the trailing newlines): an inline
 #     command, a folded `>`, an indentation indicator `|2`, a trailing comment; a body not
 #     indented 8 spaces; an empty body;
+#   - step_field: a key the step does not have at 6 spaces, or has with no value on its
+#     line (a map or a block: that is step_map's, or step_run's);
+#   - step_map: a key the step does not have at 6 spaces, or has with a value on its line
+#     (that is step_field's); an empty map; an entry that is not indented 8 spaces, or whose
+#     value goes on to a deeper line (a block scalar, a list): one line per entry is what it
+#     reads, and a map it half-read would leave a later entry looking absent;
 #   - input_block: a name that is not under `inputs:` (an output of that name is not it).
 #
 # A step ends at the next line indented 4 spaces or less (the next step, named or not, or
@@ -73,6 +83,75 @@ step_block() {
     $0 == head { in_step = 1; print; next }
     in_step && $0 !~ /^ *$/ && indent($0) <= 4 { exit }
     in_step { print }
+  ' "$ACTION"
+}
+
+# step_field <step name> <key>: the value of one of the step's own keys, written on the line
+# of the key at 6 spaces (`      if: <value>`), as written (quotes and all).
+step_field() {
+  _step_once step_field "$1" || return 1
+  STEP_NAME="$1" STEP_KEY="$2" STEP_FILE="$ACTION" awk '
+    function indent(s) { match(s, /^ */); return RLENGTH }
+    function refuse(why) {
+      printf "step_field: step \"%s\" in %s: %s\n", ENVIRON["STEP_NAME"], ENVIRON["STEP_FILE"], why > "/dev/stderr"
+      failed = 1
+      exit 1
+    }
+    BEGIN { head = "    - name: " ENVIRON["STEP_NAME"]; key = ENVIRON["STEP_KEY"]; lead = "      " key ":" }
+    $0 == head { in_step = 1; next }
+    in_step && $0 !~ /^ *$/ && indent($0) <= 4 { exit }
+    in_step && index($0, lead) == 1 {
+      rest = substr($0, length(lead) + 1)
+      if (rest ~ /^ +[^ ]/) { sub(/^ +/, "", rest); print rest; found = 1; exit }
+      if (rest == "" || rest ~ /^ *$/) refuse("\"" key ":\" has no value on its line (a map or a block: use step_map or step_run)")
+    }
+    END {
+      if (failed) exit 1
+      if (!found) refuse("the step has no \"" key ":\" at 6 spaces")
+    }
+  ' "$ACTION"
+}
+
+# step_map <step name> <key>: the entries of a map key of the step (`env`, `with`), indented 8
+# under `      <key>:`, one per line, dedented.
+step_map() {
+  _step_once step_map "$1" || return 1
+  STEP_NAME="$1" STEP_KEY="$2" STEP_FILE="$ACTION" awk '
+    function indent(s) { match(s, /^ */); return RLENGTH }
+    function refuse(why) {
+      printf "step_map: step \"%s\" in %s: %s\n", ENVIRON["STEP_NAME"], ENVIRON["STEP_FILE"], why > "/dev/stderr"
+      failed = 1
+      exit 1
+    }
+    BEGIN { head = "    - name: " ENVIRON["STEP_NAME"]; key = ENVIRON["STEP_KEY"]; lead = "      " key ":" }
+    $0 == head { state = 1; next }
+    # state 1, in the step and looking for the key, at the indent the step keys have.
+    state == 1 {
+      if ($0 !~ /^ *$/ && indent($0) <= 4) exit
+      if (index($0, lead) == 1) {
+        rest = substr($0, length(lead) + 1)
+        if (rest !~ /^ *$/) refuse("\"" key ":\" has a value on its line, so it is not a map (use step_field)")
+        state = 2
+        found = 1
+      }
+      next
+    }
+    # state 2, the entries: indented 8, up to the next line that is not indented deeper than the key.
+    state == 2 {
+      if ($0 ~ /^ *$/) next
+      ind = indent($0)
+      if (ind <= 6) exit
+      if (ind > 8) refuse("line " FNR " is indented " ind " spaces, a value that goes on past its line, and this reads one line per entry")
+      if (ind != 8) refuse("line " FNR " is indented " ind " spaces, and this reads entries indented 8")
+      if ($0 ~ /^ *#/) next
+      entry[++n] = substr($0, 9)
+    }
+    END {
+      if (failed) exit 1
+      if (!found) refuse("the step has no \"" key ":\" at 6 spaces")
+      if (!n) refuse("\"" key ":\" has no entries")
+      for (i = 1; i <= n; i++) print entry[i]
+    }
   ' "$ACTION"
 }
 

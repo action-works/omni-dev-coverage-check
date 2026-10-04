@@ -9,6 +9,8 @@
 # small files written per case, because the real action.yml has none of these layouts; the
 # last cases run the readers over the real file, which only has to be read or refused.
 
+# The $VAR and ${{ }} patterns in the fixtures and the expectations are literal text.
+# shellcheck disable=SC2016
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,10 +29,10 @@ yaml() {
   cat >"$ACTION"
 }
 
-# read_with <reader> <name>: calls the reader. Leaves its status in STATUS, what it printed
+# read_with <reader> <argument...>: calls the reader. Leaves its status in STATUS, what it printed
 # in OUT and what it said on stderr in ERR.
 read_with() {
-  OUT="$("$1" "$2" 2>"$WORK/err")"
+  OUT="$("$@" 2>"$WORK/err")"
   STATUS=$?
   ERR="$(<"$WORK/err")"
 }
@@ -386,6 +388,161 @@ ACTION="$WORK/two-spaces.yml"
 read_with step_block Alpha
 is_refused "step_block: steps at another indent are not found" 'no step named "Alpha"'
 
+# --- step_field ----------------------------------------------------------------------------
+
+yaml fields <<'EOF'
+runs:
+  steps:
+    - name: Alpha
+      id: alpha-id
+      if: github.event_name == 'pull_request' && steps.x.outputs.y == 'true'
+      uses: dawidd6/action-download-artifact@v27
+      with:
+        id: not-the-step-id
+        name: ${{ inputs.name }}
+      shell: bash
+      ifx: not-the-if
+      run: bash "$ACTION_PATH/scripts/x.sh"
+    - name: Beta
+      uses: actions/cache@v4
+      shell: bash
+EOF
+read_with step_field Alpha id
+is_read "step_field: a key of the step, at its own indent, not the nested one of the same name" "alpha-id"
+read_with step_field Alpha if
+is_read "step_field: an expression and quotes, as written" "github.event_name == 'pull_request' && steps.x.outputs.y == 'true'"
+read_with step_field Alpha uses
+is_read "step_field: uses" "dawidd6/action-download-artifact@v27"
+read_with step_field Alpha run
+is_read "step_field: an inline run, with its quotes and variables as written" 'bash "$ACTION_PATH/scripts/x.sh"'
+read_with step_field Beta shell
+is_read "step_field: the next step's own key" "bash"
+read_with step_field Beta id
+is_refused "step_field: a key only the next step has is not read for this one" 'has no "id:" at 6 spaces'
+read_with step_field Beta uses
+is_read "step_field: and a key it shares with the one before is its own" "actions/cache@v4"
+
+read_with step_field Alpha nope
+is_refused "step_field: a key the step does not have" 'has no "nope:" at 6 spaces'
+read_with step_field Alpha name
+is_refused "step_field: name is the step's heading, not a key at 6 spaces" 'has no "name:" at 6 spaces'
+read_with step_field Alpha with
+is_refused "step_field: a map has no value on its line" '"with:" has no value on its line'
+read_with step_field Alpha i
+is_refused "step_field: a key is matched whole, not by its start" 'has no "i:" at 6 spaces'
+
+printf 'runs:\n  steps:\n    - name: Alpha\n      id: last-no-newline' >"$WORK/field-eof.yml"
+ACTION="$WORK/field-eof.yml"
+read_with step_field Alpha id
+is_read "step_field: a last line with no newline" "last-no-newline"
+yaml field-blank <<'EOF'
+runs:
+  steps:
+    - name: Alpha
+      id:
+      shell: bash
+EOF
+read_with step_field Alpha id
+is_refused "step_field: a key with nothing after it is refused, not read as empty" '"id:" has no value on its line'
+read_with step_field Alpha shell
+is_read "step_field: its control, the next key, is read" "bash"
+
+ACTION="$WORK/fields.yml"
+read_with step_field Gamma id
+is_refused "step_field: a step that is not there" 'no step named "Gamma"'
+ACTION="$WORK/twice.yml"
+read_with step_field Alpha id
+is_refused "step_field: two steps of one name" '2 steps named "Alpha"'
+ACTION="$WORK/two-spaces.yml"
+read_with step_field Alpha id
+is_refused "step_field: steps at another indent are not found" 'no step named "Alpha"'
+ACTION="$WORK/missing-file.yml"
+read_with step_field Alpha id
+is_refused "step_field: a file that is not there" "ACTION must name the file to read"
+ACTION=""
+read_with step_field Alpha id
+is_refused "step_field: ACTION unset" "ACTION must name the file to read"
+
+# --- step_map ------------------------------------------------------------------------------
+
+yaml maps <<'EOF'
+runs:
+  steps:
+    - name: Alpha
+      id: alpha
+      env:
+        GH_TOKEN: ${{ github.token }}
+        # a comment between entries
+
+        BASE_REF: ${{ steps.mb.outputs.sha }}
+        DEPTH: ${{ inputs.baseline-ancestor-depth }}
+      with:
+        run_id: ${{ steps.lookup.outputs.run-id }}
+        name: ${{ inputs.baseline-artifact-name }}
+      shell: bash
+      run: |
+        echo alpha
+    - name: Beta
+      env:
+        ONLY: one
+    - name: Gamma
+      with:
+        path: |
+          coverage.json
+          summary.txt
+        name: after-a-block
+    - name: Delta
+      with:
+        name: x
+       odd: 7 spaces
+    - name: Epsilon
+      env:
+      shell: bash
+    - name: Zeta
+      env: inline-value
+EOF
+read_with step_map Alpha env
+is_read "step_map: the entries of env, dedented, in order, as written; comment and blank skipped" \
+  $'GH_TOKEN: ${{ github.token }}\nBASE_REF: ${{ steps.mb.outputs.sha }}\nDEPTH: ${{ inputs.baseline-ancestor-depth }}'
+read_with step_map Alpha with
+is_read "step_map: the entries of with, up to the key after it" \
+  $'run_id: ${{ steps.lookup.outputs.run-id }}\nname: ${{ inputs.baseline-artifact-name }}'
+read_with step_map Beta env
+is_read "step_map: the last entries of a step stop at the next step" "ONLY: one"
+
+read_with step_map Beta with
+is_refused "step_map: a map the step does not have" 'has no "with:" at 6 spaces'
+read_with step_map Gamma env
+is_refused "step_map: a map only another step has is not read for this one" 'has no "env:" at 6 spaces'
+read_with step_map Zeta env
+is_refused "step_map: a key with a value on its line is not a map" '"env:" has a value on its line, so it is not a map'
+read_with step_map Epsilon env
+is_refused "step_map: a map with no entries" '"env:" has no entries'
+read_with step_map Gamma with
+is_refused "step_map: an entry whose value goes on to deeper lines is refused, with the line" \
+  'line 23 is indented 10 spaces, a value that goes on past its line'
+read_with step_map Delta with
+is_refused "step_map: an entry at another indent is refused, with the line" \
+  'line 29 is indented 7 spaces, and this reads entries indented 8'
+read_with step_map Alpha id
+is_refused "step_map: a key with a value on its line is not a map, id" '"id:" has a value on its line'
+
+ACTION="$WORK/maps.yml"
+read_with step_map Nope env
+is_refused "step_map: a step that is not there" 'no step named "Nope"'
+ACTION="$WORK/twice.yml"
+read_with step_map Alpha env
+is_refused "step_map: two steps of one name" '2 steps named "Alpha"'
+ACTION="$WORK/two-spaces.yml"
+read_with step_map Alpha env
+is_refused "step_map: steps at another indent are not found" 'no step named "Alpha"'
+ACTION="$WORK/missing-file.yml"
+read_with step_map Alpha env
+is_refused "step_map: a file that is not there" "ACTION must name the file to read"
+ACTION=""
+read_with step_map Alpha env
+is_refused "step_map: ACTION unset" "ACTION must name the file to read"
+
 # --- input_block --------------------------------------------------------------------------
 
 yaml inputs <<'EOF'
@@ -507,6 +664,39 @@ eq "action.yml: every step is read whole or refused cleanly" "" "$broken"
 pass "action.yml: the file has steps to read" test "$steps" -gt 0
 eq "action.yml: every step with a literal-block run: is read" \
   "$(grep -cE '^      run: [|][-+]? *$' "$ACTION")" "$read_steps"
+
+# Every env: and with: map of the real file, found without the readers: the step's name, the
+# key, and whether a line deeper than 8 spaces comes before the map ends. step_map reads the
+# map whole, or refuses it exactly when it has such a line (the block `path:` of an upload
+# step), and never prints half of one.
+maps="$(awk '
+  function indent(s) { match(s, /^ */); return RLENGTH }
+  function flush() { if (inmap && name != "") print name "\t" key "\t" (deeper ? "deeper" : "ok"); inmap = 0 }
+  /^    - / { flush(); name = $0; if (!sub(/^    - name: /, "", name)) name = ""; next }
+  inmap && $0 !~ /^ *$/ && indent($0) <= 6 { flush() }
+  inmap { if (indent($0) > 8 && $0 !~ /^ *$/) deeper = 1; next }
+  /^      (env|with):$/ { inmap = 1; key = $1; sub(/:$/, "", key); deeper = 0 }
+  END { flush() }
+' "$ACTION")"
+read_maps=0 refused_maps=0 broken=""
+while IFS=$'\t' read -r name key kind; do
+  [ -n "$name" ] || continue
+  read_with step_map "$name" "$key"
+  if [ "$kind" = ok ]; then
+    if [ "$STATUS" -eq 0 ] && [ -n "$OUT" ] && [ -z "$ERR" ]; then
+      read_maps=$((read_maps + 1))
+    else
+      broken+=" [step_map $name $key: refused or read nothing]"
+    fi
+  elif [ "$STATUS" -eq 1 ] && [ -z "$OUT" ] && [ -n "$ERR" ]; then
+    refused_maps=$((refused_maps + 1))
+  else
+    broken+=" [step_map $name $key: a map with a deeper line was not refused cleanly]"
+  fi
+done <<<"$maps"
+eq "action.yml: every env: and with: map is read whole, or refused when a value goes deeper" "" "$broken"
+pass "action.yml: the file has maps to read" test "$read_maps" -gt 0
+pass "action.yml: and a map with a block value, which is refused" test "$refused_maps" -gt 0
 
 # An input of the real file, from its own name line and no further than its own keys. The
 # next input is found without the reader: the first key at the inputs' indent below it.
