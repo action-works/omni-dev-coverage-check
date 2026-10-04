@@ -973,10 +973,11 @@ jobs:
           exit "$status"
 
       # Last, so the assertions above see the binary. The cache key is unique to this
-      # run, so what the cache's post step would save is never restored: a binary of tens
-      # of megabytes per leg per run, which would push out the entries the other jobs
-      # reuse. With no file at the cached path it saves nothing and logs a warning about
-      # the missing path.
+      # run, so what the cache's post step would save is never restored: an entry of about
+      # 18 MiB per leg per run (0.45.0's is 17.66 MiB), against a repository cache of
+      # about 200 MB in all, which would push out the entries the other jobs reuse. With
+      # no file at the cached path it saves nothing and logs a warning about the missing
+      # path.
       - name: Leave nothing for the cache to save
         run: rm -f "$HOME/.cargo/bin/omni-dev"
 

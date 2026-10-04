@@ -495,8 +495,9 @@ The action is a composite action with two phases:
     - What that costs: nothing compares the two spellings' cache keys. A key built from
       `inputs.version` would make a duplicate cache entry, not a failure, and no test sees it.
     - The last step removes `~/.cargo/bin/omni-dev` so the cache's post step saves nothing: a key
-      like this is never restored, and a binary of tens of megabytes per leg per run (the release
-      archive is 31 MB) would push out the entries the other jobs reuse. It runs after the
+      like this is never restored, and an entry of about 18 MiB per leg per run (the `0.45.0` one
+      is 17.66 MiB; the repository's cache held about 200 MB in all when this was measured) would
+      push out the entries the other jobs reuse. It runs after the
       assertions, which need the binary. The post step then logs `Path Validation Error: Path(s)
       specified in the action for caching do(es) not exist`, as a warning; `arm64-release-without-asset`
       logs the same on every run, having installed nothing.
