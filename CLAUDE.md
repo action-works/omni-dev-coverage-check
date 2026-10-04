@@ -188,8 +188,11 @@ The action is a composite action with two phases:
   - The variables are generic names, and `cargo`, a dependency's build scripts and the caller's
     commands inherit a step's environment, so the steps that run them drop the action's
     variables first: `unset TEST_ARGS` and the command variables (copied into `commands`), `env
-    -u VERSION cargo install`, and `unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA` before
-    the merge-base's `cargo llvm-cov`. `tests/input-steps.test.sh` asserts it.
+    -u VERSION cargo install`, and `unset REPORT WORKTREE_SYSTEM_DEPS TEST_ARGS BASE_SHA
+    LLVM_COV_IGNORE_FILENAME_REGEX` before the merge-base's `cargo llvm-cov` (the last is copied
+    into the `ignore` array first, which is how the recompute's report still gets the filter).
+    `tests/input-steps.test.sh` asserts it, and `tests/llvm-cov-ignore-steps.test.sh` asserts the
+    filter variable.
   - The step tests set the variables and assert that each step's `env:` block fills them from
     the right place, and that the script holds no expression: setting variables alone would
     pass if `env:` were wired wrong. `tests/input-steps.test.sh` runs every other step that
@@ -837,7 +840,9 @@ The action is a composite action with two phases:
     word when set, nothing when not.
   - It goes to every `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line
     gate, the recompute's), not to a `--no-report` run: the filter applies at report time.
-    It does not change when the merge happens (see "One profile merge").
+    It does not change when the merge happens (see "One profile merge"). It reaches the scripts
+    through `env:` like every input (#39), and the recompute copies it into an argument and
+    unsets it before the merge-base's tests run, so they do not see it.
     `tests/llvm-cov-ignore-steps.test.sh` pins the argument at each of the five and scans
     every step's whole block (so an inline `run:` counts, which `step_run` would refuse) for
     `cargo llvm-cov report` calls, which must be those five, and for any other `cargo llvm-cov`
