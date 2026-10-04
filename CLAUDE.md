@@ -200,7 +200,9 @@ The action is a composite action with two phases:
     and a rename would read a present flag as missing). `--help` follows the value, and
     `--report` is required, so the probe does not run a diff. The wording is the same on every
     release from 0.29.0 to 0.45.0, swept by hand for #36 (0.28.0 says `unrecognized
-    subcommand 'coverage'`), and the floors it finds are exactly 0.32.0 and 0.45.0.
+    subcommand 'coverage'`), and the floors it finds are exactly 0.32.0, 0.33.0 and 0.45.0. A
+    flag whose value `x` is valid (a free-form regex, `--ignore-filename-regex`) answers exit 0
+    and the whole help, which is still "present".
   - **It fails open**: if clap rewords the message, or a probe fails in a way nobody has
     seen, the flag counts as present and the run gets clap's own error later, as before the
     guard existed. The integration legs that expect a stop (`0.28.0`, `0.31.0`,
@@ -227,7 +229,7 @@ The action is a composite action with two phases:
     would fool a step that went back to reading it (the case list holds both, each with a
     control). It also pins forced colour, the fail-open, "every missing flag" and that a flag
     the run does not need is not asked about, and replays what the real releases answered
-    (`tests/fixtures/omni-dev-probe/`: 0.28.0, 0.31.0, 0.32.0, 0.44.0, 0.45.0; the header says
+    (`tests/fixtures/omni-dev-probe/`: 0.28.0, 0.31.0, 0.32.0, 0.33.0, 0.44.0, 0.45.0; the header says
     how to refresh one, with `NO_COLOR=1`, as the step asks), so the wording the step matches is
     held to what omni-dev prints; each fixture is also checked for the message its replay
     claims, since a fail-open step passes an empty one. The tests do not inherit `NO_COLOR` or

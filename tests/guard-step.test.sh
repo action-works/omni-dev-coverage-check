@@ -208,8 +208,8 @@ HELP_PROSE=$'      --report <PATH>\n          Head coverage report.\n\n      --r
 
 # run_guard <event> <run-coverage> <fail-under-lines> [NAME=value ...]: runs the step as the
 # runner would, with the inputs it reads in its environment, and the NAME=value pairs in the
-# stub's (see above; FAKE_VERSION and CLICOLOR_FORCE too). NO_COLOR and CLICOLOR_FORCE are
-# not inherited from the shell running the tests: a developer's NO_COLOR would turn the
+# stub's (see above; FAKE_VERSION, CLICOLOR_FORCE and the `ignore-filename-regex` input,
+# IGNORE_FILENAME_REGEX, too). NO_COLOR and CLICOLOR_FORCE are not inherited from the shell running the tests: a developer's NO_COLOR would turn the
 # forced-colour cases into no-ops, whether or not the step sets it itself. Sets STATUS (the step's exit
 # status), OUT (its output), ERRORS (its `::error::` lines), N_ERRORS and CALLS (what it
 # asked omni-dev, one call per line).
@@ -219,7 +219,8 @@ run_guard() {
   dir="$(mktemp -d "$WORK/case.XXXXXX")"
   : >"$dir/omni-dev.log"
   OUT="$(
-    env -u NO_COLOR -u CLICOLOR_FORCE PATH="$BIN:$PATH" OMNI_DEV_LOG="$dir/omni-dev.log" \
+    env -u NO_COLOR -u CLICOLOR_FORCE -u IGNORE_FILENAME_REGEX \
+      PATH="$BIN:$PATH" OMNI_DEV_LOG="$dir/omni-dev.log" \
       FAKE_VERSION='omni-dev 0.45.0 (2de88c54 2026-10-03)' \
       EVENT_NAME="$event" RUN_COVERAGE="$run_coverage" FAIL_UNDER_LINES="$gate" "$@" \
       bash --noprofile --norc -eo pipefail -c "$GUARD" 2>&1
@@ -232,9 +233,13 @@ run_guard() {
 
 OUTPUT_MSG="has no 'coverage diff --output'"
 LINES_MSG="has no 'coverage diff --fail-under-lines'"
+REGEX_MSG="has no 'coverage diff --ignore-filename-regex'"
 VERSION_CALL='--version'
 OUTPUT_PROBE='coverage diff --output x --help'
 LINES_PROBE='coverage diff --fail-under-lines x --help'
+REGEX_PROBE='coverage diff --ignore-filename-regex x --help'
+# The `ignore-filename-regex` input, set for the cases that need it.
+REGEX_INPUT='IGNORE_FILENAME_REGEX=LICENSE'
 
 # expect_pass <name>: the step succeeded and printed no error.
 expect_pass() {
@@ -372,7 +377,69 @@ expect_only "--output accepted, --fail-under-lines not" "$LINES_MSG"
 run_guard pull_request false 80 FAKE_ACCEPTS=--fail-under-lines
 expect_only "--fail-under-lines accepted, --output not" "$OUTPUT_MSG"
 
+# --- --ignore-filename-regex: the input set, wherever a diff runs -------------------------------
+# A pull request also needs --output, so every pull-request case below accepts it and the one
+# error left is the flag under test. omni-dev takes `x` for this flag as a regex: exit 0, the
+# help printed (the `ok` mode), unlike the other two flags' `invalid value`.
+
+run_guard pull_request true '' "$REGEX_INPUT" "FAKE_ACCEPTS=--output --ignore-filename-regex" FAKE_ACCEPT_MODE=ok
+expect_pass "--ignore-filename-regex accepted with exit 0"
+eq "--ignore-filename-regex accepted: it asked once for each flag, never read the plain help" \
+  "$VERSION_CALL"$'\n'"$OUTPUT_PROBE"$'\n'"$REGEX_PROBE" "$CALLS"
+
+run_guard pull_request true '' "$REGEX_INPUT" "FAKE_ACCEPTS=--output --ignore-filename-regex" FAKE_HELP="$HELP_HIDING"
+expect_pass "--ignore-filename-regex accepted but hidden from the help"
+
+run_guard pull_request true '' "$REGEX_INPUT" FAKE_ACCEPTS=--output FAKE_HELP="$HELP_PROSE"
+expect_only "--ignore-filename-regex named in help prose, not accepted" "$REGEX_MSG"
+run_guard pull_request true '' "$REGEX_INPUT" "FAKE_ACCEPTS=--output --ignore-filename-regex" FAKE_HELP="$HELP_PROSE"
+expect_pass "--ignore-filename-regex named in help prose, accepted"
+
+run_guard pull_request true '' "$REGEX_INPUT" "FAKE_ACCEPTS=--output --ignore-filename-regex-file"
+expect_only "only --ignore-filename-regex-file accepted" "$REGEX_MSG"
+
+run_guard pull_request true '' "$REGEX_INPUT" FAKE_ACCEPTS=--output
+expect_only "--output accepted, --ignore-filename-regex not" "$REGEX_MSG"
+
+# The message the user reads: the omni-dev found, the floor and both ways out.
+run_guard pull_request true '' "$REGEX_INPUT" FAKE_ACCEPTS=--output FAKE_VERSION="omni-dev 0.32.0 (0a1b2c3d 2025-01-02)"
+has "the --ignore-filename-regex error names the omni-dev found" "$ERRORS" "::error::omni-dev 0.32.0 (0a1b2c3d 2025-01-02) has no"
+has "the --ignore-filename-regex error names the floor" "$ERRORS" "It needs omni-dev 0.33.0 or later"
+has "the --ignore-filename-regex error says to set 'version'" "$ERRORS" "set 'version' to 0.33.0 or later, or to 'latest'"
+has "the --ignore-filename-regex error says to empty the input" "$ERRORS" "or set 'ignore-filename-regex' to an empty string"
+
+# Thin mode with the line gate on passes the flag on any event, a push included.
+run_guard push false 80 "$REGEX_INPUT" "FAKE_ACCEPTS=--fail-under-lines --ignore-filename-regex" FAKE_ACCEPT_MODE=ok
+expect_pass "thin mode with the line gate, on a push, flag accepted"
+eq "thin mode with the line gate, on a push: it asked once for each flag" \
+  "$VERSION_CALL"$'\n'"$LINES_PROBE"$'\n'"$REGEX_PROBE" "$CALLS"
+
+run_guard push false 80 "$REGEX_INPUT" FAKE_ACCEPTS=--fail-under-lines
+expect_only "thin mode with the line gate, on a push, flag missing" "$REGEX_MSG"
+
+# Every missing flag is reported, this one with the other two.
+run_guard pull_request false 80 "$REGEX_INPUT" "FAKE_ACCEPTS=--output-file --fail-under-lines-per-file --ignore-filename-regex-file"
+eq "all three flags missing: the step fails" 1 "$STATUS"
+eq "all three flags missing: it reports each, not just the first" 3 "$N_ERRORS"
+has "all three flags missing: --ignore-filename-regex is reported" "$ERRORS" "$REGEX_MSG"
+
 # --- a flag the run does not need is not asked about --------------------------------------
+
+run_guard push true '' "$REGEX_INPUT"
+expect_pass "a fat-mode push with the input set: no omni-dev diff runs, so no flag is needed"
+eq "a fat-mode push with the input set: it asked about no flag" "$VERSION_CALL" "$CALLS"
+
+run_guard push false '' "$REGEX_INPUT"
+expect_pass "thin mode with the line gate off, on a push, with the input set"
+eq "thin mode with the line gate off, on a push, with the input set: it asked about no flag" "$VERSION_CALL" "$CALLS"
+
+run_guard pull_request true '' FAKE_ACCEPTS=--output
+expect_pass "the input empty: --ignore-filename-regex is not demanded on a pull request"
+eq "the input empty on a pull request: it asked only about --output" \
+  "$VERSION_CALL"$'\n'"$OUTPUT_PROBE" "$CALLS"
+
+run_guard push false 80 FAKE_ACCEPTS=--fail-under-lines
+expect_pass "the input empty: --ignore-filename-regex is not demanded in thin mode with the gate"
 
 run_guard push true ''
 expect_pass "a fat-mode push"
@@ -404,16 +471,26 @@ has "no coverage subcommand: what omni-dev said stays in the log" "$OUT" "omni-d
 run_guard push true '' FAKE_NO_COVERAGE=1 FAKE_VERSION="omni-dev 0.28.0"
 expect_pass "no coverage subcommand on a fat-mode push, which needs no flag"
 
+run_guard pull_request true '' "$REGEX_INPUT" FAKE_NO_COVERAGE=1 FAKE_VERSION="omni-dev 0.28.0"
+eq "no coverage subcommand with the input set: the step fails" 1 "$STATUS"
+eq "no coverage subcommand with the input set: --output and the regex flag are reported" 2 "$N_ERRORS"
+has "no coverage subcommand with the input set: --ignore-filename-regex is reported" "$ERRORS" "::error::omni-dev 0.28.0 $REGEX_MSG"
+
+run_guard push true '' "$REGEX_INPUT" FAKE_NO_COVERAGE=1 FAKE_VERSION="omni-dev 0.28.0"
+expect_pass "no coverage subcommand on a fat-mode push with the input set, which runs no diff"
+
 # --- what the real releases said to the probe -----------------------------------------------
 # tests/fixtures/omni-dev-probe/ holds the answers of the releases either side of each floor:
-# 0.31.0 is the newest release without --output, 0.32.0 the floor; 0.44.0 the newest without
+# 0.31.0 is the newest release without --output, 0.32.0 the floor (and the newest without
+# --ignore-filename-regex), 0.33.0 the floor of that one; 0.44.0 the newest without
 # --fail-under-lines, 0.45.0 the floor; 0.28.0 the newest with no `coverage` subcommand at all.
 # The wording the step matches is the wording they print.
 
 FIXTURES="$ROOT/tests/fixtures/omni-dev-probe"
 # real_case <version> <expect --output: yes|no> <expect --fail-under-lines: yes|no>
+#   <expect --ignore-filename-regex: yes|no>
 real_case() {
-  local version=$1 want_output=$2 want_lines=$3
+  local version=$1 want_output=$2 want_lines=$3 want_regex=$4
   # --output is needed on a pull request, --fail-under-lines in thin mode with the gate on:
   # one run per flag, so each answer is read on its own.
   run_guard pull_request true '' FAKE_REPLAY_DIR="$FIXTURES/$version" FAKE_VERSION="omni-dev $version"
@@ -428,43 +505,70 @@ real_case() {
   else
     expect_only "real $version: --fail-under-lines is missing" "$LINES_MSG"
   fi
+  # On a pull request with the input set --output is needed too, so a release below its
+  # floor reports two errors: read this flag's message, not the error count.
+  run_guard pull_request true '' "$REGEX_INPUT" FAKE_REPLAY_DIR="$FIXTURES/$version" FAKE_VERSION="omni-dev $version"
+  if [ "$want_regex" = yes ]; then
+    lacks "real $version: --ignore-filename-regex is found" "$ERRORS" "$REGEX_MSG"
+  else
+    has "real $version: --ignore-filename-regex is missing" "$ERRORS" "$REGEX_MSG"
+  fi
 }
 
-real_case 0.28.0 no no
-real_case 0.31.0 no no
-real_case 0.32.0 yes no
-real_case 0.44.0 yes no
-real_case 0.45.0 yes yes
+real_case 0.28.0 no no no
+real_case 0.31.0 no no no
+real_case 0.32.0 yes no no
+real_case 0.33.0 yes no yes
+real_case 0.44.0 yes no yes
+real_case 0.45.0 yes yes yes
 
 # Each fixture is what its replay claims it is. Under fail-open a "found" answer passes for any
 # output that is not clap's missing-flag wording, so an empty, truncated or mis-captured file
-# would pass for the wrong reason: a present flag's fixture must hold clap's `invalid value`
-# for that flag, a missing flag's the message the step looks for, and none may hold escape
-# codes (a capture made with CLICOLOR_FORCE set).
-# fixture_case <version> <flag, without dashes> <yes|no>
+# would pass for the wrong reason: a missing flag's fixture must hold the message the step looks
+# for, a present flag's what omni-dev prints for one (`invalid value` for a flag with an enum or
+# a number, the help itself for a free-form regex, which `x` is), and none may hold escape codes
+# (a capture made with CLICOLOR_FORCE set).
+# fixture_case <version> <flag, without dashes> <missing|invalid|help>
 fixture_case() {
   local version=$1 flag=$2 want=$3 text
   text="$(cat "$FIXTURES/$version/$flag.txt")"
-  has "fixture $version/$flag: it records an exit status" "$text" "exit=2"
   lacks "fixture $version/$flag: no escape codes" "$text" $'\e'
-  if [ "$want" = yes ]; then
-    has "fixture $version/$flag: clap's invalid value for the flag" "$text" "error: invalid value 'x' for '--$flag "
-  elif [ "$version" = 0.28.0 ]; then
-    has "fixture $version/$flag: clap's unrecognized subcommand" "$text" "error: unrecognized subcommand 'coverage'"
-  else
-    has "fixture $version/$flag: clap's unexpected argument" "$text" "error: unexpected argument '--$flag' found"
-  fi
+  case "$want" in
+    missing)
+      has "fixture $version/$flag: it records exit 2" "$text" "exit=2"
+      if [ "$version" = 0.28.0 ]; then
+        has "fixture $version/$flag: clap's unrecognized subcommand" "$text" "error: unrecognized subcommand 'coverage'"
+      else
+        has "fixture $version/$flag: clap's unexpected argument" "$text" "error: unexpected argument '--$flag' found"
+      fi
+      ;;
+    invalid)
+      has "fixture $version/$flag: it records exit 2" "$text" "exit=2"
+      has "fixture $version/$flag: clap's invalid value for the flag" "$text" "error: invalid value 'x' for '--$flag "
+      ;;
+    help)
+      has "fixture $version/$flag: it records exit 0" "$text" "exit=0"
+      has "fixture $version/$flag: the help" "$text" "Usage: omni-dev coverage diff"
+      lacks "fixture $version/$flag: no unexpected argument" "$text" "unexpected argument"
+      ;;
+  esac
 }
-fixture_case 0.28.0 output no
-fixture_case 0.28.0 fail-under-lines no
-fixture_case 0.31.0 output no
-fixture_case 0.31.0 fail-under-lines no
-fixture_case 0.32.0 output yes
-fixture_case 0.32.0 fail-under-lines no
-fixture_case 0.44.0 output yes
-fixture_case 0.44.0 fail-under-lines no
-fixture_case 0.45.0 output yes
-fixture_case 0.45.0 fail-under-lines yes
+for flag in output fail-under-lines ignore-filename-regex; do
+  fixture_case 0.28.0 $flag missing
+  fixture_case 0.31.0 $flag missing
+done
+fixture_case 0.32.0 output invalid
+fixture_case 0.32.0 fail-under-lines missing
+fixture_case 0.32.0 ignore-filename-regex missing
+fixture_case 0.33.0 output invalid
+fixture_case 0.33.0 fail-under-lines missing
+fixture_case 0.33.0 ignore-filename-regex help
+fixture_case 0.44.0 output invalid
+fixture_case 0.44.0 fail-under-lines missing
+fixture_case 0.44.0 ignore-filename-regex help
+fixture_case 0.45.0 output invalid
+fixture_case 0.45.0 fail-under-lines invalid
+fixture_case 0.45.0 ignore-filename-regex help
 
 echo
 echo "$passed passed, $failed failed"
