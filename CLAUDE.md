@@ -16,7 +16,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; a last job asserts the failure messages the scenarios logged
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; a last job asserts the failure messages the scenarios logged
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged, read through the Actions API (`tests/job-errors.test.sh` tests it against a fake `gh`; `test.yml` runs that)
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
@@ -126,12 +126,26 @@ The action is a composite action with two phases:
   succeed, plus a file check showing where the action stopped. `OLD_OMNI_DEV` is the
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
+  - The `--output` guard acts only on a `pull_request`, so the `output-flag` job (a
+    matrix: `0.31.0`, the newest release without the flag, and `0.32.0`, the floor)
+    runs on EVERY event and expects by event: the old leg fails at the guard on a
+    pull request and must succeed on any other, so a guard that over-fires is caught
+    too. The `0.32.0` leg is the old leg's control (only `version` differs). The
+    other-event expectations first run on the push after a merge. The matrix cannot
+    read `env`, so its versions are literals; `failure-messages` repeats them.
+  - On the failing leg, the file check is that no report and no `coverage.md` exist:
+    the scenario is sharded, the guard runs before the combine, and clap's failure in
+    the comment step would leave a combined report and an empty `coverage.md`.
 - **Failure-message assertions**: a step cannot read its own job's log and a composite
   action exposes no output for a failing step, so the outcome and file checks pin
   the step order, not the text a user reads. The `failure-messages` job (`needs`
-  both thin-mode jobs, so it is skipped while one is red) reads their finished logs
-  with `tests/job-errors.sh` and asserts the shard-pattern error names the pattern
-  and the guard's message names the omni-dev it found and both ways out. Rules:
+  every scenario job it reads, so it is skipped while one is red) reads their
+  finished logs with `tests/job-errors.sh` and asserts the shard-pattern error
+  names the pattern, the `--fail-under-lines` guard names the omni-dev it found and
+  both ways out, and (on a pull request only, the one event that runs it) the
+  `--output` guard names the omni-dev it found, the 0.32.0 floor and the way out.
+  Match the found version as its own fragment: `omni-dev --version` can carry a
+  commit and date after the number. Rules:
   - Read only the `##[error]` lines. The log also echoes every step's script, which
     holds the same message text whether or not the step ran it, so grepping the whole
     log passes for the wrong reason.
@@ -143,9 +157,10 @@ The action is a composite action with two phases:
     exit first and `pipefail` then fails the pipeline.
   - It is the only job with `actions: read` (job-level `permissions` drops the rest,
     so it also lists `contents: read` for the checkout). Keep it that way.
-  - It names the jobs it reads, including the thin-mode matrix versions. Renaming a
-    job or changing the matrix fails it loudly (no job of that name); a new matrix
-    leg is not checked until it is added to the list.
+  - It names the jobs it reads, including the thin-mode matrix versions and the
+    `output-flag` leg without the flag. Renaming a job or changing the matrix fails
+    it loudly (no job of that name); a new matrix leg is not checked until it is
+    added to the list.
   - A scenario that exists for its message gets an assertion here; edit a message
     in `scripts/combine-shards.sh` or the guard in `action.yml` and this job
     names the fragment that went missing.
