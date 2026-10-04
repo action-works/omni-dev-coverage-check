@@ -30,6 +30,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; the `old-glibc` job runs the pre-built binary on ubuntu-22.04, whose glibc is too old for it, with ubuntu-24.04 as its control (#67); a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API (the job list and the log are each retried); `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
+- `tests/run-jobs.sh` - Prints the jobs of the current run as one JSON array (`id`, `name`, `status`, `conclusion`), looking again at a failed call, a body that is not JSON, an empty list, a list short of the API's `total_count` and one shorter than `RUN_JOBS_MIN`; the deprecation step reads it (`tests/run-jobs.test.sh` tests it against a fake `gh` and reads `integration.yml` for the wiring; `test.yml` runs that)
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place); `src/ignored.rs` is the file nothing reaches, which F5 excludes and F6 keeps
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
@@ -906,9 +907,44 @@ The action is a composite action with two phases:
   - **Re-run this job with the whole workflow, not alone** (`gh run rerun <id>`, not
     `--failed` or `--job`): that is what passed in #69, and a partial re-run is where the
     list came back short. This is the practice, not a proven fix.
-  - Not covered: the "Assert the deprecation warnings" step lists the jobs itself, once, with
-    no retry. A 502 there fails the step, and a list that came back short would make it read
-    fewer jobs, not fail.
+  - **The deprecation step lists every job, and a short list there is the quiet failure
+    (#89).** "Assert the deprecation warnings" reads the log of EVERY job that finished green,
+    so the list decides what is read, and it has no name to miss: a list that came back short
+    made it read fewer jobs, report each `ok`, and pass. A 502 on its one call failed it with
+    no retry. `tests/run-jobs.sh` now does that listing, with `job-log.sh`'s policy
+    (`JOB_LOG_ATTEMPTS`, `JOB_LOG_DELAY`, the last look's message ends it) and prints one JSON
+    array of `{id, name, status, conclusion}`. Rules, so they are not re-derived:
+    - It looks again at a failed call, a body that is not JSON or has no `jobs`, an empty list
+      (the reading job is in the run), a list that holds fewer jobs than its own `total_count`,
+      and a list shorter than `RUN_JOBS_MIN`. The step passes `RUN_JOBS_MIN` as the number of
+      entries in `toJSON(needs)` plus one: every job it needs ran before it, and it is itself in
+      the run. That is a LOWER bound: `needs` names jobs and not matrix legs (`thin-mode` alone is
+      four), so a list short by fewer jobs than the matrices add clears it. The `total_count`
+      check shows only a list that disagrees with the API's own count, which was not seen: #69's
+      short lists were not examined for it. **Neither proves the list complete, and a short list
+      that is consistent is read as complete.** The step's comment, the script's header and this
+      note say so; do not let a later edit read it as a check. Rejected: the expected names. A
+      matrix's display names come from its entries, and a list of them kept by hand is what the
+      step reading "every job" was written to avoid.
+    - `job-log.sh` keeps its own listing, on purpose: its retry also covers a list with no job of
+      the NAME, in the same loop as the failed call and the log read, and the tests that pin its
+      messages and mixed sequences (`job-errors.test.sh`) would all have to move. Moving it onto
+      `run-jobs.sh` is possible and was left out; the two now share the policy by convention, not
+      by code.
+    - `tests/run-jobs.test.sh` replays each shape on a fake `gh` that serves the pages one file
+      each (502, HTML, JSON with no `jobs`, an empty list, a list short of `total_count`, mixed
+      sequences, the wait between looks and none after the last, the bound with its off-by-one,
+      the message of the LAST look), and reads `integration.yml` and `test.yml` for the wiring (the
+      `NEEDS` env, `length + 1`, the call with the minimum, no bare `gh api --paginate`, a failed
+      listing ending the step red, the test run by `test.yml`). Each rule was checked against a
+      mutation that fails at least one case: no `total_count` check, no minimum, no empty-list
+      check, a wait after the last look or none, extra fields kept, only the first page read, a
+      failure that exits 0, the reason dropped from the final message, one attempt by default, and
+      each of the step's wiring cases.
+    - What it costs: a pull request's run makes one more request at most six times when the API
+      is wrong, and the step keeps the 50 seconds an unclearable failure takes, as `job-log.sh`
+      does. The step's new call runs on pull requests only, so a runner first exercises it on
+      the checks of the pull request that adds it.
   - It is the only job with `actions: read` (job-level `permissions` drops the rest,
     so it also lists `contents: read` for the checkout). Keep it that way.
   - It names the jobs it reads, including the thin-mode matrix versions and the
@@ -939,7 +975,8 @@ The action is a composite action with two phases:
   - The `failure-messages` job's second step reads the logs with
     `tests/job-deprecations.sh`: on a pull request no job of the run may have logged a
     deprecation warning. It reads every job that finished green except the control,
-    found through the API, so a new job or matrix leg is read without being added to a
+    found through the API (`tests/run-jobs.sh`, which retries; see #89 above for what it does
+    and does not establish), so a new job or matrix leg is read without being added to a
     list (a job that stops at a guard logs none, which is its right answer). A new
     omni-dev deprecation turning it red on an unrelated pull request is the check
     working, not a flake: stop passing the flag and add it to the list above. Another
