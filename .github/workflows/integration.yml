@@ -36,8 +36,8 @@ name: Integration
 #     pass on a binary an earlier run installed, whatever a change did to the install.
 #     `thin-mode` (every leg) puts a prefix in front of the key (tests/install-cache.sh):
 #     a hash of action.yml and scripts/*.sh on a pull request and a push, so that a change
-#     to the install code installs and unchanged code reuses the entry, and the run and
-#     the attempt on the weekly run and a manual one, so those install every time. Its
+#     to the install code installs and unchanged code reuses the entry, and the run, the
+#     attempt and the leg on the weekly run and a manual one, so those install every time. Its
 #     checking step reads the action's `omni-dev-cache-hit` output, logs which it was,
 #     and fails when a run that cannot have an entry hit one. `version-pin` forces the
 #     install on every event with a key of its own. The other jobs exist for something
@@ -139,11 +139,13 @@ jobs:
       # chooses a prefix that makes it install when the code changes (tests/install-cache.sh
       # says how, by event). The script is called as an assignment: inside an `echo` its
       # failure would be lost under `bash -e`. `hashFiles` is an expression, so the hash
-      # arrives through `env`.
+      # arrives through `env`, with the leg: on the weekly and manual runs the prefix is
+      # unique to the run, and a pinned leg and `latest` can resolve to the same key.
       - name: Choose the omni-dev cache prefix
         id: install-cache
         env:
           INSTALL_CODE_HASH: ${{ hashFiles('action.yml', 'scripts/*.sh') }}
+          INSTALL_CACHE_LEG: ${{ matrix.omni-dev }}
         run: |
           prefix="$(bash tests/install-cache.sh prefix)"
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"

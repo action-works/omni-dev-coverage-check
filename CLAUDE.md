@@ -43,7 +43,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/baseline-lib.sh` - Checks of a baseline's `TN:` commit, the comment's ancestor note and the lookup against `expected-baseline.sh`, sourced by `pr-paths.yml` and `e2e-sharded.yml` (`tests/baseline-lib.test.sh` tests it, including against the real diff step; `test.yml` runs that)
 - `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
 - `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
-- `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run and attempt on `schedule` and `workflow_dispatch`) and checks the action's `omni-dev-cache-hit` output (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
+- `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run, attempt and leg on `schedule` and `workflow_dispatch`) and checks the action's `omni-dev-cache-hit` output (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `tests/fixtures/omni-dev-probe/` - What the real releases either side of each guard floor (and 0.28.0, which has no `coverage`) answered to the guard's probe, one `<version>/<flag>.txt` each: `exit=<status>`, then the output (`tests/guard-step.test.sh` replays them)
 - `.github/pull_request_template.md` - PR template
@@ -293,9 +293,15 @@ The action is a composite action with two phases:
     and `latest`) now passes the `cache-prefix` that `tests/install-cache.sh prefix` prints:
     `install-<16 hex of hashFiles('action.yml', 'scripts/*.sh')>-` on `pull_request` and
     `push` (a change to the install code is a new key and installs; unchanged code reuses the
-    entry, so a push to a pull request writes none), and `run-<run_id>-<run_attempt>-` on
-    `schedule` and `workflow_dispatch` (the weekly and manual runs install every time, and a
+    entry, so a push to a pull request writes none), and `run-<run_id>-<run_attempt>-<leg>-`
+    on `schedule` and `workflow_dispatch` (the weekly and manual runs install every time, and a
     re-run installs again). Rules:
+    - The run-id prefix carries the leg (`matrix.omni-dev`, through `INSTALL_CACHE_LEG`). Legs
+      of one job can resolve to the same key: ARM64 pinned `0.46.0` and ARM64 `latest` do
+      whenever latest is `0.46.0`. On unchanged code sharing is right (a hit is expected), but
+      with a prefix unique to the run one leg's saved entry could be restored by a leg that
+      started later, and `check` would fail a leg that did nothing wrong. Found in review; the
+      hash prefix does not carry it.
     - The checking step reads the action's `omni-dev-cache-hit` output from scenario 1 (a
       failed scenario exposes no outputs, and the entry is saved in the post step, so s1 sees
       the cache as the job found it) and calls `install-cache.sh check`. It logs whether the

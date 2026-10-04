@@ -44,20 +44,25 @@ HASH_A=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 HASH_B=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 
 # run <event> <run id> <attempt> <hash> <script arguments...>
-# Sets STATUS, OUT (stdout) and ERR (stderr) of the script.
+# Sets STATUS, OUT (stdout) and ERR (stderr) of the script. The leg of a matrix comes
+# from $LEG, set on the call (`LEG=latest run ...`), and is empty otherwise.
 run() {
   local event=$1 id=$2 attempt=$3 hash=$4
   shift 4
   OUT="$(env -i PATH="$PATH" GITHUB_EVENT_NAME="$event" GITHUB_RUN_ID="$id" \
-    GITHUB_RUN_ATTEMPT="$attempt" INSTALL_CODE_HASH="$hash" bash "$SCRIPT" "$@" 2>"$WORK/err")"
+    GITHUB_RUN_ATTEMPT="$attempt" INSTALL_CODE_HASH="$hash" INSTALL_CACHE_LEG="${LEG-}" \
+    bash "$SCRIPT" "$@" 2>"$WORK/err")"
   STATUS=$?
   ERR="$(<"$WORK/err")"
 }
 
-# prefix_of <event> <run id> <attempt> <hash>: the prefix, or fails the case if the script did.
+# prefix_of <event> <run id> <attempt> <hash>: the prefix the script printed, or, if it
+# failed, "FAILED(<status>)", which no case expects. An empty string would be different
+# from any prefix, so a `!=` against it would pass for a script that printed nothing; the
+# cases below compare with the exact prefix instead.
 prefix_of() {
   run "$1" "$2" "$3" "$4" prefix
-  printf '%s' "$OUT"
+  if [ "$STATUS" -eq 0 ]; then printf '%s' "$OUT"; else printf 'FAILED(%s)' "$STATUS"; fi
 }
 
 # --- prefix: the events that install on a change to the install code -----------------
@@ -90,11 +95,26 @@ for event in schedule workflow_dispatch; do
 done
 
 base="$(prefix_of schedule 100 1 "$HASH_A")"
-pass "schedule: another run gets another prefix" test "$(prefix_of schedule 101 1 "$HASH_A")" != "$base"
-pass "schedule: a re-run (another attempt) gets another prefix" test "$(prefix_of schedule 100 2 "$HASH_A")" != "$base"
+eq "schedule: another run gets another prefix" "run-101-1-" "$(prefix_of schedule 101 1 "$HASH_A")"
+eq "schedule: a re-run (another attempt) gets another prefix" "run-100-2-" "$(prefix_of schedule 100 2 "$HASH_A")"
 eq "schedule: the install code does not matter, only the run does" "$base" "$(prefix_of schedule 100 1 "$HASH_B")"
 eq "schedule: no hash is needed" "$base" "$(prefix_of schedule 100 1 "")"
 pass "the two kinds of prefix cannot be the same key" test "$base" != "$unchanged"
+
+# The legs of one job can resolve to the same key (a pinned 0.46.0 and latest, when latest
+# is 0.46.0), so on a run-id event each leg needs its own prefix, or one leg could restore
+# what another saved and be failed for it. The hash prefix is shared on purpose.
+eq "schedule: a leg is part of the prefix" "run-100-1-latest-" "$(LEG=latest prefix_of schedule 100 1 "$HASH_A")"
+eq "workflow_dispatch: ... and so is a pinned leg's" "run-100-1-0.46.0-" "$(LEG=0.46.0 prefix_of workflow_dispatch 100 1 "$HASH_A")"
+pass "schedule: two legs of one run cannot share a prefix" test "$(LEG=latest prefix_of schedule 100 1 "$HASH_A")" != "$(LEG=0.46.0 prefix_of schedule 100 1 "$HASH_A")"
+eq "pull_request: the leg is not part of the hash prefix, so legs may share it" "$unchanged" "$(LEG=latest prefix_of pull_request 100 1 "$HASH_A")"
+
+LEG="a b" run schedule 100 1 "$HASH_A" prefix
+eq "schedule with a leg that is not safe in a key: exits 1" 1 "$STATUS"
+eq "  and prints no prefix" "" "$OUT"
+has "  and says which variable is wrong" "$ERR" "INSTALL_CACHE_LEG"
+LEG='x/../y' run schedule 100 1 "$HASH_A" prefix
+eq "schedule with a leg that holds a slash: exits 1" 1 "$STATUS"
 
 # --- prefix: what it refuses ---------------------------------------------------------
 
@@ -202,6 +222,10 @@ eq "check with two arguments: exits 2" 2 "$STATUS"
 
 CACHE_STEP="$(step_block 'Cache omni-dev binary')" || exit 1
 has "action.yml: the cache step has the id the output reads" "$CACHE_STEP" "id: cache-omni-dev"
+# The whole mechanism: a prefix that never reaches the key changes nothing, and on a pull
+# request and a push `check` accepts a hit, so nothing else would notice.
+has "action.yml: the cache key starts with the cache-prefix input" "$CACHE_STEP" \
+  "key: \${{ inputs.cache-prefix }}omni-dev-"
 
 OUTPUT_BLOCK="$(awk '
   /^outputs:/ { in_outputs = 1; next }
@@ -231,21 +255,33 @@ eq "thin-mode hashes action.yml and scripts/*.sh, and nothing else" \
 # from the action's directory has to be a file the hash covers, or a change to it is
 # cached over again. (A script written by hand into the list is the maintenance this
 # check replaces.)
+# The two ends are read through step-lib, which refuses a step that is missing or doubled,
+# so renaming one fails here by name. The span between them takes in a step added later.
+step_block 'Resolve omni-dev version' >/dev/null || exit 1
+step_block 'Print omni-dev version' >/dev/null || exit 1
 INSTALL_STEPS="$(awk '
   /^    - name: Resolve omni-dev version$/ { printing = 1 }
   /^    - name: Print omni-dev version$/ { printing = 0 }
   printing { print }
 ' "$ACTION")"
 pass "action.yml: found the install steps" test -n "$INSTALL_STEPS"
+for name in 'Cache omni-dev binary' 'Determine platform and download URL' 'Download pre-built binary'; do
+  has "the install steps run from the version to the printed version, and take in '$name'" \
+    "$INSTALL_STEPS" "    - name: $name"
+done
 
-RUN_FROM_ACTION="$(grep -o 'ACTION_PATH/[^" ]*' <<<"$INSTALL_STEPS" | sort -u)"
-has "the install steps run the asset script from the action's directory" "$RUN_FROM_ACTION" "ACTION_PATH/scripts/omni-dev-asset.sh"
-while IFS= read -r ref; do
-  [ -n "$ref" ] || continue
-  case "${ref#ACTION_PATH/}" in
-    scripts/*.sh) ok "the install runs ${ref#ACTION_PATH/}, which scripts/*.sh covers" ;;
-    *) bad "the install runs ${ref#ACTION_PATH/}, which the hash of action.yml and scripts/*.sh does not cover" \
-      "add its path to hashFiles in thin-mode and to HASH_EXPR here" ;;
+# $ACTION_PATH/x and ${ACTION_PATH}/x both name a file in the action's directory.
+RUN_FROM_ACTION="$(grep -oE '[$]\{?ACTION_PATH\}?/[^" ]*' <<<"$INSTALL_STEPS" | sed -E 's/^[$]\{?ACTION_PATH\}?\///' | sort -u)"
+has "the install steps run the asset script from the action's directory" "$RUN_FROM_ACTION" "scripts/omni-dev-asset.sh"
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  case "$file" in
+    # `*` in a case pattern crosses a slash, where the glob in hashFiles does not.
+    scripts/*/*) bad "the install runs $file, which hashFiles('scripts/*.sh') does not reach (it does not descend)" \
+      "move it to scripts/, or widen the globs in thin-mode and HASH_EXPR here" ;;
+    scripts/*.sh) ok "the install runs $file, which scripts/*.sh covers" ;;
+    *) bad "the install runs $file, which the hash of action.yml and scripts/*.sh does not cover" \
+      "move it under scripts/, or widen the globs in thin-mode and HASH_EXPR here" ;;
   esac
 done <<<"$RUN_FROM_ACTION"
 
@@ -265,6 +301,8 @@ pass "the prefix step runs before the first scenario" test "${PREFIX_AT:-999999}
 
 has "the prefix step takes the hash through env" "$THIN" \
   "INSTALL_CODE_HASH: \${{ hashFiles('action.yml', 'scripts/*.sh') }}"
+has "the prefix step names the leg, so the legs of a run cannot share a prefix" "$THIN" \
+  "INSTALL_CACHE_LEG: \${{ matrix.omni-dev }}"
 has "the prefix is taken as an assignment, so a failure ends the step" "$THIN" \
   'prefix="$(bash tests/install-cache.sh prefix)"'
 has "the checking step reads the output of the first scenario" "$THIN" \
