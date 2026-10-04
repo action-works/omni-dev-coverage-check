@@ -121,7 +121,8 @@ The action is a composite action with two phases:
   deprecated flag working and warns only at run time, and hides it from `--help`, so
   the source is what gets checked. Rules:
   - It finds only the flags in the list at the top of the script. When omni-dev
-    deprecates another, add a `flag|use instead` line; nothing discovers it. Reading
+    deprecates another, add a `flag|use instead` line (a plain long flag: anything
+    else is refused, not matched as a pattern); nothing discovers it. Reading
     the run logs for `warning: ... is deprecated` would (#23, option 2), but that is
     not built, and only pull-request runs reach the diff steps that would print one.
   - A hit is the flag as a whole word anywhere in the file, not only on the line that

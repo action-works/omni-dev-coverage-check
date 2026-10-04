@@ -28,11 +28,18 @@ bad() {
   [ -z "${2:-}" ] || echo "       $2"
 }
 
-# run <file...>: runs the script, leaving its status in STATUS and its output
-# (stdout and stderr together) in OUT.
-run() {
-  OUT="$(bash "$SCRIPT" "$@" 2>&1)"
+# runs <script> <file...>: runs a script, leaving its status in STATUS and its
+# output (stdout and stderr together) in OUT.
+runs() {
+  local script=$1
+  shift
+  OUT="$(bash "$script" "$@" 2>&1)"
   STATUS=$?
+}
+
+# run <file...>: runs the script under test.
+run() {
+  runs "$SCRIPT" "$@"
 }
 
 # status_is <name> <want>: the last run exited with <want>.
@@ -146,6 +153,31 @@ has "missing file: says which" "no such file: $WORK/no-such-file.yml"
 run "$WORK/lookalikes.yml" "$WORK/no-such-file.yml"
 status_is "one missing file among good ones: exit 2" 2
 
+# --- the list is the extension point ----------------------------------------
+
+# variant <name> <line>: writes $WORK/<name>.sh, a copy of the script with <line>
+# added right after the DEPRECATED array (the first line that is just `)`).
+variant() {
+  awk -v add="$2" '{ print } !done && $0 == ")" { print add; done = 1 }' "$SCRIPT" >"$WORK/$1.sh"
+  grep -qF -- "$2" "$WORK/$1.sh" || bad "variant $1 was built" "no line of the script is just ')'"
+}
+
+variant extra "DEPRECATED+=('--no-cache|--cache')"
+printf 'omni-dev coverage diff --no-cache\n' >"$WORK/extra-hit.yml"
+runs "$WORK/extra.sh" "$WORK/extra-hit.yml"
+status_is "a flag added to the list is caught" 1
+has "a flag added to the list: names what to use instead" "pass --cache instead"
+runs "$WORK/extra.sh" "$WORK/invocation.yml"
+status_is "a flag added to the list: the first one is still caught" 1
+
+# An entry that is not a plain long flag would be matched as a pattern, wrongly.
+for entry in '--no.cache|--cache' '-o|--output' '--Format|x' '|x'; do
+  variant refused "DEPRECATED+=('$entry')"
+  runs "$WORK/refused.sh" "$WORK/lookalikes.yml"
+  status_is "list entry '$entry': refused with exit 2" 2
+  has "list entry '$entry': says why" "is not a long flag"
+done
+
 # --- the real files ----------------------------------------------------------
 
 # No arguments: the files and the directory the workflow runs it on, from any cwd.
@@ -166,8 +198,10 @@ else
   ok "mutation: action.yml has -o markdown / -o json call sites to rewrite"
   run "$WORK/mutated-action.yml"
   status_is "mutation: action.yml with --format fails" 1
-  # Every rewritten line is reported, one annotation each.
-  want="$(grep -c -e '--format' "$WORK/mutated-action.yml")"
+  # Every rewritten line is reported, one annotation each. The rewritten lines are
+  # counted from the diff, not by grepping for the flag: a comment that mentions it
+  # is rightly not reported and must not change what this expects.
+  want="$(diff "$ROOT/action.yml" "$WORK/mutated-action.yml" | grep -c '^>')"
   got="$(grep -c '^::error file=' <<<"$OUT")"
   if [ "$want" -gt 0 ] && [ "$got" -eq "$want" ]; then
     ok "mutation: every rewritten call site is reported ($got)"

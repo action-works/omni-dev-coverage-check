@@ -25,12 +25,22 @@
 #     name (`git log --format`): write it another way (`--pretty=format:`).
 #
 # To add a flag when omni-dev deprecates one, add a `flag|use instead` line below.
+# The flag must be a long one (`--`, then lowercase letters, digits and dashes): it
+# goes into a pattern as it stands, so anything else is refused with exit 2 rather
+# than matched wrongly.
 set -euo pipefail
 
 # omni-dev 0.32.0 added -o/--output and deprecated --format (rust-works/omni-dev#1125).
 DEPRECATED=(
   '--format|-o/--output'
 )
+
+for entry in "${DEPRECATED[@]}"; do
+  [[ "${entry%%|*}" =~ ^--[a-z][a-z0-9-]*$ ]] || {
+    echo "::error::check-deprecated-flags: '${entry%%|*}' in DEPRECATED is not a long flag (-- then lowercase letters, digits and dashes)" >&2
+    exit 2
+  }
+done
 
 if [ "$#" -gt 0 ]; then
   files=("$@")
