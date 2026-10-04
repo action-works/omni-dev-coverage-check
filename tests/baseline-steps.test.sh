@@ -107,7 +107,7 @@ DIFF='Build coverage diff'
 eq "find: it has the id the later steps read" baseline-lookup "$(step_field "$FIND" id)"
 eq "find: it runs on a pull request only" "github.event_name == 'pull_request'" "$(step_field "$FIND" if)"
 eq "find: it runs under bash" bash "$(step_field "$FIND" shell)"
-eq "find: it runs the script" 'bash "${{ github.action_path }}/scripts/find-baseline.sh"' "$(step_field "$FIND" run)"
+eq "find: it runs the script" 'bash "$ACTION_PATH/scripts/find-baseline.sh"' "$(step_field "$FIND" run)"
 if [ -x "$SCRIPT" ]; then
   ok "find: the script it runs exists and is executable"
 else
@@ -122,6 +122,7 @@ eq "find: the workflow is baseline-workflow" '${{ inputs.baseline-workflow }}' "
 eq "find: the artifact is baseline-artifact-name" '${{ inputs.baseline-artifact-name }}' "$(map_value "$ENV" BASELINE_ARTIFACT)"
 eq "find: it starts from the merge-base" '${{ steps.mb.outputs.sha }}' "$(map_value "$ENV" BASE_REF)"
 eq "find: the depth is baseline-ancestor-depth" '${{ inputs.baseline-ancestor-depth }}' "$(map_value "$ENV" ANCESTOR_DEPTH)"
+eq "find: the script's directory is the action's" '${{ github.action_path }}' "$(map_value "$ENV" ACTION_PATH)"
 
 # Everything the script insists on is set by the step. (GITHUB_* come from the runner.)
 required="$(grep -o '\${[A-Z_]*:?' "$SCRIPT" | sed 's/^\${//; s/:?$//' | grep -v '^GITHUB_' | sort -u | paste -sd' ' -)"
@@ -186,6 +187,13 @@ if [ -z "$DIFF_SCRIPT" ]; then
   exit 1
 fi
 DIFF_ENV="$(step_map "$DIFF" env)"
+eq "diff: the report is the report input" '${{ inputs.report }}' "$(map_value "$DIFF_ENV" REPORT)"
+eq "diff: collapse-ranges" '${{ inputs.collapse-ranges }}' "$(map_value "$DIFF_ENV" COLLAPSE_RANGES)"
+eq "diff: all-files" '${{ inputs.all-files }}' "$(map_value "$DIFF_ENV" ALL_FILES)"
+eq "diff: strip-prefix" '${{ inputs.strip-prefix }}' "$(map_value "$DIFF_ENV" STRIP_PREFIX)"
+eq "diff: report-format" '${{ inputs.report-format }}' "$(map_value "$DIFF_ENV" REPORT_FORMAT)"
+eq "diff: ignore-filename-regex" '${{ inputs.ignore-filename-regex }}' "$(map_value "$DIFF_ENV" IGNORE_FILENAME_REGEX)"
+eq "diff: the base is the merge-base" '${{ steps.mb.outputs.sha }}' "$(map_value "$DIFF_ENV" BASE_SHA)"
 eq "diff: it reads the baseline's commit" '${{ steps.baseline-lookup.outputs.sha }}' "$(map_value "$DIFF_ENV" BASELINE_SHA)"
 eq "diff: and its distance" '${{ steps.baseline-lookup.outputs.distance }}' "$(map_value "$DIFF_ENV" BASELINE_DISTANCE)"
 eq "diff: and whether the file is the merge-base's own recompute" '${{ steps.recompute.outputs.recomputed }}' "$(map_value "$DIFF_ENV" BASELINE_RECOMPUTED)"
@@ -205,18 +213,13 @@ EOF
 chmod +x "$BIN/omni-dev"
 
 # run_diff <distance> <baseline present: yes|no> [recomputed: true]: runs the diff step in an empty directory as the
-# runner would, with the inputs it reads replaced by their defaults. Sets STATUS, COMMENT
-# (coverage.md), OUT (its $GITHUB_OUTPUT) and CALLS (what the stub omni-dev was asked).
+# runner would, with the variables its env: block fills set to the inputs' defaults. Sets STATUS,
+# COMMENT (coverage.md), OUT (its $GITHUB_OUTPUT) and CALLS (what the stub omni-dev was asked).
 run_diff() {
   local distance="$1" present="$2" recomputed="${3:-}" script dir
   script="$DIFF_SCRIPT"
-  script="${script//'${{ inputs.report }}'/coverage-head.lcov}"
-  script="${script//'${{ inputs.collapse-ranges }}'/true}"
-  script="${script//'${{ inputs.all-files }}'/false}"
-  script="${script//'${{ inputs.strip-prefix }}'/}"
-  script="${script//'${{ inputs.report-format }}'/}"
   if [[ "$script" == *'${{'* ]]; then
-    bad "diff: every expression in the step is one this test fills in" "$(grep -o '\${{[^}]*}}' <<<"$script" | sort -u | paste -sd' ' -)"
+    bad "diff: the step holds no expression" "$(grep -o '\${{[^}]*}}' <<<"$script" | sort -u | paste -sd' ' -)"
     return 1
   fi
   dir="$(mktemp -d "$WORK/case.XXXXXX")"
@@ -228,6 +231,8 @@ run_diff() {
     cd "$dir" && PATH="$BIN:$PATH" GITHUB_OUTPUT="$dir/output" OMNI_DEV_LOG="$dir/calls" \
       ARTIFACT_URL=https://example/artifact RUN_URL=https://example/run BASE_SHA=0000000000000000000000000000000000000001 \
       HEAD_SHA=0000000000000000000000000000000000000002 COMMIT_URL=https://example/commit \
+      REPORT=coverage-head.lcov COLLAPSE_RANGES=true ALL_FILES=false STRIP_PREFIX='' REPORT_FORMAT='' \
+      IGNORE_FILENAME_REGEX='' \
       BASELINE_SHA=1234567890abcdef1234567890abcdef12345678 BASELINE_DISTANCE="$distance" \
       BASELINE_RECOMPUTED="$recomputed" \
       bash --noprofile --norc -eo pipefail -c "$script" >"$dir/stdout" 2>&1
