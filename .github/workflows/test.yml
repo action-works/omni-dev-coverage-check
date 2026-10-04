@@ -102,4 +102,8 @@ jobs:
       # `github.head_ref`, a pull request's title or a `workflow_dispatch` input written
       # into a `run:` body would be a command injection there.
       - name: Check no run body of the action or a workflow holds an expression
-        run: bash tests/check-run-expressions.sh action.yml .github/workflows/*.yml
+        run: |
+          # GitHub reads both extensions. With no `*.yaml` workflow that glob has to vanish
+          # (nullglob), not reach the check as a file that does not exist.
+          shopt -s nullglob
+          bash tests/check-run-expressions.sh action.yml .github/workflows/*.yml .github/workflows/*.yaml

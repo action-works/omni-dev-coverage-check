@@ -25,7 +25,9 @@
 # looked at: `if:`, `with:`, `env:`, `description:` and `default:` are meant to hold
 # expressions. It is a line scan, not a YAML parser. A step is the nearest list item at or
 # above the `run:` key, named by its `- name:` line or by a `name:` key at the same
-# indentation as the item's first key (a step with neither is unnamed). A `run:` key counts
+# indentation as the item's first key (a step with neither is unnamed); a list that a later
+# line at its own indentation or less has closed, such as a `schedule:` entry ahead of the
+# steps, is not the step. A `run:` key counts
 # wherever it is, even as an input under `with:` (a false positive is loud, a miss would not
 # be).
 #
@@ -108,6 +110,14 @@ findings="$(awk '
       match($0, /^ */)
       if (RLENGTH > keycol) { report($0); next }
       inrun = 0
+    }
+    # A line that is no list item, comment or blank, and is not indented deeper than the
+    # last list item, closes that list: it was not a step. Without this a list ahead of the
+    # steps with a shallower dash (a `schedule:` entry at column 4, steps at column 6) stays
+    # "the step", every later step reads as a list nested in it, and none is named (#73).
+    if (stepdash >= 0 && $0 !~ /^[[:space:]]*(#|-[[:space:]]|$)/) {
+      match($0, /^ */)
+      if (RLENGTH <= stepdash) { stepdash = -1; step = "" }
     }
     if ($0 ~ /^[[:space:]]*-[[:space:]]/) {
       dash = index($0, "-") - 1

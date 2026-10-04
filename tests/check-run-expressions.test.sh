@@ -394,43 +394,100 @@ has "the same without the entry: names the whole expression" "'\${{ inputs.a || 
 
 # --- the workflows (#73) -------------------------------------------------------------------
 
-# test.yml runs the check over every workflow of the repository as well as action.yml.
-# They hold the steps one level deeper than action.yml does, so what matters is that an
-# expression in one of THEIR `run:` bodies is found, with the line and the step named.
-# The line and the step are read out of the workflow, so an edit to it does not break the
-# case; the unplanted copy is the control that must pass.
-for workflow in "$ROOT"/.github/workflows/*.yml; do
-  run "$workflow"
-  status_is "workflow $(basename "$workflow"): passes as committed" 0
+# test.yml runs the check over every workflow of the repository (both extensions GitHub
+# reads) as well as action.yml. They hold the steps one level deeper than action.yml does,
+# and lists of their own ahead of the steps (a `schedule:` entry, a `paths:` filter), so
+# what matters is that an expression in one of THEIR `run:` bodies is found, with the line
+# and the step named. Both are read out of the workflow, so an edit to it does not break
+# the case; the workflow as committed is the control that must pass.
+workflows=()
+for workflow in "$ROOT"/.github/workflows/*.yml "$ROOT"/.github/workflows/*.yaml; do
+  [ ! -f "$workflow" ] || workflows+=("$workflow")
 done
 
-WORKFLOW="$ROOT/.github/workflows/pr-paths.yml"
-# <line of the first `run: |` key> <its column> <name of the step it belongs to>
-plant="$(awk '
-  BEGIN { SQ = sprintf("%c", 39) }
-  /^[[:space:]]*-[[:space:]]+name:/ {
-    step = $0
-    sub(/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/, "", step)
-    gsub("^[\"" SQ "]|[\"" SQ "]$", "", step)
-  }
-  /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*\|[[:space:]]*$/ {
-    match($0, /run:/)
-    print FNR "\t" RSTART - 1 "\t" step
-    exit
-  }' "$WORKFLOW")"
-IFS=$'\t' read -r plant_line plant_col plant_step <<<"$plant"
-if [ -z "$plant_step" ]; then
-  bad "workflow plant: pr-paths.yml has a named step with a block run: body to plant in" "found: '$plant'"
-else
+planted_in=" "
+for workflow in "${workflows[@]}"; do
+  name="$(basename "$workflow")"
+  run "$workflow"
+  status_is "workflow $name: passes as committed" 0
+  # <line of the first `run: |` key> <its column> <name of the step it belongs to>. A
+  # workflow with no block body (commit-check.yml has no run: at all) gives nothing, and is
+  # checked as committed only.
+  plant="$(awk '
+    BEGIN { SQ = sprintf("%c", 39) }
+    /^[[:space:]]*-[[:space:]]+name:/ {
+      step = $0
+      sub(/^[[:space:]]*-[[:space:]]+name:[[:space:]]*/, "", step)
+      gsub("^[\"" SQ "]|[\"" SQ "]$", "", step)
+    }
+    /^[[:space:]]*(-[[:space:]]+)?run:[[:space:]]*\|[[:space:]]*$/ {
+      match($0, /run:/)
+      print FNR "\t" RSTART - 1 "\t" step
+      exit
+    }' "$workflow")"
+  [ -n "$plant" ] || continue
+  IFS=$'\t' read -r plant_line plant_col plant_step <<<"$plant"
+  if [ -z "$plant_step" ]; then
+    bad "workflow $name: the first block run: body belongs to a named step" "found: '$plant'"
+    continue
+  fi
+  planted_in+="$name "
   awk -v at="$plant_line" -v col="$plant_col" '
     { print }
-    FNR == at { printf "%" (col + 2) "s%s\n", "", "echo \"${{ github.head_ref }}\"" }' "$WORKFLOW" >"$WORK/planted-workflow.yml"
-  run "$WORK/planted-workflow.yml"
-  status_is "workflow with an expression in a run: body: fails" 1
-  has "workflow with an expression in a run: body: names the line after the key" "file=$WORK/planted-workflow.yml,line=$((plant_line + 1)),"
-  has "workflow with an expression in a run: body: names the expression" "'\${{ github.head_ref }}'"
-  has "workflow with an expression in a run: body: names the step" "(step '$plant_step')"
-  annotations "workflow with an expression in a run: body: only the planted one" 1
+    FNR == at { printf "%" (col + 2) "s%s\n", "", "echo \"${{ github.head_ref }}\"" }' "$workflow" >"$WORK/planted-$name"
+  run "$WORK/planted-$name"
+  status_is "workflow $name with an expression in a run: body: fails" 1
+  has "workflow $name with an expression in a run: body: names the line after the key" "file=$WORK/planted-$name,line=$((plant_line + 1)),"
+  has "workflow $name with an expression in a run: body: names the expression" "'\${{ github.head_ref }}'"
+  has "workflow $name with an expression in a run: body: names the step" "(step '$plant_step')"
+  annotations "workflow $name with an expression in a run: body: only the planted one" 1
+done
+
+# The three that hold block bodies must have been planted in, or a restructure of one would
+# leave this section passing on the others.
+for name in e2e-sharded.yml integration.yml pr-paths.yml; do
+  case "$planted_in" in
+    *" $name "*) ok "workflow $name: a block run: body was found to plant in" ;;
+    *) bad "workflow $name: a block run: body was found to plant in" "planted in:$planted_in" ;;
+  esac
+done
+
+# A list ahead of the steps whose dash is shallower than the steps' own must not stay "the
+# step": integration.yml's weekly `schedule:` entry sits at column 4 and its steps at column
+# 6, and with the entry taken for a step none of the 26 findings planted in that file had a
+# step name. The `paths:` list of pr-paths.yml (dash at column 6) never showed it.
+cat >"$WORK/shallow-list.yml" <<'EOF'
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+jobs:
+  j:
+    steps:
+      - name: After the list
+        run: |
+          echo "${{ x }}"
+EOF
+run "$WORK/shallow-list.yml"
+status_is "a list with a shallower dash ahead of the steps: fails" 1
+has "a list with a shallower dash ahead of the steps: the step is still named" "(step 'After the list')"
+
+# Same file with the steps' dash as shallow as the list's: the control that always worked.
+sed -e 's/^    - cron/      - cron/' "$WORK/shallow-list.yml" >"$WORK/level-list.yml"
+run "$WORK/level-list.yml"
+has "a list with the steps' own dash ahead of them: the step is named" "(step 'After the list')"
+
+# What runs the check names both extensions GitHub reads for a workflow, and nullglob keeps
+# the one with no file from reaching the check as a path that does not exist.
+if grep -qF 'bash tests/check-run-expressions.sh action.yml .github/workflows/*.yml .github/workflows/*.yaml' "$ROOT/.github/workflows/test.yml"; then
+  ok "test.yml scans action.yml and both workflow extensions"
+else
+  bad "test.yml scans action.yml and both workflow extensions" "no line runs the check over action.yml, *.yml and *.yaml"
+fi
+if grep -qF 'shopt -s nullglob' "$ROOT/.github/workflows/test.yml"; then
+  ok "test.yml lets a glob with no match vanish"
+else
+  bad "test.yml lets a glob with no match vanish" "no 'shopt -s nullglob'"
 fi
 
 # --- the real file -------------------------------------------------------------------------
