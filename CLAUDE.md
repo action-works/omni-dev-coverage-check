@@ -24,6 +24,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
+- `tests/llvm-tool-shim.sh` - Pass-through for `llvm-cov`/`llvm-profdata` that logs each `llvm-profdata merge`; the fat-mode job installs it to assert the profile is merged once (see "One profile merge")
 - `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the merge-base worktree recompute, and `ignore-filename-regex` reaching the comment and the patch gate
 - `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on (`extra` adds a second patched file for P5 and P6)
 - `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
@@ -49,8 +50,9 @@ The action is a composite action with two phases:
    - **Fat mode (default, `run-coverage: true`)**: set up `llvm-tools-preview` +
      `cargo-llvm-cov`, run `cargo test` under instrumentation (sourcing
      `cargo llvm-cov show-env --sh` per step so every cargo step shares one set
-     of instrumented dependency artifacts), then emit `codecov.json`, the
-     per-line `report` lcov, and a `--summary-only` summary.
+     of instrumented dependency artifacts), then emit the per-line `report` lcov
+     (the first report: it merges the raw profiles, once, and removes them),
+     `codecov.json`, and a `--summary-only` summary, which read that merged profile.
    - **Thin mode (`run-coverage: false`)**: skip cargo-llvm-cov entirely; the
      caller supplies the per-line lcov via the `report` input — or, for a run
      sharded across jobs, via `shard-reports`, which `scripts/combine-shards.sh`
@@ -88,6 +90,36 @@ The action is a composite action with two phases:
 - **Shard join**: `cargo llvm-cov` writes no newline after its final `end_of_record`,
   so a bare `cat` of shards glues records and a consumer can silently drop a file.
   `combine-shards.sh` always puts a newline between shards; keep that if you touch it.
+- **One profile merge (decided in #4)**: every `cargo llvm-cov report` runs
+  `llvm-profdata merge` over all the raw profiles first, so a run that leaves thousands
+  of them (tests that spawn processes) paid for the merge once per report: four times
+  (codecov, lcov, summary, line gate). The lcov step is now the first report and ends
+  with `cargo llvm-cov clean --profraw-only`; a report that finds no `*.profraw` but a
+  `.profdata` skips the merge (cargo-llvm-cov 0.6.9), so codecov, summary and the gate
+  read the merged profile. Outputs are byte-identical. Rules:
+  - The lcov step stays ahead of every other `cargo llvm-cov report` step. One placed
+    before it merges again and nothing fails but the time, which is why CI counts merges.
+  - The profile is kept, only the raw profiles go (`--profraw-only` keeps the
+    `.profdata`). The first fat-mode step is `clean --workspace`, which removes the
+    `.profdata`, so a run on a reused runner cannot report an earlier run's profile.
+    Keep that step ahead of the test run.
+  - Do not call `llvm-profdata`/`llvm-cov` directly to cut further: cargo-llvm-cov owns
+    object-file discovery, the default ignore regex, the demangler and the codecov JSON
+    conversion. There is also no merge-only command (`report --no-report` is rejected).
+  - The gate stays its own `report --summary-only --fail-under-lines` call rather than
+    folded into the summary: folding needs a failure deferred across steps to keep
+    "gates run last", and after the merge the gate costs one `llvm-cov` pass.
+  - The fat-mode integration job puts pass-through shims (`tests/llvm-tool-shim.sh`)
+    on `LLVM_COV` and `LLVM_PROFDATA` (both, because setting one makes cargo-llvm-cov
+    warn). Each merge appends a line to `llvm-profdata-merges.txt`, which
+    `move-outputs.sh` files per scenario. F1, F2 and F3 expect 1 (the old order gives
+    4, 4 and 3) and F4, which stops before any report, expects 0, so the 1s are counts.
+    A cargo-llvm-cov that stopped skipping the merge, or whose `--profraw-only` stopped
+    working, shows up as a different count or as reports that fail.
+  - Measured on a synthetic corpus only (1,503 raw profiles): 4 merges to 1, each report
+    1.6-1.9 s to 0.5-0.9 s. The consumer's saving (about 6 of 8 minutes at succinctly,
+    where the four formats each took 123-128 s) is inferred from those near-equal times,
+    not measured.
 - **Pre-built asset is chosen by OS *and* architecture**: `scripts/omni-dev-asset.sh`
   maps `runner.os` + `runner.arch` to the release asset, and exits 1 for a pair with no
   asset rather than returning the nearest one. Linux used to map to the x86_64 build
@@ -341,7 +373,8 @@ The action is a composite action with two phases:
   (`pr-paths.yml` covers the recompute with a crate it commits itself). The
   action writes `codecov.json`, `coverage-summary.txt` and `coverage.md` to fixed
   names, so `tests/move-outputs.sh` moves each scenario's outputs to `out/<id>/`
-  before the next runs; add any new fixed-name output to its list. The fixture's
+  before the next runs (the merge log included); add any new fixed-name output to its
+  list. The fixture's
   functions are each reached by a different part of the run (`main_run`,
   `extra_only`, `setup_only`, `never`), and its tests leave marker files so an
   expected failure can show where it stopped. The gates of 40 and 80 are set around

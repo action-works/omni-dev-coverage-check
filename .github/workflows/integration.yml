@@ -4,15 +4,15 @@ name: Integration
 # mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
 # `ignore-filename-regex`, and the `--output` floor a pull request needs), and in
 # fat mode against a fixture crate (the instrumented test run, the three report
-# outputs, the fat-mode line gate, `setup-commands`/`extra-test-commands`). Each
-# scenario's outcome is asserted at the end of its job; the scenarios are
-# `continue-on-error` so one regression does not hide the rest. What the five
-# scenarios that exist for their message said is asserted by the last job, which
-# reads the finished jobs' logs through the API. On a pull request it also asserts
-# that none of the jobs that ran the pull-request steps logged an omni-dev
-# deprecation warning, and a control job that logs one on purpose shows that
-# reading can find it. One job runs on an ARM64 Linux runner, to show that the
-# pre-built binary is chosen by architecture.
+# outputs and the one profile merge they share, the fat-mode line gate,
+# `setup-commands`/`extra-test-commands`). Each scenario's outcome is asserted
+# at the end of its job; the scenarios are `continue-on-error` so one regression
+# does not hide the rest. What the five scenarios that exist for their message
+# said is asserted by the last job, which reads the finished jobs' logs through
+# the API. On a pull request it also asserts that none of the jobs that ran the
+# pull-request steps logged an omni-dev deprecation warning, and a control job
+# that logs one on purpose shows that reading can find it. One job runs on an
+# ARM64 Linux runner, to show that the pre-built binary is chosen by architecture.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -702,6 +702,25 @@ jobs:
           cp -R tests/fixtures/fat-crate/. .
           mkdir out
 
+      # Every `cargo llvm-cov report` merges all the raw profiles unless they were
+      # already merged and removed, which is what the action does so that its
+      # reports and gate share one merge (#4). These pass-through shims log each
+      # merge, so a scenario can assert how many ran. They go in before the action,
+      # which finds the real tools through them. Both are set: cargo-llvm-cov warns
+      # when only one is.
+      - name: Count llvm-profdata merges
+        run: |
+          shims="$RUNNER_TEMP/llvm-shims"
+          mkdir -p "$shims"
+          for tool in llvm-cov llvm-profdata; do
+            ln -s "$PWD/tests/llvm-tool-shim.sh" "$shims/$tool"
+          done
+          {
+            echo "LLVM_COV=$shims/llvm-cov"
+            echo "LLVM_PROFDATA=$shims/llvm-profdata"
+            echo "LLVM_SHIM_LOG=$PWD/llvm-profdata-merges.txt"
+          } >> "$GITHUB_ENV"
+
       # The full configuration. The fixture covers 14 of 24 lines (58.3%) with
       # everything, and 8 of 24 (33.3%) without the extra command, so the gates of
       # 40 and 80 sit well either side of it. `setup-ran.txt` is what the main
@@ -871,6 +890,22 @@ jobs:
           assert "F4: stopped in the main test: it ran" test -e out/f4/main-test-ran.txt
           assert "F4: stopped in the main test: no lcov" test ! -e out/f4.lcov
           assert "F4: stopped in the main test: no codecov.json" test ! -e out/f4/codecov.json
+
+          # One profile merge per run (#4). Left alone, each of the codecov, lcov and
+          # summary reports and the line gate merges every raw profile again, which
+          # is 4 merges in F1 and F2 and 3 in F3. The lcov report merges and removes
+          # the raw profiles, and the others read the merged profile. F2's gate is
+          # the last call of all, and it ran (it failed the step), so its count of 1
+          # covers every call. F4 stops in the test run, before any report: the log
+          # reads 0 when nothing merged, which makes the 1s above counts and not
+          # just the presence of a file.
+          merges() { # <log>; the log does not exist until the first merge
+            if [ -e "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi
+          }
+          check "F1: the raw profiles were merged once" 1 "$(merges out/f1/llvm-profdata-merges.txt)"
+          check "F2: merged once, the gate included" 1 "$(merges out/f2/llvm-profdata-merges.txt)"
+          check "F3: merged once, without the gate" 1 "$(merges out/f3/llvm-profdata-merges.txt)"
+          check "F4: nothing merged before the failing test" 0 "$(merges out/f4/llvm-profdata-merges.txt)"
 
           # The comment is built on pull requests only. Its total is the report's
           # own total, so it shows the diff was rendered from F1's report.
