@@ -313,26 +313,30 @@ The action is a composite action with two phases:
     where it came first; no runner has run the branch). It now finds `-name omni-dev.exe` and
     installs that, still as `~/.cargo/bin/omni-dev` with no `.exe`, because that is the path the
     cache step saves and restores. With no such file it fails with one `::error::` that names the
-    archive and lists what it held: the old `find | head | xargs` ran nothing for an empty
-    result and the step succeeded with no binary. A name that only starts like the binary's
+    archive and lists what it held (sorted with `LC_ALL=C`, so the message does not depend on the
+    runner's locale). The old `find | head | xargs` ran nothing for an empty result and the step
+    then failed on `chmod` with a bare "No such file or directory", naming neither the archive nor
+    the file; it "succeeded" only when it had installed the wrong binary. A name that only starts like the binary's
     (`omni-dev.exe.sig`) is not it. The tarball branch names its file already and is unchanged.
     Rules, so they are not re-derived:
     - `tests/download-step.test.sh` runs the step's own script against archives of the real
       layout (a few bytes each, named as the release's; the content says which file it stands
       for, so omni-dev is told from omni-dev-mcp by what was installed). It fails on the old zip
-      branch (`omni-dev-mcp.exe` installed, and the zip with no binary succeeding) and was
-      checked against mutations of the new one: `chmod` dropped, the name globbed again, the
-      empty check dropped, the tarball's `mv` of another file.
-    - The zip cases run with a stub `find` that lists in ascending, descending and the
-      filesystem's own order. Which file the old step picked depended on the listing, so without
-      the stub the test would pass or fail with the machine it ran on.
+      branch (`omni-dev-mcp.exe` installed, and the zip with no binary installing it too) and
+      was checked against mutations of the new one: `chmod` dropped, the name globbed again, the
+      empty check dropped, the first-line cut dropped (a zip with two `omni-dev.exe` is what
+      holds it), the tarball's `mv` of another file.
+    - The zip cases run with a stub `find` that lists in ascending, descending (`LC_ALL=C`, so
+      `-` sorts before `.`) and the filesystem's own order. Which file the old step picked
+      depended on the listing, so without the stub the test would pass or fail with the
+      machine it ran on.
     - **The step's fixed `/tmp` is rewritten in the script text, not made a variable.** The
       #83 options were `HOME` plus the real `/tmp`, or `${RUNNER_TEMP:-/tmp}` in the step. The
       second would change what the step does on every runner to serve a test: `version-pin`
       still reads the archive at `/tmp/<asset>` (#84), and a Windows `runner.temp` is a
       backslash path nobody has run. So the test replaces `/tmp` with a directory of the case's
-      own and checks each case's archive landed there; that moves where the step writes and
-      nothing it does. If the step ever writes somewhere else outside `HOME`, the test must
+      own and checks that the archive (the main tarball and zip cases) and the extraction (both
+      branches) landed there; that moves where the step writes and nothing it does. If the step ever writes somewhere else outside `HOME`, the test must
       learn it.
     - **No Windows leg, decided in #82.** Nothing here runs on Windows: the rest of the action
       (awk, `sudo`, `~`, `/tmp` in Git Bash, the fat-mode cargo steps) has never run there either,

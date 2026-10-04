@@ -68,8 +68,8 @@ cat >"$BIN/find" <<'EOF'
 #!/usr/bin/env bash
 real="$(PATH=/usr/bin:/bin command -v find)"
 case "${FIND_ORDER:-}" in
-  asc) "$real" "$@" | sort ;;
-  desc) "$real" "$@" | sort -r ;;
+  asc) "$real" "$@" | LC_ALL=C sort ;;
+  desc) "$real" "$@" | LC_ALL=C sort -r ;;
   *) exec "$real" "$@" ;;
 esac
 EOF
@@ -117,7 +117,10 @@ run_step() {
     bad "the step's /tmp is pointed at the case's directory" "the script holds no /tmp to rewrite"
     exit 1
   fi
-  HOME="$CASE/home" PATH="$BIN:$PATH" \
+  # A locale that is not C: `sort` is case-insensitive in it, so the list in the error
+  # (README.md before omni-dev-mcp.exe, or after) is only the same everywhere if the step
+  # sorts as C does. Where the locale is not installed bash falls back to C and warns.
+  HOME="$CASE/home" PATH="$BIN:$PATH" LC_ALL=en_US.UTF-8 \
     DOWNLOAD_URL="$URL_BASE/$asset" BINARY_NAME="$asset" \
     FAKE_ARCHIVE="$archive" CURL_LOG="$CASE/curl.log" FIND_ORDER="$order" \
     bash --noprofile --norc -eo pipefail -c "$script" >"$CASE/out" 2>&1
@@ -148,6 +151,8 @@ expect_installed "tarball" "fake omni-dev"
 has "tarball: it downloads the URL it was given" "$CURLS" "$URL_BASE/omni-dev-linux.tar.gz"
 has "tarball: it saves the archive where it was told" "$CURLS" "-o $CASE/tmp/omni-dev-linux.tar.gz"
 has "tarball: it says it installed" "$STEP_OUT" "Successfully installed omni-dev from pre-built binary"
+# `tar -C /tmp` extracts omni-dev-mcp, LICENSE and README.md beside omni-dev; only omni-dev is moved.
+if [ -f "$CASE/tmp/omni-dev-mcp" ]; then ok "tarball: it extracts into the case's own directory"; else bad "tarball: it extracts into the case's own directory" "no $CASE/tmp/omni-dev-mcp"; fi
 
 # omni-dev-mcp first in the archive: the tarball branch names its file, so no order matters.
 make_tar "$WORK/linux-mcp-first.tar.gz" omni-dev-mcp LICENSE README.md omni-dev
@@ -180,6 +185,14 @@ for order in asc desc; do
   expect_installed "zip with a directory, find lists $order" "fake omni-dev.exe"
 done
 
+# Two files of that name: `find` prints two lines, and the step must keep one path, not
+# hand `mv` both. (Not a layout any release has; it is what makes the first-line cut matter.)
+make_zip "$WORK/windows-two.zip" a/omni-dev.exe b/omni-dev.exe omni-dev-mcp.exe
+for order in asc desc ""; do
+  run_step "$WORK/windows-two.zip" omni-dev-windows.zip "$order"
+  expect_installed "zip with two omni-dev.exe, find lists ${order:-as the filesystem does}" "fake omni-dev.exe"
+done
+
 # No omni-dev.exe: the step must say so, and must not install what else there is.
 make_zip "$WORK/windows-no-binary.zip" LICENSE omni-dev-mcp.exe README.md
 for order in asc desc ""; do
@@ -191,6 +204,7 @@ for order in asc desc ""; do
     "::error::omni-dev-windows.zip has no omni-dev.exe in it"
   has "$label: the error lists what the archive holds" "$STEP_OUT" \
     "It holds: ./LICENSE ./README.md ./omni-dev-mcp.exe"
+  eq "$label: the error ends where the list does" "::error::omni-dev-windows.zip has no omni-dev.exe in it, so there is no omni-dev to install. It holds: ./LICENSE ./README.md ./omni-dev-mcp.exe" "$(grep '^::error::' <<<"$STEP_OUT")"
   lacks "$label: it does not claim to have installed" "$STEP_OUT" "Successfully installed"
 done
 

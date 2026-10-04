@@ -369,7 +369,8 @@ runs:
           found="$(find /tmp/omni-dev-extract -name omni-dev.exe -type f)"
           exe="${found%%$'\n'*}"
           if [ -z "$exe" ]; then
-            held="$(cd /tmp/omni-dev-extract && find . -type f | sort | tr '\n' ' ')"
+            held="$(cd /tmp/omni-dev-extract && find . -type f | LC_ALL=C sort | tr '\n' ' ')"
+            held="${held% }"
             echo "::error::$BINARY_NAME has no omni-dev.exe in it, so there is no omni-dev to install. It holds: ${held:-nothing}"
             exit 1
           fi
