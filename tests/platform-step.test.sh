@@ -77,6 +77,9 @@ cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$CURL_LOG"
 printf '%s' "$FAKE_HTTP_STATUS"
+# As the real curl does: -w still prints 000, but a transport failure (refused
+# connection, DNS, timeout) exits non-zero, and under `bash -e` that ends the step.
+[ "$FAKE_HTTP_STATUS" != 000 ] || exit 7
 EOF
 chmod +x "$BIN/curl"
 
@@ -160,6 +163,7 @@ eq "404: no download URL is offered" "" "$(output_of "$OUT" download-url)"
 # Anything but a 404 says the lookup failed, not that the asset is missing.
 for http in 000 429 500 503; do
   run_platform Linux ARM64 "$http" v0.45.0
+  eq "HTTP $http: the step still succeeds, so the failing step can report it" 0 "$STATUS"
   eq "HTTP $http: the binary is not available" false "$(output_of "$OUT" binary-available)"
   reason="$(output_of "$OUT" reason)"
   has "HTTP $http: the reason says the lookup failed" "$reason" "Could not check whether omni-dev v0.45.0 has a pre-built omni-dev-linux-arm64.tar.gz (HTTP $http"

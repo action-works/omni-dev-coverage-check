@@ -92,7 +92,12 @@ The action is a composite action with two phases:
   one message: `integration.yml` asserts its text, and `tests/platform-step.test.sh` reads
   both steps' scripts out of `action.yml` to pin the wiring. Only an HTTP 404 means the
   release lacks the asset; any other status (a refused connection is `000`) says the lookup
-  failed and to re-run, so a network blip is not reported as a missing asset. A new release
+  failed and to re-run, so a network blip is not reported as a missing asset. curl prints `000`
+  but also exits non-zero for a refused connection, and `shell: bash` runs with `-e`, so the
+  lookup is `curl … || true`; without it the step ends with curl's bare exit code before it can
+  say anything. The stub `curl` in `tests/platform-step.test.sh` exits 7 for `000` for the
+  same reason: a stub that exits 0 lets the `000` cases pass without the step surviving
+  them. A new release
   asset is one more case in the script and in `tests/omni-dev-asset.test.sh`.
   `arm64-release-without-asset` runs on a real ARM64 runner against `OLD_OMNI_DEV` (which
   never gets an ARM64 asset), with 5b as its control. The ARM64 install that succeeds

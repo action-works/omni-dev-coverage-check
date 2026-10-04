@@ -243,7 +243,10 @@ runs:
 
         # Verify the binary exists. Only a 404 says it does not: any other status
         # (a refused connection prints 000, a server error 5xx) says the lookup failed.
-        HTTP_STATUS=$(curl -sL -o /dev/null -w "%{http_code}" "$DOWNLOAD_URL")
+        # curl prints 000 but also exits non-zero for a refused connection, and this
+        # shell runs with -e, so without `|| true` the step would end there with a bare
+        # exit code instead of reaching the message below.
+        HTTP_STATUS=$(curl -sL -o /dev/null -w "%{http_code}" "$DOWNLOAD_URL" || true)
         case "$HTTP_STATUS" in
           200 | 302) ;;
           404)
