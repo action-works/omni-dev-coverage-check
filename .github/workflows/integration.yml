@@ -13,6 +13,8 @@ name: Integration
 # pull-request steps logged an omni-dev deprecation warning, and a control job
 # that logs one on purpose shows that reading can find it. One job runs on an
 # ARM64 Linux runner, to show that the pre-built binary is chosen by architecture.
+# One resolves `version: latest` with a token the API refuses, so that the fallback
+# to the releases/latest redirect has to answer, and compares it with the API's answer.
 #
 # Rules that keep these tests honest:
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
@@ -699,6 +701,113 @@ jobs:
           bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
+  # `version: latest` when the releases API gives no release (#40). A spent rate limit
+  # can last up to an hour, so after its three attempts the step reads the tag from
+  # the github.com releases/latest redirect. That redirect is not a documented
+  # interface and is used only when the API is already failing, so nothing else
+  # would notice if GitHub changed it, or began throttling a runner's address; this
+  # job, which also runs weekly, does. A token that is not one is refused by the API
+  # with 401 whatever the rate limit and spends none of it, so 10's API attempts fail
+  # on demand and the step has to use the redirect. The job asks the API directly,
+  # with the workflow token, what "latest" is, and the redirect must have given the
+  # same release: that shows on a real runner that the redirect is reachable and means
+  # the API's "latest". (A second run of the action as the control would not do: with
+  # the fallback it too would use the redirect whenever the API was failing.) That the
+  # redirect, not the API, answered 10 is shown by the API refusing its token just
+  # before; the unit tests pin that the input reaches the step, and what the step logs.
+  # One install in this job, so no second omni-dev version can poison the cache. A
+  # release published between the API query and the run fails the job on the two
+  # differing; a re-run settles it.
+  latest-redirect:
+    name: Latest omni-dev (API refuses the token)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write fixtures
+        run: printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > single.lcov
+
+      # Both lookups are recorded, not failed on, so the job still reports what 10 did.
+      - name: 'The API refuses the token 10 sends'
+        id: refused
+        run: |
+          status=$(curl -sS -o /dev/null -w '%{http_code}' \
+            --connect-timeout 10 --max-time 30 \
+            -H 'Authorization: Bearer not-a-token' \
+            https://api.github.com/repos/rust-works/omni-dev/releases/latest || true)
+          echo "status=${status:-000}" >> "$GITHUB_OUTPUT"
+
+      - name: 'What the API says the latest release is'
+        id: reference
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/rust-works/omni-dev/releases/latest --jq '.tag_name // empty' || true)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: '10. Latest, with a token the API refuses'
+        id: redirect
+        uses: ./
+        continue-on-error: true
+        with:
+          version: latest
+          github-token: not-a-token
+          run-coverage: false
+          report: single.lcov
+          fail-under-lines: ''
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+
+      - name: Assert the redirect gave the API's release
+        env:
+          REFUSED: ${{ steps.refused.outputs.status }}
+          REFERENCE: ${{ steps.reference.outputs.tag }}
+          OUTCOME: ${{ steps.redirect.outcome }}
+          RELEASE_TAG: ${{ steps.redirect.outputs.release-tag }}
+          VERSION: ${{ steps.redirect.outputs.version }}
+        run: |
+          status=0
+          check() { # <label> <expected> <actual>
+            if [ "$2" = "$3" ]; then
+              echo "ok   - $1"
+            else
+              echo "::error::$1: expected $2, got $3"
+              status=1
+            fi
+          }
+
+          check "10 is about the redirect: the API refuses its token" 401 "$REFUSED"
+          check "10. latest from the redirect, API refused" success "$OUTCOME"
+
+          # Without a release from the API there is nothing to compare with, and an
+          # empty tag would otherwise equal an empty release-tag from a failed step.
+          if [ -z "$REFERENCE" ]; then
+            echo "::error::the API gave no latest release to compare the redirect's with"
+            status=1
+          else
+            check "10 resolved the release the API calls latest" "$REFERENCE" "$RELEASE_TAG"
+          fi
+
+          # On a pull request the action renders the diff twice, and the
+          # failure-messages job reads this job's log for a deprecation warning from
+          # either. The files show the steps ran: a skipped step logs nothing, so a
+          # log without a warning proves nothing about a step that did not run.
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            if [ ! -s coverage.md ] || ! jq -e 'type == "object"' coverage.json > /dev/null 2>&1; then
+              echo "::error::the pull-request diffs did not both run (coverage.md, coverage.json), so this job's log says nothing about deprecated flags"
+              status=1
+            fi
+          fi
+
+          # The binary on PATH is the version that was resolved. A cache entry
+          # holding another version's binary fails here.
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          exit "$status"
+
   fat-mode:
     name: Fat mode (fixture crate)
     runs-on: ubuntu-latest
@@ -1043,6 +1152,7 @@ jobs:
       - output-flag
       - ignore-filename-regex
       - ignore-filename-regex-flag
+      - latest-redirect
       - fat-mode
       - deprecation-control
     runs-on: ubuntu-latest
