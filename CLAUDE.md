@@ -148,6 +148,16 @@ The action is a composite action with two phases:
     floor for the whole pull-request path, not just `-o` (0.29.0 to 0.31.0 have
     `--format`, and the path passes no flag 0.32.0 lacks). Probe the help text, never
     the version: the guard must keep working when `latest` moves.
+  - The help capture ends in `|| true`: an omni-dev below 0.29.0 (0.28.0 is the newest)
+    has no `coverage` subcommand, so `coverage diff --help` exits 2 and `-e` would end
+    the step with clap's bare error before either message. A failing `--help` counts as
+    "none of these flags are here", and the message still names the omni-dev found, read
+    by the separate `--version` call. That is safe because `Print omni-dev version` has
+    already proved the binary runs. Leave stderr unredirected: a failure that is not "no
+    such subcommand" then still shows what omni-dev said, and it can only appear beside
+    an error (the `if:` guarantees a flag is needed, so an empty help fails the step).
+    Keep the capture tolerant if you touch it; the 0.28.0 leg below is what fails when
+    it is not.
 - **Integration workflow**: `integration.yml` asserts each scenario's step `outcome`
   (not `conclusion`, which is `success` under `continue-on-error`). Three rules keep it
   honest. Run one omni-dev version per job: `actions/cache` saves in a post step, so a
@@ -157,12 +167,16 @@ The action is a composite action with two phases:
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
   - The `--output` guard acts only on a `pull_request`, so the `output-flag` job (a
-    matrix: `0.31.0`, the newest release without the flag, and `0.32.0`, the floor)
-    runs on EVERY event and expects by event: the old leg fails at the guard on a
+    matrix: `0.28.0`, the newest release with no `coverage` subcommand at all, `0.31.0`,
+    the newest with `coverage diff` but without the flag, and `0.32.0`, the floor)
+    runs on EVERY event and expects by event: the old legs fail at the guard on a
     pull request and must succeed on any other, so a guard that over-fires is caught
-    too. The `0.32.0` leg is the old leg's control (only `version` differs). The
+    too. The `0.32.0` leg is the old legs' control (only `version` differs). The
     other-event expectations first run on the push after a merge. The matrix cannot
     read `env`, so its versions are literals; `failure-messages` repeats them.
+    The 0.28.0 binary links `libasound.so.2` (0.31.0 does not), so if the runner image
+    ever lacks it the leg fails at `Print omni-dev version` with a shared-library
+    error, not at the guard.
   - On the failing leg, the file check is that no report and no `coverage.md` exist:
     the scenario is sharded, the guard runs before the combine, and clap's failure in
     the comment step would leave a combined report and an empty `coverage.md`.
@@ -188,7 +202,7 @@ The action is a composite action with two phases:
   - It is the only job with `actions: read` (job-level `permissions` drops the rest,
     so it also lists `contents: read` for the checkout). Keep it that way.
   - It names the jobs it reads, including the thin-mode matrix versions and the
-    `output-flag` leg without the flag. Renaming a job or changing the matrix fails
+    `output-flag` legs without the flag. Renaming a job or changing the matrix fails
     it loudly (no job of that name); a new matrix leg is not checked until it is
     added to the list.
   - A scenario that exists for its message gets an assertion here; edit a message

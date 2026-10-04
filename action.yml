@@ -334,8 +334,14 @@ runs:
         FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}
       run: |
         # Capture first: `grep -q` closing the pipe early would SIGPIPE omni-dev,
-        # and under `pipefail` that fails the step even when grep matched.
-        help="$(omni-dev coverage diff --help)"
+        # and under `pipefail` that fails the step even when grep matched. A failing
+        # `--help` counts as "none of these flags are here": an omni-dev below 0.29.0
+        # has no `coverage` subcommand, so clap exits 2 and `-e` would end the step
+        # before either message. The version step above already proved the binary runs.
+        # Its stderr stays in the log: a failure that is not "no such subcommand" still
+        # shows what omni-dev said, and a failing `--help` always ends in an error below
+        # (the `if:` guarantees a flag is needed), so it never sits beside a green step.
+        help="$(omni-dev coverage diff --help || true)"
         found="$(omni-dev --version)"
         status=0
         if [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ] \

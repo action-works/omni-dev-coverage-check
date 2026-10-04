@@ -386,7 +386,8 @@ posts when a gate fails:
   `version: latest` that is automatic; if you pin `version`, pin 0.32.0 or later. On a
   pull request, in either mode, an older omni-dev stops the action before the coverage
   run with a message that names the version it found and the 0.32.0 floor, rather than
-  clap's bare `unexpected argument '-o'` from the comment step. Other events are
+  clap's bare `unexpected argument '-o'` from the comment step. That includes an
+  omni-dev below 0.29.0, which has no `coverage` subcommand at all. Other events are
   unaffected.
 
 ## Example: pinned version, codecov upload, and a patch gate

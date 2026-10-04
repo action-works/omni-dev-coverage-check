@@ -367,7 +367,9 @@ jobs:
   # first run on the push after a merge, as `pr-paths.yml` says of the baseline hit.
   #
   # Thin mode with the line gate off, so nothing but the `--output` need is in play,
-  # and no cargo build.
+  # and no cargo build. Two legs lack the flag in different ways: 0.31.0 has `coverage
+  # diff` without it, and 0.28.0 has no `coverage diff` to ask, so the guard's `--help`
+  # fails. Both must reach the same message.
   output-flag:
     name: Output flag (omni-dev ${{ matrix.omni-dev }})
     runs-on: ubuntu-latest
@@ -375,12 +377,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The newest release with no `coverage` subcommand at all (it arrived in
+          # 0.29.0), so `coverage diff --help` itself fails rather than lacking a flag.
+          - omni-dev: '0.28.0'
+            has-output: false
           # The newest release with `coverage diff` but without `--output`.
           - omni-dev: '0.31.0'
             has-output: false
           # The first release with it: the floor the README documents. It differs
-          # from the leg above in nothing but `version`, so it is that leg's control
-          # on a pull request, and it pins the floor exactly.
+          # from each leg above in nothing but `version`, so it is their control on a
+          # pull request, and it pins the floor exactly.
           - omni-dev: '0.32.0'
             has-output: true
     steps:
@@ -824,22 +830,26 @@ jobs:
 
           # 7: on a pull request the `--output` guard names the omni-dev it found, the
           # floor and the way out. Only a pull request runs it, so on any other event
-          # the 0.31.0 leg succeeds and has no message to read. The job name is the one
-          # `output-flag` sets above; keep the version in step with its matrix. The
-          # version is a fragment of its own because `omni-dev --version` can carry
-          # a commit and date after it.
+          # the legs without the flag succeed and have no message to read. Both legs
+          # without it must reach the same message: 0.31.0 has `coverage diff` without
+          # the flag, and 0.28.0 has no `coverage diff` at all, so its `--help` fails
+          # before anything is read. The job names are the ones `output-flag` sets
+          # above; keep the versions in step with its matrix. The version is a fragment
+          # of its own because `omni-dev --version` can carry a commit and date after it.
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             guard="has no 'coverage diff --output'"
-            if errors="$(bash tests/job-errors.sh 'Output flag (omni-dev 0.31.0)')"; then
-              expect "7: the guard names the omni-dev it found" "$errors" \
-                "omni-dev 0.31.0" "$guard"
-              expect "7: the guard names the 0.32.0 floor" "$errors" \
-                "$guard" "It needs omni-dev 0.32.0 or later"
-              expect "7: the guard says to set 'version' to the floor or 'latest'" "$errors" \
-                "$guard" "set 'version' to 0.32.0 or later, or to 'latest'"
-            else
-              status=1
-            fi
+            for version in 0.28.0 0.31.0; do
+              if errors="$(bash tests/job-errors.sh "Output flag (omni-dev $version)")"; then
+                expect "7 (omni-dev $version): the guard names the omni-dev it found" "$errors" \
+                  "omni-dev $version" "$guard"
+                expect "7 (omni-dev $version): the guard names the 0.32.0 floor" "$errors" \
+                  "$guard" "It needs omni-dev 0.32.0 or later"
+                expect "7 (omni-dev $version): the guard says to set 'version' to the floor or 'latest'" "$errors" \
+                  "$guard" "set 'version' to 0.32.0 or later, or to 'latest'"
+              else
+                status=1
+              fi
+            done
           fi
           exit "$status"
 
