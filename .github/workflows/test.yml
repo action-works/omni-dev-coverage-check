@@ -61,6 +61,9 @@ jobs:
       - name: Test llvm-tool-shim.sh
         run: bash tests/llvm-tool-shim.test.sh
 
+      - name: Test test-lib.sh
+        run: bash tests/test-lib.test.sh
+
       # Not a lint of the scripts, but it needs no setup and belongs on every pull
       # request: it fails when action.yml (or a script it ships) passes omni-dev a
       # flag omni-dev has deprecated, before a major release removes it.
