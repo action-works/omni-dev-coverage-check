@@ -1,0 +1,100 @@
+Analyses diff/patch coverage from a per-line report and a git diff
+
+Usage: omni-dev coverage diff [OPTIONS] --report <PATH>
+
+Options:
+      --profile <NAME>
+          Selects a named credential/config profile from `~/.omni-dev/settings.json` (AWS-CLI style).
+          
+          When set, the profile's `env` bundle replaces the base `env` map in the settings-fallback chain (process env still wins); the base map is not consulted. Overrides `OMNI_DEV_PROFILE`. An unknown name is a hard error listing the known profiles.
+
+      --report <PATH>
+          Head coverage report (lcov / llvm-cov-json / cobertura)
+
+  -C, --repo <PATH>
+          Run as if omni-dev was started in `<PATH>` instead of the current working directory.
+          
+          Resolved exactly once by the owning command and threaded explicitly to its leaves as a parameter; deliberately **not** propagated to an environment variable (so, unlike the other scoped flags, `RepoArg` has no `apply()`), so the repo location never becomes an ambient global. Mirrors `git -C`.
+
+      --report-format <REPORT_FORMAT>
+          Format of `--report` (auto-detected by default)
+
+          Possible values:
+          - auto:          Auto-detect from report content
+          - lcov:          lcov trace file
+          - llvm-cov-json: llvm-cov JSON export (`cargo llvm-cov report --json`)
+          - cobertura:     Cobertura XML
+          
+          [default: auto]
+
+      --base-ref <REV>
+          Base revision to diff against (default: merge-base of `origin/main` and `HEAD`)
+
+      --head-ref <REV>
+          Head revision the report was measured at (default: `HEAD`)
+
+      --baseline-report <PATH>
+          Optional baseline coverage report; enables project deltas and indirect-change detection
+
+      --baseline-report-format <BASELINE_REPORT_FORMAT>
+          Format of `--baseline-report` (auto-detected by default)
+
+          Possible values:
+          - auto:          Auto-detect from report content
+          - lcov:          lcov trace file
+          - llvm-cov-json: llvm-cov JSON export (`cargo llvm-cov report --json`)
+          - cobertura:     Cobertura XML
+          
+          [default: auto]
+
+  -o, --output <OUTPUT>
+          Output format
+
+          Possible values:
+          - markdown: Markdown PR comment (default)
+          - yaml:     YAML structured output
+          - json:     JSON output
+          
+          [default: markdown]
+
+      --fail-under-patch <PCT>
+          Fail (non-zero exit) when patch coverage is below this percentage
+
+      --strip-prefix <PATH>
+          Override the path prefix stripped from report file paths to make them repo-relative (default: the repository working directory)
+
+      --ignore-filename-regex <REGEX>
+          Exclude files whose repo-relative path matches any of these regexes from BOTH the head and baseline reports before computing the diff.
+          
+          Repeatable, or comma-separated. Matching is unanchored (partial), the same semantics as `cargo llvm-cov --ignore-filename-regex`, and is applied after `--strip-prefix` normalisation so the pattern matches the repo-relative path. Filtering both sides symmetrically keeps the total, per-file deltas, patch coverage, and indirect-change list — and the `--fail-under-patch` gate — computed over the same denominator, even when the baseline predates the exclusion.
+
+      --context-dir <PATH>
+          Path to the config directory searched for `coverage.yaml` (defaults to the discovered `.omni-dev/`, honoring `OMNI_DEV_CONFIG_DIR`).
+          
+          `coverage.yaml`'s `diff.ignore-filename-regex` list is unioned with any `--ignore-filename-regex` passed here, so a repo can declare its CPU-conditional / run-to-run-nondeterministic files once in version control instead of threading the flag through every invocation.
+
+      --collapse-ranges
+          Collapse consecutive uncovered new lines into ranges (e.g. `9-11`)
+
+      --all-files
+          Report per-file deltas and indirect changes for ALL files, not just the ones this diff touches.
+          
+          By default the project-delta and indirect-change sections are scoped to files the diff modifies, because coverage is measured by two independent test runs and lines in untouched files flip purely from run-to-run variance. This flag restores the unscoped (noisier) report.
+
+      --artifact-url <URL>
+          Link to the full coverage-summary artifact (markdown footer)
+
+      --run-url <URL>
+          Link to the CI run (markdown footer)
+
+      --base-sha <SHA>
+          Base (merge-base) commit SHA shown in the markdown `Comparing` line
+
+      --head-sha <SHA>
+          Head commit SHA shown in the markdown `Comparing` line
+
+      --commit-url <URL>
+          Commit-URL prefix for linking SHAs (e.g. `https://…/<repo>/commit`)
+
+  -h, --help
+          Print help (see a summary with '-h')
