@@ -18,7 +18,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `deprecation-control` job logs an omni-dev deprecation warning on purpose; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov, and in fat mode against `tests/fixtures/fat-crate/`; the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; a last job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API; `job-errors.sh` and `job-deprecations.sh` pick their lines from it (`tests/job-errors.test.sh` tests all three against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
@@ -194,27 +194,33 @@ The action is a composite action with two phases:
     reads as the flag being there. clap rejects an unknown argument before it reaches
     `--help` and still recognises a hidden one, so `has_flag <flag>` runs `omni-dev coverage
     diff <flag> x --help` and reads clap's message. `error: unexpected argument '<flag>'
-    found` or `error: unrecognized subcommand` means missing; anything else (exit 0, `invalid
-    value 'x'`, `a value is required`) means present. The dummy `x` is never a real value, so
+    found` or `error: unrecognized subcommand 'coverage'` (or `'diff'`) means missing; anything
+    else (exit 0, `invalid value 'x'`) means present. The dummy `x` is never a real value, so
     the step is not coupled to omni-dev's enum names (a valid `--output markdown` would be,
-    and a rename would read a present flag as missing), and `--help` is always parsed as the
-    flag it is, so the probe cannot run a diff. The wording is identical on every release
-    from 0.29.0 to 0.45.0 (0.28.0 says `unrecognized subcommand 'coverage'`).
+    and a rename would read a present flag as missing). `--help` follows the value, and
+    `--report` is required, so the probe does not run a diff. The wording is the same on every
+    release from 0.29.0 to 0.45.0, swept by hand for #36 (0.28.0 says `unrecognized
+    subcommand 'coverage'`), and the floors it finds are exactly 0.32.0 and 0.45.0.
   - **It fails open**: if clap rewords the message, or a probe fails in a way nobody has
     seen, the flag counts as present and the run gets clap's own error later, as before the
     guard existed. The integration legs that expect a stop (`0.28.0`, `0.31.0`,
-    `OLD_OMNI_DEV`) go red on a rewording, so it is noticed. A failing probe on an omni-dev
-    below 0.29.0 (no `coverage` subcommand) counts as "none of these flags are here", and the
-    message still names the omni-dev found, read by the separate `--version` call. That is
-    safe because `Print omni-dev version` has already proved the binary runs. The line clap
-    said is echoed to the log (`omni-dev said: ...`) when a flag is missing, since the probe
-    captures stderr.
+    `OLD_OMNI_DEV`) run pinned releases, whose wording cannot change, so they do NOT notice a
+    newer omni-dev rewording it (#36 first said they would; they cannot). What notices is
+    `deprecation-control`'s D3 step: it runs on `latest` and fails if omni-dev stops saying
+    `unexpected argument '<flag>' found` for a flag that cannot exist, naming `has_flag` as
+    the thing to update. A failing probe on an omni-dev below 0.29.0 (no `coverage`
+    subcommand) counts as "none of these flags are here", and the message still names the
+    omni-dev found, read by the separate `--version` call. That is safe because `Print
+    omni-dev version` has already proved the binary runs. The probe captures stderr, so the
+    line that decided is echoed to the log either way (`omni-dev said: ... [<flag> counted as
+    missing|present]`): a probe that failed some other way, and so counted as present, can be
+    read there.
   - **The probe sets `NO_COLOR=1`.** A caller that sets `CLICOLOR_FORCE=1` (some do,
     workflow-wide) gets clap's message with the flag wrapped in escape codes
     (`'\e[33m--output\e[0m'`), which a literal match never finds, so the guard would fail open
     on exactly the omni-dev it should stop. `NO_COLOR` wins over `CLICOLOR_FORCE`. Keep it if
-    you touch the probe. `|| true` on the capture is a safeguard: clap exits 2 whether the flag
-    is there or not, and `-e` is already off in a function called from a condition.
+    you touch the probe. `|| true` on the capture says the status is ignored: clap exits 2
+    whether the flag is there or not.
   - `tests/guard-step.test.sh` runs the step against a stub `omni-dev` that answers the probe
     the way clap does, and also prints a plain `coverage diff --help` the step must never ask
     for: a flag accepted but hidden from it, and a help whose lines name a flag omni-dev lacks,
@@ -222,7 +228,11 @@ The action is a composite action with two phases:
     control). It also pins forced colour, the fail-open, "every missing flag" and that a flag
     the run does not need is not asked about, and replays what the real releases answered
     (`tests/fixtures/omni-dev-probe/`: 0.28.0, 0.31.0, 0.32.0, 0.44.0, 0.45.0; the header says
-    how to refresh one), so the wording the step matches is held to what omni-dev prints. It
+    how to refresh one, with `NO_COLOR=1`, as the step asks), so the wording the step matches is
+    held to what omni-dev prints; each fixture is also checked for the message its replay
+    claims, since a fail-open step passes an empty one. The tests do not inherit `NO_COLOR` or
+    `CLICOLOR_FORCE` from the shell running them, or a developer's `NO_COLOR` would turn the
+    forced-colour cases into no-ops. It
     does not reach the step's `if:`, which `output-flag` covers. A new flag is one more
     `has_flag` call (a plain long flag: it goes into the match as a fixed string) and a case
     there. What it cannot tell: a flag that still works but is deprecated reads as present,
@@ -338,7 +348,9 @@ The action is a composite action with two phases:
   - Nor does an empty read prove the reader can see one. The `deprecation-control` job
     passes `--format` to omni-dev directly, on `latest`, and the job asserts the warning
     is found on every event. If that fails, omni-dev either reworded the warning
-    (update `job-deprecations.sh`) or removed the flag (retire the control).
+    (update `job-deprecations.sh`) or removed the flag (retire the control). The same job
+    runs D3, the control for the guard's probe (see "Flags that need a new omni-dev"): it
+    needs the same `latest` install, and it is unrelated to the warning.
   - The percentages diff in `action.yml` no longer sends stderr to `/dev/null`: that
     hid its warning, which is how #14 missed that call site. The step still never
     fails the build. Keep it that way.

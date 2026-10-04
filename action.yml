@@ -360,32 +360,35 @@ runs:
         # is a proxy, and a wrong one when omni-dev hides a deprecated flag it still accepts,
         # or when a description line happens to begin with the flag's name. clap rejects an
         # unknown argument before it reaches `--help`, and still recognises a hidden one, so
-        # `coverage diff <flag> x --help` answers. The value is a dummy that is never used: a
-        # flag that takes a value rejects `x` ("invalid value", or exit 0 for a free-form one)
-        # before any diff could run, and one that takes none reports `x` as the unexpected
-        # argument, not the flag. That needs no knowledge of the flag's values, which a valid
-        # one (`--output markdown`) would couple this step to.
-        #   missing: `error: unexpected argument '<flag>' found`, the same on every release
-        #            from 0.29.0, or `error: unrecognized subcommand` for an omni-dev below
-        #            0.29.0, which has no `coverage` (every flag probed is on `coverage diff`).
+        # `coverage diff <flag> x --help` answers. The value is a dummy: a flag that takes one
+        # rejects `x` ("invalid value", or exit 0 for a free-form one) and one that takes none
+        # names `x` as the unexpected argument, not the flag. So the step needs no valid value
+        # (`--output markdown`) and no knowledge of omni-dev's enum names. `--help` follows the
+        # value, and `--report` is required, so nothing here can run a diff.
+        #   missing: `error: unexpected argument '<flag>' found` (the same on every release
+        #            from 0.29.0), or `error: unrecognized subcommand 'coverage'` for an
+        #            omni-dev below 0.29.0, which has no `coverage`.
         #   present: anything else. This fails open: if clap rewords the message the step
-        #            passes and a later step gets clap's own error, as before this guard
-        #            existed. The integration legs that expect a stop would go red.
-        # clap exits 2 whether the flag is there (the dummy value is invalid) or not, so the
-        # status says nothing. `-e` is off inside a function called from a condition, as this
-        # one always is; the `|| true` keeps a bare call from ending the step before either
-        # message. NO_COLOR is needed because a caller that sets CLICOLOR_FORCE gets the flag
-        # wrapped in escape codes (`'\e[33m--output\e[0m'`), which would never match; NO_COLOR
-        # wins over it. The version step above already proved the binary runs. A flag the run
-        # does not need is not asked about. When one is missing, the line that said so goes in
-        # the log.
+        #            passes, and a later step gets clap's own error, as before this guard
+        #            existed. The legs that expect a stop run pinned releases, whose wording
+        #            cannot change, so they cannot see it; the `deprecation-control` job runs
+        #            on `latest` and does (its D3).
+        # `|| true`: clap exits 2 whether the flag is there or not, so its status says nothing.
+        # NO_COLOR: a caller that sets CLICOLOR_FORCE gets the flag wrapped in escape codes
+        # (`'\e[33m--output\e[0m'`), which would never match; NO_COLOR wins over it.
+        # The version step above already proved the binary runs. A flag the run does not need
+        # is not asked about. The line that decided is in the log either way, so a probe that
+        # failed some other way, and so counted as present, can be read there.
         has_flag() {
-          local said
+          local said line
           said="$(NO_COLOR=1 omni-dev coverage diff "$1" x --help 2>&1 || true)"
-          if grep -Fq -e "error: unexpected argument '$1' found" -e 'error: unrecognized subcommand' <<<"$said"; then
-            echo "omni-dev said: $(head -n1 <<<"$said")"
+          if line="$(grep -F -m1 -e "error: unexpected argument '$1' found" \
+            -e "error: unrecognized subcommand 'coverage'" \
+            -e "error: unrecognized subcommand 'diff'" <<<"$said")"; then
+            echo "omni-dev said: $line [$1 counted as missing]"
             return 1
           fi
+          echo "omni-dev said: $(head -n1 <<<"$said") [$1 counted as present]"
         }
         status=0
         if [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ] \

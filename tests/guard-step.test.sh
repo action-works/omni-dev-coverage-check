@@ -22,10 +22,11 @@
 # releases either side of each floor answered to the probe, replayed below so the wording the
 # step relies on is held to what omni-dev prints. Refresh one, with that release's omni-dev on
 # PATH, with
-#   out="$(omni-dev coverage diff --output x --help 2>&1)"; printf 'exit=%s\n%s\n' "$?" "$out" \
+#   out="$(NO_COLOR=1 omni-dev coverage diff --output x --help 2>&1)"; printf 'exit=%s\n%s\n' "$?" "$out" \
 #     >tests/fixtures/omni-dev-probe/<version>/output.txt
-# and likewise for fail-under-lines. Every failing case has a control that differs only in
-# what the stub accepts.
+# and likewise for fail-under-lines. It is the step's own call, NO_COLOR included: a fixture
+# captured with CLICOLOR_FORCE set has escape codes around the flag and replays as "present".
+# Every failing case has a control that differs only in what the stub accepts.
 #
 # What this does not reach: the step's `if:`, which decides whether it runs at all. The
 # script asks about a flag whatever the event only when the run needs it, so the "flag not
@@ -106,6 +107,8 @@ fi
 #                     the unexpected argument is `x`, not the flag)
 #   FAKE_NO_COVERAGE  1: no `coverage` subcommand (omni-dev below 0.29.0)
 #   FAKE_PROBE_FAIL   a message that is neither of clap's, printed with exit 1
+#   FAKE_BANNER       a line printed on stderr before the answer, as a wrapper or a
+#                     warning would
 #   FAKE_REPLAY_DIR   a directory of what a real release answered (tests/fixtures/
 #                     omni-dev-probe/<version>): replay `<flag minus dashes>.txt`
 # An unknown flag gets clap's `tip:` for the first known one, and with CLICOLOR_FORCE=1 and
@@ -140,6 +143,9 @@ if [ "$#" -ne 5 ] || [ "$1 $2" != 'coverage diff' ] || [ "$5" != --help ]; then
 fi
 flag=$3
 value=$4
+if [ -n "${FAKE_BANNER:-}" ]; then
+  echo "$FAKE_BANNER" >&2
+fi
 if [ -n "${FAKE_REPLAY_DIR:-}" ]; then
   file="$FAKE_REPLAY_DIR/${flag#--}.txt"
   status="$(head -n1 "$file")"
@@ -202,7 +208,9 @@ HELP_PROSE=$'      --report <PATH>\n          Head coverage report.\n\n      --r
 
 # run_guard <event> <run-coverage> <fail-under-lines> [NAME=value ...]: runs the step as the
 # runner would, with the inputs it reads in its environment, and the NAME=value pairs in the
-# stub's (see above; FAKE_VERSION and CLICOLOR_FORCE too). Sets STATUS (the step's exit
+# stub's (see above; FAKE_VERSION and CLICOLOR_FORCE too). NO_COLOR and CLICOLOR_FORCE are
+# not inherited from the shell running the tests: a developer's NO_COLOR would turn the
+# forced-colour cases into no-ops, whether or not the step sets it itself. Sets STATUS (the step's exit
 # status), OUT (its output), ERRORS (its `::error::` lines), N_ERRORS and CALLS (what it
 # asked omni-dev, one call per line).
 run_guard() {
@@ -211,7 +219,7 @@ run_guard() {
   dir="$(mktemp -d "$WORK/case.XXXXXX")"
   : >"$dir/omni-dev.log"
   OUT="$(
-    env PATH="$BIN:$PATH" OMNI_DEV_LOG="$dir/omni-dev.log" \
+    env -u NO_COLOR -u CLICOLOR_FORCE PATH="$BIN:$PATH" OMNI_DEV_LOG="$dir/omni-dev.log" \
       FAKE_VERSION='omni-dev 0.45.0 (2de88c54 2026-10-03)' \
       EVENT_NAME="$event" RUN_COVERAGE="$run_coverage" FAIL_UNDER_LINES="$gate" "$@" \
       bash --noprofile --norc -eo pipefail -c "$GUARD" 2>&1
@@ -272,9 +280,13 @@ expect_only "only --output-file accepted" "$OUTPUT_MSG"
 run_guard pull_request true '' FAKE_ACCEPTS=--fail-under-lines
 expect_only "a different flag accepted, --output not" "$OUTPUT_MSG"
 
-# What the log shows for a missing flag: the line omni-dev said, then the error.
+# What the log shows for a missing flag: the line that decided it, then the error. A line
+# printed before clap's (a banner, a warning) is not mistaken for it.
 run_guard pull_request true '' FAKE_ACCEPTS=--output-file
-has "a missing --output shows what omni-dev said" "$OUT" "omni-dev said: error: unexpected argument '--output' found"
+has "a missing --output shows what omni-dev said" "$OUT" "omni-dev said: error: unexpected argument '--output' found [--output counted as missing]"
+run_guard pull_request true '' FAKE_BANNER='warning: a banner before the answer'
+has "a missing --output shows clap's line, not what came first" "$OUT" "omni-dev said: error: unexpected argument '--output' found"
+lacks "a missing --output: the banner is not the line that decided" "$OUT" "omni-dev said: warning: a banner"
 
 # The message the user reads: the omni-dev found (its number, commit and date, as
 # `omni-dev --version` prints them), the floor and the way out.
@@ -302,6 +314,16 @@ eq "no coverage subcommand under forced colour: both reported" 2 "$N_ERRORS"
 
 run_guard pull_request false 80 FAKE_PROBE_FAIL='error: something nobody has seen'
 expect_pass "a probe that fails with an unknown message"
+# It is not silent: the log says what omni-dev said and how it was counted.
+has "a probe that fails with an unknown message: the log shows it" "$OUT" "omni-dev said: error: something nobody has seen [--fail-under-lines counted as present]"
+has "a probe that fails with an unknown message: the log shows it for each flag" "$OUT" "omni-dev said: error: something nobody has seen [--output counted as present]"
+
+# `unrecognized subcommand` means missing only for `coverage` and `diff`, the two that
+# every flag probed sits under, not for any subcommand clap fails to parse.
+run_guard pull_request true '' FAKE_PROBE_FAIL="error: unrecognized subcommand 'x'"
+expect_pass "an unrecognized subcommand that is neither coverage nor diff"
+run_guard pull_request true '' FAKE_PROBE_FAIL="error: unrecognized subcommand 'diff'"
+expect_only "an unrecognized subcommand 'diff'" "$OUTPUT_MSG"
 
 # --- --fail-under-lines: thin mode with the line gate on ----------------------------------
 
@@ -414,12 +436,35 @@ real_case 0.32.0 yes no
 real_case 0.44.0 yes no
 real_case 0.45.0 yes yes
 
-# Each fixture is what it says it is, so a replay that never reached the step's match would
-# not pass for the wrong reason: the missing flags say `unexpected argument`, and the present
-# ones do not.
-has "the 0.31.0 fixture is clap's unexpected-argument message" "$(cat "$FIXTURES/0.31.0/output.txt")" "error: unexpected argument '--output' found"
-has "the 0.28.0 fixture is clap's unrecognized-subcommand message" "$(cat "$FIXTURES/0.28.0/output.txt")" "error: unrecognized subcommand 'coverage'"
-lacks "the 0.45.0 fixture does not say the flag is unexpected" "$(cat "$FIXTURES/0.45.0/fail-under-lines.txt")" "unexpected argument"
+# Each fixture is what its replay claims it is. Under fail-open a "found" answer passes for any
+# output that is not clap's missing-flag wording, so an empty, truncated or mis-captured file
+# would pass for the wrong reason: a present flag's fixture must hold clap's `invalid value`
+# for that flag, a missing flag's the message the step looks for, and none may hold escape
+# codes (a capture made with CLICOLOR_FORCE set).
+# fixture_case <version> <flag, without dashes> <yes|no>
+fixture_case() {
+  local version=$1 flag=$2 want=$3 text
+  text="$(cat "$FIXTURES/$version/$flag.txt")"
+  has "fixture $version/$flag: it records an exit status" "$text" "exit=2"
+  lacks "fixture $version/$flag: no escape codes" "$text" $'\e'
+  if [ "$want" = yes ]; then
+    has "fixture $version/$flag: clap's invalid value for the flag" "$text" "error: invalid value 'x' for '--$flag "
+  elif [ "$version" = 0.28.0 ]; then
+    has "fixture $version/$flag: clap's unrecognized subcommand" "$text" "error: unrecognized subcommand 'coverage'"
+  else
+    has "fixture $version/$flag: clap's unexpected argument" "$text" "error: unexpected argument '--$flag' found"
+  fi
+}
+fixture_case 0.28.0 output no
+fixture_case 0.28.0 fail-under-lines no
+fixture_case 0.31.0 output no
+fixture_case 0.31.0 fail-under-lines no
+fixture_case 0.32.0 output yes
+fixture_case 0.32.0 fail-under-lines no
+fixture_case 0.44.0 output yes
+fixture_case 0.44.0 fail-under-lines no
+fixture_case 0.45.0 output yes
+fixture_case 0.45.0 fail-under-lines yes
 
 echo
 echo "$passed passed, $failed failed"

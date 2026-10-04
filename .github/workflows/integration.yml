@@ -930,6 +930,22 @@ jobs:
           omni-dev coverage diff --report single.lcov --base-ref HEAD --format json > /dev/null || rc=$?
           echo "omni-dev exited $rc"
 
+      # The control for the guard's probe (#36), here because it needs the same thing as
+      # D2: omni-dev on `latest`. The guard in action.yml counts a flag as present unless
+      # clap says `unexpected argument '<flag>' found`, so a clap that rewords it makes the
+      # guard pass on every omni-dev that lacks a flag, and no scenario would show it: the
+      # ones that expect the guard to stop run pinned releases, whose wording cannot change.
+      # A flag that cannot exist must still get that message, asked as the probe asks
+      # (NO_COLOR=1, a dummy value, `--help`).
+      - name: "D3. Ask omni-dev about a flag that cannot exist, as the guard's probe does"
+        run: |
+          said="$(NO_COLOR=1 omni-dev coverage diff --no-such-flag x --help 2>&1 || true)"
+          printf '%s\n' "$said"
+          if ! grep -Fq "error: unexpected argument '--no-such-flag' found" <<<"$said"; then
+            echo "::error::$(omni-dev --version) no longer says \"error: unexpected argument '<flag>' found\" for an unknown flag, so the guard in action.yml (has_flag) would count every missing flag as present. Update its match, and tests/fixtures/omni-dev-probe/."
+            exit 1
+          fi
+
   # Five of the scenarios above exist mainly for their message, which is what a
   # user reads: a shard pattern that matches nothing must name the pattern, a
   # guard that finds no `--fail-under-lines`, `--output` or `--ignore-filename-regex`
@@ -1040,9 +1056,10 @@ jobs:
           # the legs without the flag succeed and have no message to read. Both legs
           # without it must reach the same message: 0.31.0 has `coverage diff` without
           # the flag, and 0.28.0 has no `coverage diff` at all, so its probe fails on
-          # the subcommand before any flag is looked at. The job names are the ones `output-flag` sets
-          # above; keep the versions in step with its matrix. The version is a fragment
-          # of its own because `omni-dev --version` can carry a commit and date after it.
+          # the subcommand before any flag is looked at. The job names are the ones
+          # `output-flag` sets above; keep the versions in step with its matrix. The
+          # version is a fragment of its own because `omni-dev --version` can carry a
+          # commit and date after it.
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             guard="has no 'coverage diff --output'"
             for version in 0.28.0 0.31.0; do
