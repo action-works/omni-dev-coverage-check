@@ -451,6 +451,34 @@ posts when a gate fails:
   included. **If you used thin mode before this input applied to it, the default
   now gates you at 30%;** set `fail-under-lines: ''` to keep the old behaviour.
 
+## Merge queues
+
+If a merge queue requires the check that runs this action, add `merge_group:` to that
+workflow's `on:`. A required check reports for the queue's commit only when its workflow runs
+on that event; without it the pull request waits forever.
+
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+```
+
+On a `merge_group` run the action does the coverage run and the overall line gate
+(`fail-under-lines`), so a drop below it ejects the pull request from the queue. It does not
+post the comment, apply `fail-under-patch` or publish a baseline: those steps run on a
+`pull_request`, and on a `push` to `main`. The baseline for the merged commit is published by
+the `push` run after the merge. The queue's run has the same head SHA and no baseline, which the
+lookup copes with (see [What counts as a baseline](#what-counts-as-a-baseline)).
+
+Set the queue's group size to 1 (`max_entries_to_merge` and `min_entries_to_merge`). The
+baseline lookup expects each pull request to land as one first-parent commit of `main` with a
+`push` run of its own. A larger group lands several commits from one push, which runs for the
+tip only, so the others would have no baseline of their own; the ancestor walk would still find
+the nearest one, but the delta would then include the neighbouring pull requests' changes.
+
 ## Excluding files CI cannot measure
 
 Code a CI runner cannot execute (a GPU path, a backend gated to one platform) shows
