@@ -83,7 +83,7 @@ inputs:
     required: false
     default: ''
   ignore-filename-regex:
-    description: 'Exclude files whose repo-relative path matches any of these regexes (comma-separated, so a pattern cannot contain a comma) from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Matched after strip-prefix; unanchored, same semantics as cargo llvm-cov --ignore-filename-regex. Needs omni-dev 0.33.0 or later. Empty disables'
+    description: 'Exclude files whose repo-relative path matches any of these regexes from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Separate patterns with commas on one line: a newline or a space is part of a pattern, and a pattern cannot contain a comma. Matched after strip-prefix and unanchored, like cargo llvm-cov --ignore-filename-regex except that it sees the repo-relative path, not the absolute one. Needs omni-dev 0.33.0 or later. Empty disables'
     required: false
     default: ''
   report-format:
@@ -342,7 +342,7 @@ runs:
       #                           runs (a pull request, or thin mode with the line gate): 0.33.0
       # The `if:` is the union of these needs and the script re-derives each one, so
       # a new flag goes in both places or it is skipped here or checked for nothing.
-      # The last need is a subset of the other two, so it adds nothing to the `if:`.
+      # The last need implies one of the other two, so it adds nothing to the `if:`.
       if: github.event_name == 'pull_request' || (inputs.run-coverage != 'true' && inputs.fail-under-lines != '')
       shell: bash
       env:
@@ -607,8 +607,10 @@ runs:
         fi
         # Read from the environment, not interpolated into the script like the values
         # around it: a regex is full of `\`, `$` and quotes that bash would reinterpret.
+        # Passed as `--flag=value`: as a separate argument a pattern that starts with `-`
+        # (`-sys/`) would be read by clap as a flag. The same at the two gates below.
         if [ -n "$IGNORE_FILENAME_REGEX" ]; then
-          args+=(--ignore-filename-regex "$IGNORE_FILENAME_REGEX")
+          args+=("--ignore-filename-regex=$IGNORE_FILENAME_REGEX")
         fi
         if [ -n "${{ inputs.report-format }}" ]; then
           args+=(--report-format "${{ inputs.report-format }}")
@@ -681,7 +683,7 @@ runs:
           args+=(--strip-prefix "${{ inputs.strip-prefix }}")
         fi
         if [ -n "$IGNORE_FILENAME_REGEX" ]; then
-          args+=(--ignore-filename-regex "$IGNORE_FILENAME_REGEX")
+          args+=("--ignore-filename-regex=$IGNORE_FILENAME_REGEX")
         fi
         if [ -n "${{ inputs.report-format }}" ]; then
           args+=(--report-format "${{ inputs.report-format }}")
@@ -722,7 +724,7 @@ runs:
           args+=(--strip-prefix "${{ inputs.strip-prefix }}")
         fi
         if [ -n "$IGNORE_FILENAME_REGEX" ]; then
-          args+=(--ignore-filename-regex "$IGNORE_FILENAME_REGEX")
+          args+=("--ignore-filename-regex=$IGNORE_FILENAME_REGEX")
         fi
         if [ -n "${{ inputs.report-format }}" ]; then
           args+=(--report-format "${{ inputs.report-format }}")

@@ -390,17 +390,28 @@ drops those files from the diff instead:
     ignore-filename-regex: 'src/voice/backends/voxtral_mlx/,src/gpu/'
 ```
 
-- The value is a list of regexes separated by commas, each matched against a file's
-  repo-relative path (after `strip-prefix`) and unanchored, so `src/gpu/` excludes
-  everything under it. A pattern cannot contain a comma: `a{1,3}` is split in two and
-  fails as an invalid regex. An empty piece (`a,,b`, a trailing comma) is ignored, so a
-  typo cannot exclude everything.
+- The value is a list of regexes on one line, separated by commas, each matched against
+  a file's repo-relative path (after `strip-prefix`) and unanchored, so `src/gpu/`
+  excludes everything under it. Only a comma separates patterns: a newline or a space is
+  part of a pattern, so a `|` block (which ends in a newline) or `a, b` (which looks for
+  ` b`) excludes nothing, and a pattern cannot contain a comma (`a{1,3}` is split in two
+  and fails as an invalid regex). An empty piece (`a,,b`, a trailing comma) is ignored,
+  so a typo cannot exclude everything.
+- The path is repo-relative, where `cargo llvm-cov --ignore-filename-regex` matches the
+  absolute one: a pattern written there, such as `^/home/runner/work/…/gpu/`, matches
+  nothing here, with no warning, and `^src/` written here would match nothing there.
 - The files are dropped from the head **and** the baseline report before anything is
   computed, so the total, the per-file deltas, the patch coverage and the indirect
   changes all describe the same files, even when the baseline was published before the
   exclusion.
 - The comment, the patch gate and the thin-mode line gate all get the filter, so a gated
-  percentage is the one the comment shows.
+  percentage is the one the comment shows, and so do the `patch-percent` and
+  `line-percent` outputs, which are read from the same diff.
+- A filter that removes everything is not an error, and the gates differ: if it removes
+  every line a pull request adds, the patch gate has nothing to measure and passes, and
+  the comment says "No new executable lines added by this diff"; if it removes every
+  line of the report, the thin-mode line gate fails with "no executable lines". Check
+  the comment when a pattern is broad.
 - It does not reach what `cargo-llvm-cov` computes: in fat mode the `fail-under-lines`
   gate and the coverage summary still count every file. Nor does it change the baseline
   artifact (published as the raw report) or the codecov upload.

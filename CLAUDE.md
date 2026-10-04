@@ -25,7 +25,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place)
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
 - `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the merge-base worktree recompute, and `ignore-filename-regex` reaching the comment and the patch gate
-- `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on
+- `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on (`extra` adds a second patched file for P5 and P6)
 - `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
 - `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit
 - `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
@@ -179,8 +179,9 @@ The action is a composite action with two phases:
     `--format`, and the path passes no flag 0.32.0 lacks). Probe the help text, never
     the version: the guard must keep working when `latest` moves.
   - `--ignore-filename-regex` (0.33.0): the `ignore-filename-regex` input set AND a diff
-    runs (a `pull_request`, or thin mode with the line gate on), which is a subset of the
-    step's `if:`, so the `if:` did not change. 0.32.0 is the newest release without it.
+    runs (a `pull_request`, or thin mode with the line gate on). That implies one of the
+    other two needs, so the step's `if:` did not change. 0.32.0 is the newest release
+    without it.
   - The help capture ends in `|| true`: an omni-dev below 0.29.0 (0.28.0 is the newest)
     has no `coverage` subcommand, so `coverage diff --help` exits 2 and `-e` would end
     the step with clap's bare error before either message. A failing `--help` counts as
@@ -271,9 +272,9 @@ The action is a composite action with two phases:
   - It is the only job with `actions: read` (job-level `permissions` drops the rest,
     so it also lists `contents: read` for the checkout). Keep it that way.
   - It names the jobs it reads, including the thin-mode matrix versions and the
-    `output-flag` and `ignore-filename-regex-flag` legs without the flag. Renaming a job or changing the matrix fails
-    it loudly (no job of that name); a new matrix leg is not checked until it is
-    added to the list.
+    `output-flag` and `ignore-filename-regex-flag` legs without the flag. Renaming a
+    job or changing the matrix fails it loudly (no job of that name); a new matrix leg
+    is not checked until it is added to the list.
   - A scenario that exists for its message gets an assertion here; edit a message
     in `scripts/combine-shards.sh` or the guard in `action.yml` and this job
     names the fragment that went missing.
@@ -372,14 +373,14 @@ The action is a composite action with two phases:
     miss, so each is read back and deleted before the next. Otherwise a scenario that
     stopped posting would pass on the previous one's comment.
   - P5 and P6 show `ignore-filename-regex` reaching the patch gate and the comment. They
-    run after P1 and add a second committed file (`patch-extra.txt`, every added line
-    uncovered, with a `shard-3.lcov` of its own), so the patch is 8 of 20 lines (40%), and
-    8 of 10 (80%) once the filter drops the second file: a gate of 70 tells them apart and
-    only P5 passes. The filter must not empty the patch instead. omni-dev lets a patch
-    with no measured line through the gate, which is a vacuous pass (its own tests call
-    that a trap), and a later omni-dev may change it. They run after P1 to P4 so those
-    never see the file (their assertions are on 10 lines at 80%), and `comment: false`
-    leaves no comment to read back.
+    run after P1 and add a second committed file (`write-pr-fixtures.sh extra`:
+    `patch-extra.txt`, every added line uncovered, with a `shard-3.lcov` of its own), so
+    the patch is 8 of 20 lines (40%), and 8 of 10 (80%) once the filter drops the second
+    file: a gate of 70 tells them apart and only P5 passes. The filter must not empty
+    the patch instead. omni-dev lets a patch with no measured line through the gate,
+    which is a vacuous pass (its own tests call that a trap), and a later omni-dev may
+    change it. They run after P1 to P4 so those never see the file (their assertions are
+    on 10 lines at 80%), and `comment: false` leaves no comment to read back.
   - The recompute needs a commit that holds a crate, which the pull request's history
     does not, so the job commits `delta-crate`'s base and head itself and passes the
     first as `base-ref`. Its numbers are then the job's own. Unlike the fat-mode crate
@@ -443,12 +444,24 @@ The action is a composite action with two phases:
     interpolated into the script as `strip-prefix` is: a regex is full of `\`, `$` and
     quotes that bash reinterprets inside double quotes (`\\` becomes `\`). The guard
     step reads it the same way.
+  - It is passed as `--ignore-filename-regex=<value>`, one argument. As two, a pattern
+    that starts with `-` (`-sys/`, for the `*-sys` crates) is read by clap as a flag
+    and the step fails with "unexpected argument '-s'". Integration scenario 8a's first
+    pattern starts with `-` so that a return to two arguments fails it.
   - It is not passed to `cargo llvm-cov`: the fat-mode line gate and the summary count
     every file, and the README says so. `cargo llvm-cov --ignore-filename-regex` matches
     absolute paths, so the same string would mean something else there; give it an
     input of its own if it is wanted.
   - Commas split the patterns (omni-dev's `value_delimiter`), so a pattern cannot hold
-    one (`a{1,3}` fails as an invalid regex); omni-dev ignores an empty piece.
+    one (`a{1,3}` fails as an invalid regex); omni-dev ignores an empty piece. Nothing
+    else separates them and nothing is trimmed: a newline or a space is part of the
+    pattern, so a `|` block or `a, b` filters nothing, silently. That was left as
+    documented (README, input description) rather than normalised: the issue specifies
+    a comma-separated list, normalising would alter a pattern that holds a space, and
+    the file stays in the comment, visibly, as it did before the input existed.
+  - The two gates differ when a filter removes everything: the patch gate passes (an
+    empty patch is not an error to omni-dev, and the comment says so), the thin-mode
+    line gate fails with "no executable lines". Documented in the README.
   - Tests: the `ignore-filename-regex` job (8a, a gate of 70 passes with LICENSE
     filtered out, 8b the control without the filter fails: 50% against 100%),
     `ignore-filename-regex-flag` (9: 0.32.0 is stopped by the guard on a pull request
