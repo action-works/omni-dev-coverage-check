@@ -573,10 +573,7 @@ jobs:
 
           # The binary on PATH is the version that was resolved. A cache entry
           # holding another version's binary fails here.
-          if ! omni-dev --version | grep -qF "$VERSION"; then
-            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
   # The guard for `--ignore-filename-regex` (#3), shaped like `output-flag`: the flag is
@@ -681,10 +678,7 @@ jobs:
             fi
           fi
 
-          if ! omni-dev --version | grep -qF "$VERSION"; then
-            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
   fat-mode:

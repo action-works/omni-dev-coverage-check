@@ -218,7 +218,7 @@ The action is a composite action with two phases:
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
   - The poisoned-cache rule is checked by `tests/assert-omni-dev-version.sh <version>`, which
-    the nine jobs that assert a scenario's outcome end on, in `integration.yml`,
+    the eleven jobs that assert a scenario's outcome end on, in `integration.yml`,
     `pr-paths.yml` and `e2e-sharded.yml`. `arm64-release-without-asset` installs nothing
     and `deprecation-control` has one install and asserts no outcome, so neither calls
     it. It needs the version line to start with `omni-dev <version>` and
