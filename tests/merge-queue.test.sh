@@ -30,12 +30,11 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 GATE="$DIR/ci-gate.sh"
 WORKFLOWS="${WORKFLOWS:-$ROOT/.github/workflows}"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+work_dir
 
 # --- 1. tests/ci-gate.sh --------------------------------------------------------------
 

@@ -21,7 +21,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` or of a workflow in `.github/workflows/` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `tests/llvm-cov-ignore-steps.test.sh` - Runs the five steps that run `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate and the recompute's report), read out of `action.yml`, against a stub `cargo`, and checks the one `--ignore-filename-regex=<value>` each gets, or none when the input is empty; it fails when another step runs `cargo llvm-cov report` (`test.yml` runs that)
-- `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail` and the closing `summary` (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
+- `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail`, the closing `summary` and `work_dir` (the scratch directory) (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
 - `tests/step-lib.sh` - `step_run`, `step_block` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the four step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo (runs on `merge_group` too: `Validate Commit Messages` is a required check of the merge queue)
@@ -584,6 +584,20 @@ The action is a composite action with two phases:
   failing cases because no other test does, and every test ends on `summary`: one that
   returned 0 would pass them all. A test that runs a step's script, or matches on a step or
   an input, reads it with `tests/step-lib.sh`, which takes the file from `$ACTION`. Rules:
+  - **The scratch directory is `work_dir` (#71)**, called once right after sourcing the
+    library: it sets `$WORK` to a new `mktemp -d` and removes it on exit, whichever way the
+    test ends, keeping the test's own status. Do not write `WORK="$(mktemp -d)"` and
+    `trap 'rm -rf "$WORK"' EXIT` in a test again. It owns the EXIT trap, and `trap` replaces
+    rather than adds: a test that needs more cleanup sets its own trap afterwards and removes
+    `"$WORK"` in it too (none does today). If the directory cannot be made it ends the test,
+    since an empty `$WORK` would write under `/`. Sourcing the library installs no trap, so a
+    test that never calls it leaves nothing behind. `test-lib.test.sh` keeps its own
+    `mktemp` and `trap` because it is what tests `work_dir`. Left alone, on purpose: the
+    per-case `mktemp -d "$WORK/case.XXXXXX"` and `fresh()` functions, which differ (some also
+    make `bin/` and `logs/` or write a fake `gh`), and the stubs, which are what each test is
+    about. A shared helper moves nothing about what a test prints: every converted test's
+    output was identical before and after (temp paths aside), which is the check to repeat if
+    this changes.
   - It reads the layout `action.yml` has (a step at 4 spaces, its keys at 6, the `run: |`
     body at 8) and refuses the rest: nothing on stdout, the reason on stderr, status 1. Call it
     as `X="$(step_run 'Step name')" || exit 1`; a `-z` check on the result is not needed, and a

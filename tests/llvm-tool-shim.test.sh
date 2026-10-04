@@ -17,13 +17,12 @@ SHIM="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/llvm-tool-shim.sh"
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+work_dir
 
 # A sysroot laid out the way `rustc --print target-libdir` reports it:
 # <sysroot>/lib/rustlib/<host>/lib, with the llvm tools in ../bin.
-host="$work/sysroot/lib/rustlib/host"
-mkdir -p "$host/lib" "$host/bin" "$work/bin" "$work/shims"
+host="$WORK/sysroot/lib/rustlib/host"
+mkdir -p "$host/lib" "$host/bin" "$WORK/bin" "$WORK/shims"
 
 # Each stub records its own name and arguments, one call per line, and exits with
 # $STUB_EXIT (0 when unset), so a test can see what reached the real tool.
@@ -34,24 +33,24 @@ echo "$(basename "$0") $*" >> "$STUB_CALLS"
 exit "${STUB_EXIT:-0}"
 EOF
   chmod +x "$host/bin/$tool"
-  ln -s "$SHIM" "$work/shims/$tool"
+  ln -s "$SHIM" "$WORK/shims/$tool"
 done
 
-cat > "$work/bin/rustc" <<EOF
+cat > "$WORK/bin/rustc" <<EOF
 #!/usr/bin/env bash
 [ "\$*" = "--print target-libdir" ] && echo "$host/lib"
 EOF
-chmod +x "$work/bin/rustc"
+chmod +x "$WORK/bin/rustc"
 
-export PATH="$work/bin:$PATH"
-export STUB_CALLS="$work/calls.txt"
-log="$work/merges.txt"
+export PATH="$WORK/bin:$PATH"
+export STUB_CALLS="$WORK/calls.txt"
+log="$WORK/merges.txt"
 
 # run <tool> <args...>: run a shim with the log set; leaves its status in $status.
 run() {
   local tool=$1
   shift
-  LLVM_SHIM_LOG="$log" "$work/shims/$tool" "$@" > /dev/null 2>&1
+  LLVM_SHIM_LOG="$log" "$WORK/shims/$tool" "$@" > /dev/null 2>&1
   status=$?
 }
 
@@ -96,7 +95,7 @@ eq "the real tool's exit status is passed through" 3 "$status"
 # --- no log configured: a merge says so instead of running unobserved
 
 : > "$STUB_CALLS"
-msg="$(env -u LLVM_SHIM_LOG "$work/shims/llvm-profdata" merge -o out.profdata 2>&1 > /dev/null)"
+msg="$(env -u LLVM_SHIM_LOG "$WORK/shims/llvm-profdata" merge -o out.profdata 2>&1 > /dev/null)"
 status=$?
 if [ "$status" -ne 0 ] && [[ "$msg" == *LLVM_SHIM_LOG* ]]; then
   ok "a merge with no LLVM_SHIM_LOG fails and names the variable"

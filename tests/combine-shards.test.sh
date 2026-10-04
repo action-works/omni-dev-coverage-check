@@ -13,12 +13,11 @@
 set -uo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/combine-shards.sh"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+work_dir
 
 # A fresh directory per case, so cases cannot see each other's files.
 fresh() {

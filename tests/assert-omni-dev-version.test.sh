@@ -15,8 +15,11 @@ set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$DIR/assert-omni-dev-version.sh"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=test-lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
+work_dir
 
 BIN="$WORK/bin"
 EMPTY="$WORK/empty"
@@ -30,10 +33,6 @@ printf '%s\n' "\$STUB_OUT"
 exit "\${STUB_EXIT:-0}"
 EOF
 chmod +x "$BIN/omni-dev"
-
-# shellcheck source-path=SCRIPTDIR
-# shellcheck source=test-lib.sh
-source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 
 # run <PATH> <stub output> <stub exit status> [script arguments...]
 # Sets STATUS, OUT (stdout) and ERR (stderr) of the script.
