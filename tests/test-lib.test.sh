@@ -5,8 +5,8 @@
 #
 # Every tests/*.test.sh ends on `summary` and records its cases with these helpers, so
 # what matters most is what they do when a case FAILS, which no other test exercises (they
-# run green): a failed case must show its detail and make `summary` return non-zero, or all
-# ten files pass whatever they find.
+# run green): a failed case must show its detail and make `summary` return non-zero, or
+# every test file passes whatever it finds.
 #
 # The helpers cannot be judged by themselves. The first check below is plain bash and
 # exits at once if `bad` and `summary` do not fail a run; after it, each case runs its
@@ -84,7 +84,7 @@ run 'bad early; ok later; summary'
 verdict "summary: a failure before a pass is still a failure" 1 "FAIL - early" "ok   - later" "1 passed, 1 failed"
 
 # A test file ends on `summary` with an EXIT trap set, which must not turn its status
-# into the trap's. This is the shape of all ten.
+# into the trap's. This is the shape of every test file.
 for outcome in ok bad; do
   cat >"$WORK/$outcome.sh" <<EOF
 set -uo pipefail

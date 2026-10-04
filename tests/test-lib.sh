@@ -11,7 +11,7 @@
 # Each helper records one case, prints `ok   - <name>` or `FAIL - <name>` (with the
 # detail on the line after), and counts it in $passed / $failed. `summary` prints the
 # totals and returns non-zero if any case failed, so as the test's last command it is
-# the test's exit status. tests/test-lib.test.sh tests it: ten files end on it, so a
+# the test's exit status. tests/test-lib.test.sh tests it: every test file ends on it, so a
 # `summary` that returned 0 would pass them all.
 #
 # It sets no shell option, so the test's own `set` stays in force. A case recorded in a
