@@ -406,6 +406,16 @@ runs:
     - name: Beta
       uses: actions/cache@v4
       shell: bash
+      working-directory: sub
+    - name: Gamma
+      with:
+        id: nested-first
+      id: real-id
+      if: >-
+        a folded
+        condition
+      run: |
+        echo block
 EOF
 read_with step_field Alpha id
 is_read "step_field: a key of the step, at its own indent, not the nested one of the same name" "alpha-id"
@@ -418,7 +428,17 @@ is_read "step_field: an inline run, with its quotes and variables as written" 'b
 read_with step_field Beta shell
 is_read "step_field: the next step's own key" "bash"
 read_with step_field Beta id
-is_refused "step_field: a key only the next step has is not read for this one" 'has no "id:" at 6 spaces'
+is_refused "step_field: a key only the step before has is not read for this one" 'has no "id:" at 6 spaces'
+read_with step_field Alpha working-directory
+is_refused "step_field: a key only the NEXT step has is not read for this one" 'has no "working-directory:" at 6 spaces'
+read_with step_field Beta working-directory
+is_read "step_field: and the next step has its own" "sub"
+read_with step_field Gamma id
+is_read "step_field: a nested key of the same name written first is not the step's" "real-id"
+read_with step_field Gamma if
+is_refused "step_field: a folded block (>-) is a block, not a value" '"if:" is a block (>-)'
+read_with step_field Gamma run
+is_refused "step_field: a literal block (|) is a block, not a value" '"run:" is a block (|)'
 read_with step_field Beta uses
 is_read "step_field: and a key it shares with the one before is its own" "actions/cache@v4"
 
@@ -446,10 +466,18 @@ read_with step_field Alpha id
 is_refused "step_field: a key with nothing after it is refused, not read as empty" '"id:" has no value on its line'
 read_with step_field Alpha shell
 is_read "step_field: its control, the next key, is read" "bash"
+printf 'runs:\n  steps:\n    - name: Alpha\n      id:    \n      shell: bash\n' >"$WORK/field-spaces.yml"
+ACTION="$WORK/field-spaces.yml"
+read_with step_field Alpha id
+is_refused "step_field: a key with only spaces after it is refused too" '"id:" has no value on its line'
+printf 'runs:\n  steps:\n    - name: Alpha\n      if: |   # why\n        x\n      shell: bash\n' >"$WORK/field-comment.yml"
+ACTION="$WORK/field-comment.yml"
+read_with step_field Alpha if
+is_refused "step_field: a block indicator with a comment after it is still a block" '"if:" is a block (|   # why)'
 
 ACTION="$WORK/fields.yml"
-read_with step_field Gamma id
-is_refused "step_field: a step that is not there" 'no step named "Gamma"'
+read_with step_field Nope id
+is_refused "step_field: a step that is not there" 'no step named "Nope"'
 ACTION="$WORK/twice.yml"
 read_with step_field Alpha id
 is_refused "step_field: two steps of one name" '2 steps named "Alpha"'
@@ -500,6 +528,21 @@ runs:
       shell: bash
     - name: Zeta
       env: inline-value
+    - name: Theta
+      with:
+        env: not-the-map
+      env:
+        REAL: yes
+    - name: Iota
+      env:
+        A: one
+      # a comment at the indent of the step's own keys, inside the map
+        B: two
+    # a banner at 4 spaces, as between steps
+        C: three
+          # a comment deeper than the entries
+        D: four
+      shell: bash
 EOF
 read_with step_map Alpha env
 is_read "step_map: the entries of env, dedented, in order, as written; comment and blank skipped" \
@@ -526,6 +569,10 @@ is_refused "step_map: an entry at another indent is refused, with the line" \
   'line 29 is indented 7 spaces, and this reads entries indented 8'
 read_with step_map Alpha id
 is_refused "step_map: a key with a value on its line is not a map, id" '"id:" has a value on its line'
+read_with step_map Theta env
+is_read "step_map: a nested key of the same name written first is not the step's map" "REAL: yes"
+read_with step_map Iota env
+is_read "step_map: a comment is skipped at any indent, so no entry after it looks absent" $'A: one\nB: two\nC: three\nD: four'
 
 ACTION="$WORK/maps.yml"
 read_with step_map Nope env

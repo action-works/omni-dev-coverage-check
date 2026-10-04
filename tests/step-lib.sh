@@ -33,11 +33,14 @@
 #     command, a folded `>`, an indentation indicator `|2`, a trailing comment; a body not
 #     indented 8 spaces; an empty body;
 #   - step_field: a key the step does not have at 6 spaces, or has with no value on its
-#     line (a map or a block: that is step_map's, or step_run's);
+#     line (a map: that is step_map's), or whose value is a block scalar (`|` or `>`, with a
+#     chomping or indentation indicator and a comment allowed: step_run reads a run: body);
 #   - step_map: a key the step does not have at 6 spaces, or has with a value on its line
 #     (that is step_field's); an empty map; an entry that is not indented 8 spaces, or whose
 #     value goes on to a deeper line (a block scalar, a list): one line per entry is what it
-#     reads, and a map it half-read would leave a later entry looking absent;
+#     reads, and a map it half-read would leave a later entry looking absent. A comment line
+#     is skipped wherever it is indented, as YAML does, so one at the step's own indent, or
+#     in a banner at 4 spaces, does not end the map early;
 #   - input_block: a name that is not under `inputs:` (an output of that name is not it).
 #
 # A step ends at the next line indented 4 spaces or less (the next step, named or not, or
@@ -102,7 +105,13 @@ step_field() {
     in_step && $0 !~ /^ *$/ && indent($0) <= 4 { exit }
     in_step && index($0, lead) == 1 {
       rest = substr($0, length(lead) + 1)
-      if (rest ~ /^ +[^ ]/) { sub(/^ +/, "", rest); print rest; found = 1; exit }
+      if (rest ~ /^ +[^ ]/) {
+        sub(/^ +/, "", rest)
+        if (rest ~ /^[|>][-+0-9]*( +#.*)?$/) refuse("\"" key ":\" is a block (" rest "), which this does not read (step_run reads a run: body)")
+        print rest
+        found = 1
+        exit
+      }
       if (rest == "" || rest ~ /^ *$/) refuse("\"" key ":\" has no value on its line (a map or a block: use step_map or step_run)")
     }
     END {
@@ -138,12 +147,11 @@ step_map() {
     }
     # state 2, the entries: indented 8, up to the next line that is not indented deeper than the key.
     state == 2 {
-      if ($0 ~ /^ *$/) next
+      if ($0 ~ /^ *$/ || $0 ~ /^ *#/) next
       ind = indent($0)
       if (ind <= 6) exit
       if (ind > 8) refuse("line " FNR " is indented " ind " spaces, a value that goes on past its line, and this reads one line per entry")
       if (ind != 8) refuse("line " FNR " is indented " ind " spaces, and this reads entries indented 8")
-      if ($0 ~ /^ *#/) next
       entry[++n] = substr($0, 9)
     }
     END {

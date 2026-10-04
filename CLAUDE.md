@@ -608,10 +608,12 @@ The action is a composite action with two phases:
     written on one line (`id`, `if`, `uses`, `shell`, an inline `run`) and the entries of its
     `env:` or `with:`, as written. They refuse what `step_run` refuses (an unset or unreadable
     `ACTION`; a step that is missing, doubled or at another indent) and a key the step does not
-    have, `step_field` a key with no value on its line, `step_map` a key that has one, an empty
-    map, an entry at another indent and an entry whose value goes on to a deeper line. That
-    last one is on purpose: the copy this replaced stopped at such a line without a word, so a
-    later entry looked absent. `action.yml` has one (the block `path:` of an upload step), so a
+    have, `step_field` a key with no value on its line and a value that is a block scalar (`|`
+    or `>`, which it would otherwise hand back as the bare indicator), `step_map` a key that has
+    a value, an empty map, an entry at another indent and an entry whose value goes on to a
+    deeper line. That last one is on purpose: the copy this replaced stopped at such a line
+    without a word, so a later entry looked absent. A comment line inside a map is skipped at
+    any indent (YAML ignores it), which is the other way a later entry could have looked absent. `action.yml` has one (the block `path:` of an upload step), so a
     test that needs that map extends the reader first. `step_map` holds its entries until it
     has read the whole map, so a refusal prints nothing. Where a call records one case per
     call, check the status where it is read (`if ! script="$(step_run "$name")"; then bad ...`);
