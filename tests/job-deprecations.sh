@@ -12,7 +12,8 @@
 # finds any flag omni-dev has deprecated, as long as a step ran it.
 #
 # Output: one line per log line that begins, after the runner's timestamp, with
-# `warning:` and holds "deprecated" in any case, the timestamp removed. Empty if the
+# `warning:` and holds "deprecat" in any case (deprecated, DEPRECATED, deprecation),
+# so a rewording of omni-dev's message still counts, the timestamp removed. Empty if the
 # job logged none. What that rule includes and leaves out, from real logs:
 #   - It is a line a program printed. The runner's echo of a step's script starts
 #     with a colour code, so a script that holds the same words (an `echo` of the
@@ -34,4 +35,8 @@ set -euo pipefail
 name="${1:?usage: job-deprecations.sh <job name>}"
 log="$(bash "$(dirname "${BASH_SOURCE[0]}")/job-log.sh" "$name")"
 
-printf '%s\n' "$log" | sed -n -E 's/^[^ ]*[0-9]Z (warning: .*[Dd]eprecated.*)$/\1/p'
+# awk, not sed, for the case-insensitive match: `tolower` is in every awk, and sed's
+# `I` flag is not in every sed. The first line's byte-order mark sits before the
+# timestamp, which `[^ ]*` takes along with it.
+printf '%s\n' "$log" | awk '
+  /^[^ ]*[0-9]Z warning: / && tolower($0) ~ /deprecat/ { sub(/^[^ ]*[0-9]Z /, ""); print }'

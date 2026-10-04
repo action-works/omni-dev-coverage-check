@@ -180,7 +180,10 @@ jobs:
           # the percentages, and the failure-messages job reads this job's log for
           # a deprecation warning from either. The files show the steps ran: a
           # skipped step logs nothing, so a log without a warning proves nothing
-          # about a step that did not run.
+          # about a step that did not run. The three scenarios share a workspace and
+          # the files keep their names, so they show that at least one of them got
+          # there; the diffs are called with the same flags in each, so one is enough
+          # to show a deprecated flag.
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             if [ ! -s coverage.md ] || ! jq -e 'type == "object"' coverage.json > /dev/null 2>&1; then
               echo "::error::the pull-request diffs did not both run (coverage.md, coverage.json), so this job's log says nothing about deprecated flags"
@@ -842,10 +845,11 @@ jobs:
 
       # What omni-dev says about a flag the action passes, read from the same logs.
       # The control runs on every event; the absence checks on a pull request only,
-      # because the diffs they are about run on a pull request alone. Each job named
-      # below shows with a file check, in its own assertion step, that they did. The
-      # job names are the ones above; keep them in step with the matrices.
+      # because the diffs they are about run on a pull request alone. The jobs that
+      # run them show with a file check, in their own assertion steps, that they did.
+      # A separate check of the same logs, so it runs when the messages above fail too.
       - name: Assert the deprecation warnings
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -875,27 +879,33 @@ jobs:
             status=1
           fi
 
-          # Every job that runs the diffs on a pull request. A job that stops at a
-          # guard (output-flag 0.31.0, the ARM64 job) never gets there, so it is not
-          # read.
+          # Every other job of the run that finished green, found through the API, so
+          # a new job or matrix leg is read without being added to a list. This job
+          # is still running, so it is not among them, and the control is read above.
+          # A job that stops at a guard (output-flag 0.31.0, the ARM64 job) logs none,
+          # which is the right answer for it. The jobs that run the diffs show with a
+          # file check, in their own assertion steps, that they did.
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            for job in \
-              'Thin mode (omni-dev 0.45.0)' \
-              'Thin mode (omni-dev latest)' \
-              'Thin mode (omni-dev without --fail-under-lines)' \
-              'Output flag (omni-dev 0.32.0)' \
-              'Fat mode (fixture crate)'; do
-              if lines="$(bash tests/job-deprecations.sh "$job")"; then
+            jobs="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100")"
+            names="$(jq -s -r --arg control "$control" \
+              '.[].jobs[] | select(.conclusion == "success" and .name != $control) | .name' <<<"$jobs")"
+            if [ -z "$names" ]; then
+              echo "::error::the run has no finished job to read the log of, so nothing was checked"
+              status=1
+            fi
+            while IFS= read -r job; do
+              [ -n "$job" ] || continue
+              if lines="$(bash tests/job-deprecations.sh "$job" </dev/null)"; then
                 if [ -z "$lines" ]; then
                   echo "ok   - $job: no deprecation warning"
                 else
-                  echo "::error::$job logged a deprecation warning, so action.yml passes omni-dev a flag it has deprecated:"
+                  echo "::error::$job logged a deprecation warning. If omni-dev printed it, action.yml passes a flag omni-dev has deprecated: stop passing it and add it to tests/check-deprecated-flags.sh. If another tool did, see what it deprecated."
                   while IFS= read -r line; do echo "  $line"; done <<<"$lines"
                   status=1
                 fi
               else
                 status=1
               fi
-            done
+            done <<<"$names"
           fi
           exit "$status"

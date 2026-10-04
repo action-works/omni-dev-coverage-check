@@ -213,22 +213,26 @@ The action is a composite action with two phases:
     those call sites fails the test instead of leaving a check that passes on
     fixtures and finds nothing in the real file.
   - The `failure-messages` job's second step reads the logs with
-    `tests/job-deprecations.sh`: on a pull request none of the jobs that run the diffs
-    may have logged a deprecation warning (thin mode on `0.45.0` and `latest`, the
-    pre-flag omni-dev, `output-flag`'s `0.32.0`, fat mode). A new omni-dev deprecation
-    turning it red on an unrelated pull request is the check working, not a flake: stop
-    passing the flag and add it to the list above.
+    `tests/job-deprecations.sh`: on a pull request no job of the run may have logged a
+    deprecation warning. It reads every job that finished green except the control,
+    found through the API, so a new job or matrix leg is read without being added to a
+    list (a job that stops at a guard logs none, which is its right answer). A new
+    omni-dev deprecation turning it red on an unrelated pull request is the check
+    working, not a flake: stop passing the flag and add it to the list above. Another
+    tool's `warning: ... deprecated` in these logs would turn it red too (none does
+    today), and its message says to look at the line.
   - A warning is a line that begins with `warning:` right after the runner's timestamp
-    and holds "deprecated". That leaves out the colour-coded echo of a step's script
-    (which can hold the same words), the runner's `##[warning]Node.js 20 is deprecated`
-    and node's `DeprecationWarning`, which every log carries. These shapes are from
-    real logs, and the test fixture holds one of each.
+    and holds "deprecat" in any case. That leaves out the colour-coded echo of a step's
+    script (which can hold the same words), the runner's `##[warning]Node.js 20 is
+    deprecated` and node's `DeprecationWarning`, which every log carries. These shapes
+    are from real logs, and the test fixture holds one of each.
   - An empty read proves nothing unless the steps ran, and a skipped step logs
-    nothing: a push log holds none of the diff steps' output. So each job read shows
-    with a file check that the comment and percentages diffs ran (`coverage.md`,
-    `coverage.json`), which is why the check is pull-request only. A job that stops at a
-    guard (`output-flag`'s `0.31.0`, the ARM64 job) is not read. A new job that runs the
-    diffs gets a file check and a place in the list.
+    nothing: a push log holds none of the diff steps' output. So each job that runs the
+    diffs shows with a file check that the comment and percentages diffs ran
+    (`coverage.md`, `coverage.json`), which is why the check is pull-request only. The
+    thin-mode scenarios share a workspace and the files keep their names, so there the
+    files show that at least one scenario got there; the diffs get the same flags in
+    each, so one is enough. A new job that runs the diffs gets a file check of its own.
   - Nor does an empty read prove the reader can see one. The `deprecation-control` job
     passes `--format` to omni-dev directly, on `latest`, and the job asserts the warning
     is found on every event. If that fails, omni-dev either reworded the warning

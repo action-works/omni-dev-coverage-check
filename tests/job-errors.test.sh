@@ -260,6 +260,8 @@ ESC=$'\033'
 WARN_FLAG='warning: --format is deprecated; use -o/--output instead'
 WARN_FN='warning: use of deprecated function `old`: use `new`'
 WARN_CAPITAL='warning: Deprecated: the --foo spelling is going away'
+WARN_UPPER='warning: --old is DEPRECATED and will be removed'
+WARN_NOUN='warning: deprecation of --bar: use --baz instead'
 
 # The shape of a real log (the one in #14 held ten of the first line, and every log
 # holds the node and runner notices): the echo of a step's script that holds the
@@ -277,7 +279,9 @@ deprecation_log() {
     '2026-10-04T00:59:23.2Z warning: unused variable: `x`' \
     "2026-10-04T00:59:23.3Z $WARN_FN" \
     '2026-10-04T00:59:23.4Z error: a removed flag is no longer deprecated, it is gone' \
-    "2026-10-04T00:59:23.5Z $WARN_CAPITAL"
+    "2026-10-04T00:59:23.5Z $WARN_CAPITAL" \
+    "2026-10-04T00:59:23.6Z $WARN_UPPER" \
+    "2026-10-04T00:59:23.7Z $WARN_NOUN"
 }
 
 d=$(fresh)
@@ -288,7 +292,9 @@ check "deprecations: reads a job's log" test "$STATUS" -eq 0
 equals "deprecations: prints the warnings a program logged, without their timestamp" \
   "$WARN_FLAG
 $WARN_FN
-$WARN_CAPITAL" "$OUT"
+$WARN_CAPITAL
+$WARN_UPPER
+$WARN_NOUN" "$OUT"
 check "deprecations: not the echoed script, which holds the same words" \
   bash -c '! grep -qF "echo" <<<"$1"' _ "$OUT"
 check "deprecations: not the runner's or node's own notice" \
