@@ -40,6 +40,9 @@ jobs:
       - name: Test check-deprecated-flags.sh
         run: bash tests/check-deprecated-flags.test.sh
 
+      - name: Test assert-omni-dev-version.sh
+        run: bash tests/assert-omni-dev-version.test.sh
+
       # Not a lint of the scripts, but it needs no setup and belongs on every pull
       # request: it fails when action.yml (or a script it ships) passes omni-dev a
       # flag omni-dev has deprecated, before a major release removes it.

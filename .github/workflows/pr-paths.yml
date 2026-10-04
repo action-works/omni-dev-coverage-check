@@ -138,10 +138,7 @@ jobs:
           # its merge-base.
           check "every record names the commit it was published for" 4 "$(grep -cx "TN:$GITHUB_SHA" "$published")"
 
-          if ! omni-dev --version | grep -qF "$VERSION"; then
-            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
   pull-request:
@@ -437,10 +434,7 @@ jobs:
             assert "P1: the comment says there is no baseline" grep -q 'No baseline available' out/p1/coverage.md
           fi
 
-          if ! omni-dev --version | grep -qF "$VERSION"; then
-            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
       # What only the Actions API knows. The token is the job's own, without
@@ -674,8 +668,5 @@ jobs:
           assert "R2: the patch is the same as R1's" \
             test "$(jq -c '.patch_coverage, .uncovered_new_lines' out/r2/coverage.json)" = "$(jq -c '.patch_coverage, .uncovered_new_lines' out/r1/coverage.json)"
 
-          if ! omni-dev --version | grep -qF "$VERSION"; then
-            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"

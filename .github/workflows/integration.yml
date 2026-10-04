@@ -17,6 +17,11 @@ name: Integration
 #   - One omni-dev version per job. `actions/cache` saves in a post step, after
 #     every scenario has run, and saves whatever is at ~/.cargo/bin/omni-dev
 #     then; a second version installed over it poisons the first version's key.
+#     A job that asserts its scenarios' outcomes ends on
+#     tests/assert-omni-dev-version.sh, which fails unless the binary on PATH is
+#     exactly the version the job pinned. `arm64-release-without-asset` installs
+#     nothing and `deprecation-control` has one install and asserts no outcome, so
+#     neither calls it.
 #   - Every scenario expected to fail has a control that differs in exactly one
 #     input and must succeed, plus a file check showing where the action stopped.
 #     `outcome == failure` alone also holds when the install breaks.
@@ -193,10 +198,7 @@ jobs:
 
           # The binary on PATH is the version that was resolved. A cache entry
           # holding another version's binary fails here.
-          if ! omni-dev --version | grep -qF "$VERSION"; then
-            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
   thin-mode-old-omni-dev:
@@ -282,10 +284,7 @@ jobs:
             fi
           fi
 
-          if ! omni-dev --version | grep -qF "$OLD_OMNI_DEV"; then
-            echo "::error::omni-dev on PATH is not $OLD_OMNI_DEV ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$OLD_OMNI_DEV" || status=1
           exit "$status"
 
   # An ARM64 Linux runner on an omni-dev release with no ARM64 asset (#19). The
@@ -469,10 +468,7 @@ jobs:
             fi
           fi
 
-          if ! omni-dev --version | grep -qF "$VERSION"; then
-            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
   fat-mode:
@@ -682,10 +678,7 @@ jobs:
 
           # The binary on PATH is the version that was resolved. A cache entry
           # holding another version's binary fails here.
-          if ! omni-dev --version | grep -qF "$VERSION"; then
-            echo "::error::omni-dev on PATH is not $VERSION ($(omni-dev --version)); a poisoned cache?"
-            status=1
-          fi
+          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
           exit "$status"
 
   # The control for the deprecation check in `failure-messages` (#23). No other job
