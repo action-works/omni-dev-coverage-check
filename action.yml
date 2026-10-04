@@ -363,8 +363,17 @@ runs:
         # Extract based on file type
         if [[ "$BINARY_NAME" == *.zip ]]; then
           unzip -q "/tmp/$BINARY_NAME" -d /tmp/omni-dev-extract
-          # Find the binary (could be omni-dev.exe on Windows)
-          find /tmp/omni-dev-extract -name "omni-dev*" -type f | head -1 | xargs -I {} mv {} ~/.cargo/bin/omni-dev
+          # Name the file (#82): the zip holds omni-dev-mcp.exe beside omni-dev.exe, and
+          # a glob that matched both took whichever `find` listed first. The result keeps
+          # the name `omni-dev`, which is the path the cache step saves and restores.
+          found="$(find /tmp/omni-dev-extract -name omni-dev.exe -type f)"
+          exe="${found%%$'\n'*}"
+          if [ -z "$exe" ]; then
+            held="$(cd /tmp/omni-dev-extract && find . -type f | sort | tr '\n' ' ')"
+            echo "::error::$BINARY_NAME has no omni-dev.exe in it, so there is no omni-dev to install. It holds: ${held:-nothing}"
+            exit 1
+          fi
+          mv "$exe" ~/.cargo/bin/omni-dev
         else
           tar -xzf "/tmp/$BINARY_NAME" -C /tmp
           mv /tmp/omni-dev ~/.cargo/bin/omni-dev
