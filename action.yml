@@ -11,7 +11,7 @@ inputs:
   # omni-dev install + cache (mirrors action-works/omni-dev-commit-check)
   # ---------------------------------------------------------------------------
   version:
-    description: 'omni-dev version to install: a release number with or without a leading v or V (e.g., 0.45.0 or v0.45.0), or latest. An empty value, or only a v or V, fails the step'
+    description: 'omni-dev version to install: a release number with or without a leading v or V (e.g., 0.45.0 or v0.45.0), or latest. An empty value, only a v or V, or a value with a character a release number is not written with (a newline, a /, a quote) fails the step'
     required: false
     default: 'latest'
   github-token:
@@ -264,6 +264,30 @@ runs:
           echo "::error::The 'version' input names no release (got '$given'). Set it to a release number such as 0.45.0 or v0.45.0, or to 'latest'."
           exit 1
         fi
+        # The value goes into the step's outputs, a cache key, the download URL and
+        # `cargo install --version`, so it must be written with the characters a release
+        # number or a version requirement uses, and with none that change what it means once
+        # it is written: not a newline or carriage return (a new output line), not a slash (a
+        # new path segment of the download URL, where curl resolves the dot segments), not a
+        # percent sign, question mark or hash (an escaped dot segment, a query, a fragment),
+        # nor a quote, dollar sign or backtick. An allowlist, so a character nobody thought
+        # of is refused as well. It lets through what `cargo install --version` takes (^0.45,
+        # >=0.45, 0.45.*), which the source install has always accepted. Not a comma: the
+        # cache key holds this value, and actions/cache refuses a key with a comma in it, so a
+        # range with one could never get past the next step. It sits after the
+        # `latest` branch, as the strip does, so a tag the API gave is held to it too. Letters
+        # are listed, not ranged: a range follows the locale.
+        allowed='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.+*^~<>= -'
+        case "$VERSION" in
+          *[!"$allowed"]*)
+            # Shown with what is not printable replaced, and cut short: a newline in a
+            # message would start another workflow command on the next line.
+            shown="${given//[^[:print:]]/?}"
+            [ "${#shown}" -le 60 ] || shown="${shown:0:60}..."
+            echo "::error::The 'version' input holds a character that a release number is not written with (got '$shown'). It may hold letters, digits and . + - * ^ ~ < > = and spaces. Set it to a release number such as 0.45.0 or v0.45.0, or to 'latest'."
+            exit 1
+            ;;
+        esac
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         echo "release-tag=v$VERSION" >> "$GITHUB_OUTPUT"
 

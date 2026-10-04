@@ -233,6 +233,137 @@ eq "latest resolving to a lone v: the step fails" 1 "$STATUS"
 eq "latest resolving to a lone v: it writes no output" "" "$OUT"
 has "latest resolving to a lone v: it logs the refusal" "$LOG" "::error::The 'version' input names no release (got 'v')"
 
+# --- a value with a character a release is not written with fails at the step (#72) ----
+
+# The value goes into the step's outputs, a cache key, the download URL and
+# `cargo install --version`. A newline wrote extra lines into the outputs (so an input
+# could set `release-tag`), and `/..` walked the download URL out of omni-dev's release
+# path, where curl resolves the dot segments. Each refused value must fail the step with
+# one message, write NOTHING (a refusal that still wrote `version=` would pass an exit
+# status check), and make no request. The message shows the value with what is not
+# printable replaced, so a newline in it cannot start a second workflow command, and cuts
+# a long one short. The allowlist is letters, digits and . + - * ^ ~ < > = space. Not a comma:
+# the cache key holds the value and actions/cache refuses a key with a comma in it.
+expect_bad_char() { # <name> <version as the script sees it> <value the message quotes>
+  run_resolve "$2" "$TOKEN" '{"tag_name":"v9.9.9"}'
+  eq "$1: the step fails" 1 "$STATUS"
+  eq "$1: it writes no output" "" "$OUT"
+  eq "$1: no API call is made" 0 "$CALLS"
+  eq "$1: it never waits" "" "$SLEEPS"
+  # Non-empty lines: a newline in the value must not make a second line of the log.
+  eq "$1: it logs one error and nothing else, whatever the value held" 1 "$(grep -c . <<<"$LOG" || true)"
+  has "$1: the error names the input and the problem" "$LOG" \
+    "::error::The 'version' input holds a character that a release number is not written with"
+  has "$1: the error quotes what it was given, printable" "$LOG" "(got '$3')"
+  has "$1: the error offers a release number" "$LOG" "a release number such as 0.45.0"
+  has "$1: the error offers latest" "$LOG" "or to 'latest'"
+  lacks "$1: the token is not printed" "$LOG" "SENTINEL"
+}
+expect_bad_char "a newline then an injected release-tag" $'0.45.0\nrelease-tag=vEVIL' '0.45.0?release-tag=vEVIL'
+expect_bad_char "a newline then an output the action never sets" $'0.45.0\nsomething=else' '0.45.0?something=else'
+expect_bad_char "a newline then a workflow command" $'0.45.0\n::error::forged' '0.45.0?::error::forged'
+expect_bad_char "a trailing newline" $'0.45.0\n' '0.45.0?'
+expect_bad_char "a carriage return" $'0.45.0\r' '0.45.0?'
+expect_bad_char "a tab" $'0.45.0\t1' '0.45.0?1'
+expect_bad_char "a path that leaves omni-dev's releases (three ..)" '0.45.0/../../../evil/repo/releases/download/v9' \
+  '0.45.0/../../../evil/repo/releases/download/v9'
+expect_bad_char "a path that leaves the repository" '0/../../../other/repo/releases/download/v1' \
+  '0/../../../other/repo/releases/download/v1'
+expect_bad_char "a slash alone" 'a/b' 'a/b'
+expect_bad_char "a slash after the strip" 'v/x' 'v/x'
+expect_bad_char "an escaped dot segment" '%2e%2e' '%2e%2e'
+expect_bad_char "an escaped slash" '0.45.0%2f..' '0.45.0%2f..'
+expect_bad_char "a query" '0.45.0?x' '0.45.0?x'
+expect_bad_char "a fragment" '0.45.0#x' '0.45.0#x'
+expect_bad_char "a double quote" '0.45.0"' '0.45.0"'
+expect_bad_char "a single quote" "0.45.0'" "0.45.0'"
+# The next two are literal text for the step to refuse, never meant to expand.
+# shellcheck disable=SC2016
+expect_bad_char "a backtick" '0.45.0`id`' '0.45.0`id`'
+# shellcheck disable=SC2016
+expect_bad_char "a command substitution" '0.45.0$(id)' '0.45.0$(id)'
+expect_bad_char "a semicolon" '0.45.0;id' '0.45.0;id'
+expect_bad_char "a pipe" '0.45.0|id' '0.45.0|id'
+expect_bad_char "an ampersand" '0.45.0&id' '0.45.0&id'
+expect_bad_char "a backslash" '0.45.0\n' '0.45.0\n'
+expect_bad_char "a comma in a range" '>=0.45,<0.47' '>=0.45,<0.47'
+expect_bad_char "a comma between releases" '0.45.0,0.46.0' '0.45.0,0.46.0'
+long="$(printf 'x/%.0s' {1..40})"
+expect_bad_char "a long value is cut short" "$long" "${long:0:60}..."
+
+# A non-ASCII letter is refused too. What the message shows for it depends on the locale
+# (printable in a UTF-8 one), so only the refusal is pinned.
+run_resolve '0.45.0é' "$TOKEN"
+eq "a non-ASCII letter: the step fails" 1 "$STATUS"
+eq "a non-ASCII letter: it writes no output" "" "$OUT"
+
+# What is accepted, as before: a release, with or without its v, a pre-release, build
+# metadata, and the version requirements `cargo install --version` takes, which the source
+# install has always accepted (the release-tag of a requirement is not a tag that exists,
+# so the pre-built path reports a missing asset for it, as it did).
+accepts() { # <name> <version> <the version output>
+  run_resolve "$2" "$TOKEN" '{"tag_name":"v9.9.9"}'
+  eq "$1: the step succeeds" 0 "$STATUS"
+  eq "$1: the outputs are the version and its tag" "version=$3
+release-tag=v$3" "$OUT"
+  eq "$1: no API call is made" 0 "$CALLS"
+  eq "$1: it logs nothing" "" "$LOG"
+}
+accepts "a release" 0.45.0 0.45.0
+accepts "a release tag" v0.45.0 0.45.0
+accepts "a capital V" V0.45.0 0.45.0
+accepts "a pre-release" 0.46.0-rc.1 0.46.0-rc.1
+accepts "a dev pre-release" 0.46.0-dev 0.46.0-dev
+accepts "build metadata" '0.46.0+build.5' '0.46.0+build.5'
+accepts "a caret requirement" '^0.45' '^0.45'
+accepts "a tilde requirement" '~0.45.1' '~0.45.1'
+accepts "a comparison" '>=0.45' '>=0.45'
+accepts "an exact requirement" '=0.45.0' '=0.45.0'
+accepts "a wildcard" '0.45.*' '0.45.*'
+accepts "a comparison with a space" '>= 0.45' '>= 0.45'
+
+# Every character, one at a time, appended to a release: the step must accept exactly the
+# allowlist and refuse the rest. The expected set is built from character codes here and
+# not from the step's own list, so a typo in that list (a letter or a digit missing, a
+# character that should be refused let through) shows. A value with a newline or a tab goes
+# in as one character like the others. 0x00 cannot be in an environment variable, and the
+# bytes above 0x7f depend on the locale, so they are left to the case for a non-ASCII letter.
+accepted_codes=0 wrong_codes=""
+for code in $(seq 1 127); do
+  printf -v char '%b' "\x$(printf '%02x' "$code")"
+  run_resolve "0.45.0$char" "$TOKEN"
+  want=1
+  if { [ "$code" -ge 48 ] && [ "$code" -le 57 ]; } || { [ "$code" -ge 65 ] && [ "$code" -le 90 ]; } ||
+    { [ "$code" -ge 97 ] && [ "$code" -le 122 ]; }; then
+    want=0
+  fi
+  # space * + - . < = > ^ ~
+  case "$code" in 32 | 42 | 43 | 45 | 46 | 60 | 61 | 62 | 94 | 126) want=0 ;; esac
+  [ "$STATUS" -ne 0 ] || accepted_codes=$((accepted_codes + 1))
+  if { [ "$want" -eq 0 ] && [ "$STATUS" -ne 0 ]; } || { [ "$want" -eq 1 ] && [ "$STATUS" -ne 1 ]; }; then
+    wrong_codes+=" $code"
+  fi
+  # A refusal writes nothing, whatever the character.
+  if [ "$STATUS" -ne 0 ] && [ -n "$OUT" ]; then wrong_codes+=" $code(wrote-output)"; fi
+done
+eq "every character 0x01-0x7f: each is accepted or refused as the allowlist says" "" "$wrong_codes"
+eq "every character 0x01-0x7f: 72 are accepted (62 letters and digits, space * + - . < = > ^ ~)" 72 "$accepted_codes"
+
+# The check sits after the `latest` branch, as the strip does, so a tag the API gave is
+# held to it too. GitHub publishes no such tag; this pins where the check sits.
+run_resolve latest "$TOKEN" '{"tag_name":"v0.46.0/../../x"}'
+eq "latest resolving to a tag with slashes: the step fails" 1 "$STATUS"
+eq "latest resolving to a tag with slashes: it writes no output" "" "$OUT"
+has "latest resolving to a tag with slashes: it logs the refusal" "$LOG" \
+  "::error::The 'version' input holds a character that a release number is not written with"
+run_resolve latest "$TOKEN" '{"tag_name":"v0.46.0\nrelease-tag=vEVIL"}'
+eq "latest resolving to a tag with a newline: the step fails" 1 "$STATUS"
+eq "latest resolving to a tag with a newline: it writes no output" "" "$OUT"
+run_resolve latest "$TOKEN" '{"tag_name":"v0.46.0-rc.1"}'
+eq "latest resolving to a pre-release tag: the step succeeds" 0 "$STATUS"
+eq "latest resolving to a pre-release tag: the outputs are its own" "version=0.46.0-rc.1
+release-tag=v0.46.0-rc.1" "$OUT"
+
 # --- latest, the first answer is good ----------------------------------------
 
 run_resolve latest "$TOKEN" '{"tag_name":"v0.46.1"}'

@@ -282,7 +282,7 @@ Both hooks are shell, evaluated in one `bash`: see
 
 | Input                 | Description                                                                                             | Default               |
 |-----------------------|--------------------------------------------------------------------------------------------------------|-----------------------|
-| `version`             | omni-dev version to install (e.g. `0.45.0`, `v0.45.0`, `latest`); a leading `v` or `V` is dropped       | `latest`              |
+| `version`             | omni-dev version to install (e.g. `0.45.0`, `v0.45.0`, `latest`); leading `v`/`V` is dropped; see below | `latest`              |
 | `github-token`        | Token authenticating the GitHub API call that resolves `version: latest` (1000/hr vs 60/hr unauthed)   | `${{ github.token }}` |
 | `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source                             | `true`                |
 | `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
@@ -300,6 +300,13 @@ capital `V` is accepted the same way (`V0.45.0`), and `release-tag` stays lowerc
 dropped, so `vv0.45.0` stays visibly wrong. A value with nothing left after that, an empty `version` or just
 `v` or `V`, fails the step at once with a message naming the input, instead of failing later in a step that blames the
 release: give a release number, or leave `version` out to get `latest`.
+The value goes into the step's outputs, the cache key, the download URL and `cargo install --version`, so it may hold
+only letters, digits and `. + - * ^ ~ < > =` and spaces: what a release number, a pre-release (`0.46.0-rc.1`) and
+the version requirements `cargo install` takes (`^0.45`, `>= 0.45`, with `use-prebuilt-binary: 'false'`) are written
+with. Anything else, a newline, a `/`, a quote or a comma (the cache key cannot hold one, so a range such as
+`>=0.45, <0.47` could not get past the next step anyway), fails the step at once with a message naming the input, rather than writing an extra
+line into the step's outputs or steering the download to another path on github.com. Only a caller who passes a value
+they do not control (a `workflow_dispatch` input, say) could reach that.
 The `omni-dev-cache-hit` output says whether the binary came from the cache (`true`: the download and `cargo install`
 steps were skipped) or was installed (`false`). The cache key holds the runner's OS and architecture, the version and
 the install method, never the action's own code; a caller that needs a fresh install on some runs can change
