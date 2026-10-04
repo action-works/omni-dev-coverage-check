@@ -43,7 +43,8 @@ name: Integration
 #     finishes first would save the entry the other restores, which then installs nothing. Its
 #     checking step reads the action's `omni-dev-cache-hit` output, logs which it was,
 #     and fails when a run that cannot have an entry hit one. `version-pin` forces the
-#     install on every event with a key of its own. The other jobs exist for something
+#     install on every event with a key of its own, and fails on a hit whatever the event
+#     (`check-fresh`, #84). The other jobs exist for something
 #     else, and the cache is useful to them.
 #   - Every scenario expected to fail has a control that differs in exactly one
 #     input and must succeed, plus a file check showing where the action stopped.
@@ -1116,6 +1117,7 @@ jobs:
           INSTALL: ${{ steps.pin.outcome }}
           VERSION: ${{ steps.pin.outputs.version }}
           RELEASE_TAG: ${{ steps.pin.outputs.release-tag }}
+          CACHE_HIT: ${{ steps.pin.outputs.omni-dev-cache-hit }}
           PIN: ${{ matrix.pin }}
         run: |
           status=0
@@ -1127,32 +1129,18 @@ jobs:
               status=1
             fi
           }
-          assert() { # <label> <command...>
-            local label="$1"
-            shift
-            if "$@" > /dev/null 2>&1; then
-              echo "ok   - $label"
-            else
-              echo "::error::$label"
-              status=1
-            fi
-          }
 
           check "11 ($PIN): the install succeeded" success "$INSTALL"
           check "11 ($PIN): the version output has no leading v" 0.45.0 "$VERSION"
           check "11 ($PIN): the release-tag output is the v-prefixed tag" v0.45.0 "$RELEASE_TAG"
 
-          # The install ran in this job. The action leaves the archive it downloads in
-          # /tmp, and a cache hit downloads nothing, so the archive shows the platform
-          # and download steps ran; without it a cache hit would pass every check above.
-          # The name comes from the script the action uses, and an empty one would turn
-          # the path into the directory, which `test -f` rejects.
-          if asset="$(bash scripts/omni-dev-asset.sh "$RUNNER_OS" "$RUNNER_ARCH")" && [ -n "$asset" ]; then
-            assert "11 ($PIN): the release archive was downloaded, not restored from the cache (/tmp/$asset)" test -f "/tmp/$asset"
-          else
-            echo "::error::11 ($PIN): scripts/omni-dev-asset.sh has no asset for $RUNNER_OS $RUNNER_ARCH, so the download cannot be checked"
-            status=1
-          fi
+          # The install ran in this job. The key is unique to the run, the attempt and the pin
+          # on every event, so nothing could have saved an entry for it: a hit means the prefix
+          # never reached the action, and the platform and download steps were skipped. Without
+          # this a cache hit would pass every check above. The action says whether it hit
+          # (`omni-dev-cache-hit`); `check-fresh` fails on `true`, and on no value, which is how
+          # a step that failed arrives.
+          bash tests/install-cache.sh check-fresh "$CACHE_HIT" || status=1
 
           # On a pull request the diffs run, and the failure-messages job reads this
           # job's log for a deprecation warning from either. The files show they ran: a
