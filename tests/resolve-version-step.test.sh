@@ -9,9 +9,9 @@
 # so it now sends the token and tries three times. This pins that: the header, the
 # retries and their delays, the timeouts that let a hung connection be retried, the
 # message after the last attempt, a runner with no jq, and that a pinned version
-# never touches the network. The step's script is read out of action.yml
-# itself, so renaming the step or moving its `run:` fails here, by name, rather than
-# leaving a test of a copy.
+# never touches the network and loses a leading v (#38). The step's script is read
+# out of action.yml itself, so renaming the step or moving its `run:` fails here, by
+# name, rather than leaving a test of a copy.
 #
 # `curl` is a stub that replays the responses a case scripts, one per call, and logs
 # each call's arguments; `sleep` is a stub that logs its argument and returns, so no
@@ -178,6 +178,34 @@ eq "pinned: it never waits" "" "$SLEEPS"
 eq "pinned: the version is the one given" "version=0.45.0
 release-tag=v0.45.0" "$OUT"
 
+# --- a pinned version may be spelled as the release tag is (#38) -------------
+
+# Release tags carry a leading v. Left in place it gave `release-tag=vv0.45.0`, a
+# download URL that 404s, a cache key of its own, and a `cargo install --version`
+# that cargo refuses as not a valid SemVer requirement. So the step drops one
+# leading v from the value however it was obtained, and both spellings of a
+# release must resolve to the same outputs.
+run_resolve v0.45.0 "$TOKEN" '{"tag_name":"v9.9.9"}'
+eq "pinned v: the step succeeds" 0 "$STATUS"
+eq "pinned v: no API call is made" 0 "$CALLS"
+eq "pinned v: it never waits" "" "$SLEEPS"
+eq "pinned v: the version has no v and the tag has one" "version=0.45.0
+release-tag=v0.45.0" "$OUT"
+lacks "pinned v: the tag is not doubled" "$OUT" "vv"
+
+run_resolve 0.45.0 "$TOKEN"
+bare_out="$OUT"
+run_resolve v0.45.0 "$TOKEN"
+eq "pinned: v0.45.0 and 0.45.0 write identical outputs" "$bare_out" "$OUT"
+
+# Only a leading v goes: a v inside the value is part of it.
+run_resolve 0.46.0-dev "$TOKEN"
+eq "pinned: a v that is not the first character stays" "version=0.46.0-dev
+release-tag=v0.46.0-dev" "$OUT"
+run_resolve v0.46.0-dev "$TOKEN"
+eq "pinned v: only the leading v is dropped" "version=0.46.0-dev
+release-tag=v0.46.0-dev" "$OUT"
+
 # --- latest, the first answer is good ----------------------------------------
 
 run_resolve latest "$TOKEN" '{"tag_name":"v0.46.1"}'
@@ -295,6 +323,9 @@ has "input: github-token defaults to the workflow token" "$(input_block github-t
   '    default: ${{ github.token }}'
 has "input: github-token is optional, so a workflow needs no configuration" \
   "$(input_block github-token)" "    required: false"
+# The v is accepted, so the input must say so: a caller who copies a release tag
+# should not have to read the script to learn it works.
+has "input: version says a leading v is accepted" "$(input_block version)" "leading v"
 
 # The runner evaluates every expression in a `run:` script before bash sees it,
 # whether it sits in a message or a comment and whether or not a backslash precedes

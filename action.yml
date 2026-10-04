@@ -11,7 +11,7 @@ inputs:
   # omni-dev install + cache (mirrors action-works/omni-dev-commit-check)
   # ---------------------------------------------------------------------------
   version:
-    description: 'omni-dev version to install (e.g., 0.45.0, latest)'
+    description: 'omni-dev version to install: a release number with or without a leading v (e.g., 0.45.0 or v0.45.0), or latest'
     required: false
     default: 'latest'
   github-token:
@@ -149,7 +149,7 @@ inputs:
 
 outputs:
   version:
-    description: 'Resolved omni-dev version that was installed'
+    description: 'Resolved omni-dev version that was installed (no leading v)'
     value: ${{ steps.resolve-version.outputs.version }}
   release-tag:
     description: 'Resolved omni-dev release tag (v-prefixed)'
@@ -213,9 +213,13 @@ runs:
             echo "::error::Could not determine latest omni-dev version from GitHub releases after 3 attempts. If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
             exit 1
           fi
-          VERSION="${RELEASE_TAG#v}"
-          echo "Resolved latest omni-dev version: $VERSION"
+          VERSION="$RELEASE_TAG"
+          echo "Resolved latest omni-dev release: $RELEASE_TAG"
         fi
+        # Release tags carry a leading v, so a caller may pin one as written. Drop it
+        # from whatever came in, not only from the tag above: left in, release-tag
+        # becomes vv0.45.0, the download 404s and `cargo install --version` refuses it.
+        VERSION="${VERSION#v}"
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         echo "release-tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
