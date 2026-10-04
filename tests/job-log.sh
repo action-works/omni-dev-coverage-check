@@ -34,7 +34,10 @@
 # is not JSON and a list with NO job of the name are each looked at again. A name found
 # twice is a real ambiguity that another look does not change, so that fails at once.
 # What it costs: a name that is wrong (a renamed job) fails after all the attempts, not
-# at the first, 50 seconds with the defaults.
+# at the first, 50 seconds with the defaults. So does any failure that will not clear
+# (a token without `actions: read`, no `gh` or `jq` on the runner), as the log read
+# always has. The message that ends it is the LAST attempt's: a list that lacked the job
+# twice and then answered 502 reports the 502, and the earlier looks are in the log above.
 set -euo pipefail
 
 name="${1:?usage: job-log.sh <job name>}"
@@ -70,7 +73,7 @@ if [ "$listed" != true ]; then
 fi
 if [ "$count" != 1 ]; then
   looked=""
-  [ "$count" != 0 ] || looked=" (listed ${attempts} times)"
+  [ "$count" != 0 ] || looked=" (after ${attempts} attempts)"
   echo "::error::run ${GITHUB_RUN_ID} has ${count} jobs named '${name}', not one${looked}" >&2
   exit 1
 fi

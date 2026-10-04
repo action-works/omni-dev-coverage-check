@@ -38,6 +38,9 @@ fresh() {
 # few, the way the API did on re-runs (#69): FAKE_JOBS_FAIL_FIRST=N answers 502,
 # FAKE_JOBS_GARBAGE_FIRST=N answers 200 with an HTML page, FAKE_JOBS_EMPTY_FIRST=N
 # answers 200 with a list that has no jobs. FAKE_JOBS_FAIL fails every read.
+# FAKE_JOBS_SEQ="fail html empty nojobs ok ..." scripts read 1, 2, 3 ... one by one
+# (nojobs is a 200 whose JSON has no `jobs`; reads past the end are ok), for sequences
+# the counts above cannot say, such as an empty list and then a 502.
 # It behaves like gh 2.97 and later, which refuse to print a response holding
 # terminal escape sequences unless given --allow-escape-sequences. With
 # FAKE_GH_OLD set it behaves like an older gh, which has no such flag.
@@ -78,6 +81,28 @@ case "$1" in
       echo "gh: Not Found (HTTP 404)" >&2
       echo '{"message":"Not Found"}'
       exit 1
+    fi
+    if [ -n "${FAKE_JOBS_SEQ:-}" ]; then
+      read -r -a seq <<<"$FAKE_JOBS_SEQ"
+      case "${seq[$((n - 1))]:-ok}" in
+        fail)
+          echo "gh: Server Error (HTTP 502)" >&2
+          echo '{"message":"Server Error"}'
+          exit 1
+          ;;
+        html)
+          echo "<html><body>502 Bad Gateway</body></html>"
+          exit 0
+          ;;
+        empty)
+          echo '{"jobs":[]}'
+          exit 0
+          ;;
+        nojobs)
+          echo '{"message":"API rate limit exceeded"}'
+          exit 0
+          ;;
+      esac
     fi
     if [ "$n" -le "${FAKE_JOBS_FAIL_FIRST:-0}" ]; then
       echo "gh: Server Error (HTTP 502)" >&2
@@ -257,8 +282,8 @@ with_job 602 'Job'
 run_errors "$d" 'Job' FAKE_JOBS_EMPTY_FIRST=99 JOB_LOG_ATTEMPTS=3
 pass "a job that is never listed fails the script" test "$STATUS" -ne 0
 eq "after exactly the attempts it was given" 3 "$(cat "$d/jobs-reads")"
-pass "and says it has none of that name, and that it looked" \
-  grep -q "run 42 has 0 jobs named 'Job', not one (listed 3 times)" <<<"$ERR"
+pass "and says it has none of that name, and that it kept looking" \
+  grep -q "run 42 has 0 jobs named 'Job', not one (after 3 attempts)" <<<"$ERR"
 pass "and never went on to read a log" test ! -e "$d/log-reads"
 eq "and prints no messages" "" "$OUT"
 
@@ -304,7 +329,8 @@ pass "the first look says the jobs could not be listed" \
 with_job 608 'Job'
 run_errors "$d" 'Job' FAKE_JOBS_GARBAGE_FIRST=99 JOB_LOG_ATTEMPTS=2
 pass "a body that is never JSON fails the script" test "$STATUS" -ne 0
-pass "and says the jobs could not be listed" grep -q "could not list the jobs of run 42 after 2 attempts" <<<"$ERR"
+pass "and says the jobs could not be listed, with jq's own words as the reason" \
+  grep -q "could not list the jobs of run 42 after 2 attempts: jq: parse error" <<<"$ERR"
 eq "and prints no messages" "" "$OUT"
 
 # Two jobs of one name is not a transient state. One look, then the error.
@@ -315,18 +341,66 @@ run_errors "$d" 'Job' JOB_LOG_ATTEMPTS=6
 pass "a name found twice fails the script" test "$STATUS" -ne 0
 eq "at the first look" 1 "$(cat "$d/jobs-reads")"
 pass "as an ambiguity, not as a job that was never listed" \
-  bash -c 'grep -q "2 jobs named .Job., not one" <<<"$1" && ! grep -q "listed" <<<"$1"' _ "$ERR"
+  bash -c 'grep -q "2 jobs named .Job., not one" <<<"$1" && ! grep -q "attempts)" <<<"$1"' _ "$ERR"
 
-# The wait between looks is the configured delay, and there is none after the last one.
+# The wait between looks is the configured delay, and there is none after the last one. It
+# is asserted for each kind of look that fails (a 502 is the one that failed in #69), since
+# the wait sits in one place and a copy of it in only one branch would leave the others
+# retrying at once. The fake `sleep` records its argument and does not wait.
 with_job 611 'Job'
 cat >"$d/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 echo "$1" >>"$FAKE_DIR/sleeps"
 EOF
 chmod +x "$d/bin/sleep"
-run_errors "$d" 'Job' FAKE_JOBS_EMPTY_FIRST=99 JOB_LOG_ATTEMPTS=3 JOB_LOG_DELAY=7
-eq "it waits the delay between looks and not after the last: two waits of 7" "7
-7" "$(cat "$d/sleeps")"
+# waits_for <label> <VAR=value>: three looks that all fail the same way, a delay of 7.
+waits_for() {
+  rm -f "$d/sleeps" "$d/jobs-reads"
+  run_errors "$d" 'Job' "$2" JOB_LOG_ATTEMPTS=3 JOB_LOG_DELAY=7
+  eq "$1: it waits the delay between looks and not after the last: two waits of 7" "7
+7" "$(cat "$d/sleeps" 2>/dev/null)"
+}
+waits_for "a list without the job" FAKE_JOBS_EMPTY_FIRST=99
+waits_for "a call that answers 502" FAKE_JOBS_FAIL_FIRST=99
+waits_for "a body that is not JSON" FAKE_JOBS_GARBAGE_FIRST=99
+waits_for "JSON with no jobs in it" "FAKE_JOBS_SEQ=nojobs nojobs nojobs"
+
+# What ends a run of looks is the LAST look. A list that lacked the job twice and then
+# answered 502 reports the 502, not "0 jobs", and the earlier looks are above it in the log;
+# the other way round reports the missing job. Without `listed=false` the first would claim
+# the job was missing from a list nobody got.
+with_job 613 'Job'
+run_errors "$d" 'Job' "FAKE_JOBS_SEQ=empty empty fail" JOB_LOG_ATTEMPTS=3
+pass "empty list, empty list, then a 502: fails the script" test "$STATUS" -ne 0
+pass "it says the jobs could not be listed, with the 502" \
+  grep -q "could not list the jobs of run 42 after 3 attempts: gh: Server Error (HTTP 502)" <<<"$ERR"
+pass "and not that the job is missing" bash -c '! grep -q "has 0 jobs named" <<<"$1"' _ "$ERR"
+pass "the earlier looks are in the log" \
+  grep -q "run 42 lists no job named 'Job' yet (attempt 2 of 3)" <<<"$ERR"
+
+with_job 614 'Job'
+run_errors "$d" 'Job' "FAKE_JOBS_SEQ=fail html empty" JOB_LOG_ATTEMPTS=3
+pass "a 502, an HTML page, then an empty list: fails the script" test "$STATUS" -ne 0
+pass "it says the job is missing after three attempts, though one list was read" \
+  grep -q "run 42 has 0 jobs named 'Job', not one (after 3 attempts)" <<<"$ERR"
+eq "all three looks were made" 3 "$(cat "$d/jobs-reads")"
+
+with_job 615 'Job'
+run_errors "$d" 'Job' "FAKE_JOBS_SEQ=empty fail ok" JOB_LOG_ATTEMPTS=3
+pass "an empty list, a 502, then the job: found on the last look" test "$STATUS" -eq 0
+eq "and read" "found it" "$OUT"
+
+# JSON that parses but has no `jobs` (a rate-limit body that still came with a 200) is a list
+# nobody got either: looked at again, and the final message says what jq made of it.
+with_job 616 'Job'
+run_errors "$d" 'Job' "FAKE_JOBS_SEQ=nojobs ok" JOB_LOG_ATTEMPTS=3
+pass "JSON with no jobs in it is looked at again" test "$STATUS" -eq 0
+eq "and the job is read once the list is real" "found it" "$OUT"
+with_job 617 'Job'
+run_errors "$d" 'Job' "FAKE_JOBS_SEQ=nojobs nojobs" JOB_LOG_ATTEMPTS=2
+pass "JSON that never has jobs fails the script" test "$STATUS" -ne 0
+pass "and says the jobs could not be listed, with jq's words" \
+  grep -q "could not list the jobs of run 42 after 2 attempts: jq: error .*Cannot iterate over null" <<<"$ERR"
 
 # --- reading the log may take a few tries -------------------------------------
 

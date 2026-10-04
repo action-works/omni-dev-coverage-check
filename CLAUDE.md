@@ -704,11 +704,19 @@ The action is a composite action with two phases:
     The cause was not established. The likeliest reading is that the lookup ran in the first
     seconds of a partial re-run and saw an incomplete list; afterwards the API listed all 15
     jobs for every attempt. The retry covers that reading and was not shown to be enough: a
-    list that is still short after 50 seconds fails as before. What it costs is that a name
-    that is wrong (a renamed job) now fails after all the attempts, not at the first.
-    `tests/job-errors.test.sh` replays each of these on a fake `gh` (502, an HTML body, a list
-    without the job, the delay between looks) and was checked against a `job-log.sh` without
-    the retry (25 cases fail).
+    list that is still short after 50 seconds fails as before. What it costs: a name that is
+    wrong (a renamed job) and any failure that will not clear (a token without `actions:
+    read`, no `gh` or `jq`) now fail after all the attempts, 50 seconds with the defaults, not
+    at the first look. The log read always did. The message that ends a run of looks is the
+    LAST look's (a list that lacked the job twice and then answered 502 reports the 502; the
+    earlier looks are in the log above it), and "after N attempts" counts looks, not lists.
+    `tests/job-errors.test.sh` replays each of these on a fake `gh` (502, an HTML body, JSON
+    with no `jobs`, a list without the job, mixed sequences of them through
+    `FAKE_JOBS_SEQ`, and the delay between looks after each kind of failed look, not only
+    the empty list) and was checked against a `job-log.sh` without the retry (38 cases fail)
+    and against one mutation of each rule: no retry on an empty list, an ambiguity retried,
+    no wait after a failed call, `listed` never reset, jq's error not captured. Each fails
+    at least one case.
   - **Re-run this job with the whole workflow, not alone** (`gh run rerun <id>`, not
     `--failed` or `--job`): that is what passed in #69, and a partial re-run is where the
     list came back short. This is the practice, not a proven fix.
