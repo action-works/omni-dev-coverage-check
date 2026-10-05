@@ -799,10 +799,57 @@ jobs:
           baseline-workflow: integration.yml
           baseline-ancestor-depth: 0
 
+      # 8c (#48): 8a's patterns with one space added beside the comma, which would have made
+      # the second pattern ` ^LICENSE$`, matching no path, so nothing would be filtered and the
+      # gate would fail as in 8b with no word about why. The action refuses the value in its
+      # first step, before any install, so the run stops there: no combined report exists.
+      # 8a is its control (only the space differs) and must succeed.
+      - name: '8c. A space beside the comma is refused'
+        id: refused
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/refused.lcov
+          fail-under-lines: 70
+          ignore-filename-regex: '-nomatch\.txt, ^LICENSE$'
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
+
+      # 8d (#48): the way the value is most likely to go wrong: 8a's patterns written as a YAML
+      # `|` block, which ends in a newline. That the newline survives `with:`, the input and the
+      # step's `env:` is what the unit test cannot show, since it sets the variable itself.
+      # Refused by the same first step, so no combined report exists either. 8a is its control
+      # (only the block differs).
+      - name: '8d. A YAML block value is refused'
+        id: refused-block
+        uses: ./
+        continue-on-error: true
+        with:
+          version: ${{ matrix.omni-dev }}
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/refused-block.lcov
+          fail-under-lines: 70
+          ignore-filename-regex: |
+            -nomatch\.txt,^LICENSE$
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: integration.yml
+          baseline-ancestor-depth: 0
+
       - name: Assert every outcome
         env:
           FILTERED: ${{ steps.filtered.outcome }}
           UNFILTERED: ${{ steps.unfiltered.outcome }}
+          REFUSED: ${{ steps.refused.outcome }}
+          REFUSED_BLOCK: ${{ steps.refused-block.outcome }}
           VERSION: ${{ steps.filtered.outputs.version }}
         run: |
           status=0
@@ -816,10 +863,22 @@ jobs:
           }
           check "8a. line gate with LICENSE filtered out" success "$FILTERED"
           check "8b. the same line gate without the filter" failure "$UNFILTERED"
+          check "8c. the filter of 8a with a space beside the comma" failure "$REFUSED"
+          check "8d. the filter of 8a as a YAML block" failure "$REFUSED_BLOCK"
 
           # 8b must fail at the gate, after the shards were combined.
           if [ ! -s out/unfiltered.lcov ]; then
             echo "::error::8b failed before the shards were combined, not at the gate"
+            status=1
+          fi
+          # 8c must fail before anything runs: the first step of the action refuses the value,
+          # so no report was combined (a refusal anywhere later would leave one).
+          if [ -e out/refused.lcov ]; then
+            echo "::error::8c was not stopped by the first step: a combined report exists, so it ran on"
+            status=1
+          fi
+          if [ -e out/refused-block.lcov ]; then
+            echo "::error::8d was not stopped by the first step: a combined report exists, so it ran on (the block's trailing newline did not reach the step, or was trimmed)"
             status=1
           fi
 
@@ -1952,6 +2011,30 @@ jobs:
           else
             status=1
           fi
+          # 8c: a space beside the comma of `ignore-filename-regex` is refused by the first step
+          # of the action (#48), with a message that names the input, what it holds, the
+          # consequence and the fixes. Both legs of the `ignore-filename-regex` job send it, on
+          # every event; the other error in each log is 8b's gate, so every check holds the
+          # refusal's own first words.
+          refusal="The 'ignore-filename-regex' input holds a space or tab beside a comma"
+          block_refusal="The 'ignore-filename-regex' input holds a line break"
+          for leg in '0.45.0' 'latest'; do
+            if errors="$(bash tests/job-errors.sh "Ignore filename regex (omni-dev $leg)")"; then
+              expect "8c (omni-dev $leg): the refusal names the input and what it holds" "$errors" \
+                "$refusal" "(got '-nomatch\\.txt, ^LICENSE\$')"
+              expect "8c (omni-dev $leg): the refusal says the files would stay with no warning" "$errors" \
+                "$refusal" "the files would stay in the comment and the gates, with no warning"
+              expect "8c (omni-dev $leg): the refusal says how to fix it" "$errors" \
+                "$refusal" "Write [ ] for a space that is meant"
+              # 8d: the block's trailing newline arrived, and is shown as a ?.
+              expect "8d (omni-dev $leg): the YAML block's line break is named, and shown as a ?" "$errors" \
+                "$block_refusal" "(got '-nomatch\\.txt,^LICENSE\$?', where a ? stands for a line break"
+              expect "8d (omni-dev $leg): the refusal says what a YAML block does" "$errors" \
+                "$block_refusal" "a YAML | block keeps its line breaks"
+            else
+              status=1
+            fi
+          done
           # 12: a version that names no release is refused by the resolve step, whose one
           # message names the input, quotes what it got and offers both ways out. Every
           # check holds the message's own first words and the value it quotes, so each is

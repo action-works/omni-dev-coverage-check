@@ -132,7 +132,8 @@ absent() {
 # The cases below set the variables, so they would pass if `env:` filled one from the wrong
 # input. Each line is `step | variable | expression`.
 # shellcheck disable=SC2016
-WIRING='Install omni-dev from source|VERSION|steps.resolve-version.outputs.version
+WIRING='Check the ignore-filename-regex value|IGNORE_FILENAME_REGEX|inputs.ignore-filename-regex
+Install omni-dev from source|VERSION|steps.resolve-version.outputs.version
 Download pre-built binary|DOWNLOAD_URL|steps.platform.outputs.download-url
 Download pre-built binary|BINARY_NAME|steps.platform.outputs.binary-name
 Combine shard reports|ACTION_PATH|github.action_path
@@ -169,6 +170,94 @@ while IFS='|' read -r step var expr; do
   # shellcheck disable=SC2016
   has "env: $step: $var is $expr" "$(step_block "$step")" "        $var: \${{ $expr }}"
 done <<<"$WIRING"
+
+# --- Check the ignore-filename-regex value (#48) --------------------------------------------
+
+IGNORE_STEP="Check the ignore-filename-regex value"
+# The value is a comma-separated list on one line and nothing is trimmed, so a newline, or a
+# space or tab at either end or beside a comma, would become part of a pattern that matches no
+# path: nothing is excluded and nothing says so. The step refuses it, with a message that names
+# the input and the fix. It sits where a mistake in a workflow file fails fastest, first, and
+# runs where the value is used.
+# shellcheck disable=SC2016
+eq "ignore-filename-regex: it runs where the value is used (the guard's own third need)" \
+  "inputs.ignore-filename-regex != '' && (github.event_name == 'pull_request' || (inputs.run-coverage != 'true' && inputs.fail-under-lines != ''))" \
+  "$(step_field "$IGNORE_STEP" if)"
+eq "ignore-filename-regex: it is the first step of the action, ahead of any install" \
+  "$IGNORE_STEP" "$(grep -m1 '^    - name: ' "$ACTION" | sed 's/^    - name: //')"
+
+expect_refused() { # <name> <value> <what the error says the value holds>
+  run_step "$IGNORE_STEP" "IGNORE_FILENAME_REGEX=$2"
+  eq "ignore-filename-regex, $1: the step fails" 1 "$STATUS"
+  has "ignore-filename-regex, $1: the error names the input and what it holds" "$OUT" \
+    "::error::The 'ignore-filename-regex' input holds $3"
+  has "ignore-filename-regex, $1: it says the file would stay with no warning" "$OUT" \
+    "which matches no path: the files would stay in the comment and the gates, with no warning"
+  has "ignore-filename-regex, $1: it says what to write" "$OUT" "Write all the patterns on ONE line with bare commas ('a,b')"
+  has "ignore-filename-regex, $1: it says to write one line, and what a YAML block does" "$OUT" \
+    "a YAML | block keeps its line breaks (|- only drops the last one)"
+  has "ignore-filename-regex, $1: it says how to write a space that is meant" "$OUT" "Write [ ] for a space that is meant"
+  # Non-empty lines: a line break in the value must not make a second line, which a runner
+  # would read as another workflow command.
+  eq "ignore-filename-regex, $1: it logs one line, whatever the value held" 1 "$(grep -c . <<<"$OUT" || true)"
+  eq "ignore-filename-regex, $1: it runs nothing" "" "$CALLS"
+}
+expect_accepted() { # <name> <value>
+  run_step "$IGNORE_STEP" "IGNORE_FILENAME_REGEX=$2"
+  eq "ignore-filename-regex, $1: the step passes" 0 "$STATUS"
+  eq "ignore-filename-regex, $1: and says nothing" "" "$OUT"
+}
+
+# The rows of the issue's table, each of which excluded nothing.
+expect_refused "a trailing newline (what a YAML | block gives)" $'patch-fixture\n' "a line break"
+expect_refused "a leading space" ' patch-fixture' "a space or tab at the start or end"
+expect_refused "a space after the comma" 'nomatch, patch-fixture' "a space or tab beside a comma"
+expect_refused "a newline between patterns" $'nomatch\npatch-fixture' "a line break"
+# The neighbours of those rows.
+expect_refused "a trailing space" 'patch-fixture ' "a space or tab at the start or end"
+expect_refused "a space before the comma" 'nomatch ,patch-fixture' "a space or tab beside a comma"
+expect_refused "spaces on both sides of the comma" 'a , b' "a space or tab beside a comma"
+expect_refused "a leading tab" $'\tpatch-fixture' "a space or tab at the start or end"
+expect_refused "a tab after the comma" $'a,\tb' "a space or tab beside a comma"
+expect_refused "a carriage return" $'patch-fixture\r' "a line break"
+expect_refused "CRLF between patterns" $'a\r\nb' "a line break"
+expect_refused "a block of several lines" $'a\nb\nc\n' "a line break"
+expect_refused "only a space" ' ' "a space or tab at the start or end"
+expect_refused "a space after a comma that ends the value" 'a, ' "a space or tab at the start or end"
+
+# What is shown of it: a line break is a ?, and says so; a value with nothing unprintable says
+# nothing of a ?; and a long value is cut at 60.
+run_step "$IGNORE_STEP" 'IGNORE_FILENAME_REGEX=a, b'
+lacks "ignore-filename-regex: a plain space does not explain a ?" "$OUT" "where a ? stands for"
+run_step "$IGNORE_STEP" $'IGNORE_FILENAME_REGEX=a\nb'
+has "ignore-filename-regex: a line break does" "$OUT" "(got 'a?b', where a ? stands for a line break or another character that does not print)"
+run_step "$IGNORE_STEP" $'IGNORE_FILENAME_REGEX=nomatch\n::error::forged'
+has "ignore-filename-regex: a workflow command in the value is shown with the break replaced" "$OUT" "(got 'nomatch?::error::forged'"
+long="$(printf 'x, %.0s' {1..40})"
+run_step "$IGNORE_STEP" "IGNORE_FILENAME_REGEX=$long"
+has "ignore-filename-regex: a long value is cut at 60 characters" "$OUT" "(got '${long:0:60}...'"
+
+# The control: the same patterns written as the input wants them.
+expect_accepted "one pattern" 'patch-fixture'
+expect_accepted "bare commas" 'nomatch,patch-fixture'
+expect_accepted "three patterns, one starting with a dash" '-sys/,src/gpu/,generated/'
+expect_accepted "an empty piece (a doubled or trailing comma), which omni-dev ignores" 'a,,b,'
+expect_accepted "a space inside a pattern, which is a character of it" 'src/my dir/'
+expect_accepted "a space inside a pattern beside a comma-free neighbour" 'src/my dir/,src/other dir/x'
+expect_accepted "a space written as [ ] beside a comma" 'a[ ],[ ]b'
+expect_accepted "a regex that spells whitespace as \s" 'a\sb,c'
+# shellcheck disable=SC2016
+expect_accepted "regex specials" 'src/ignored\.rs$|a(b|c)+[0-9]*'
+
+# Hostile text is data: the step reads the value from the environment and never evals it.
+c="$(canary)"
+run_step "$IGNORE_STEP" "IGNORE_FILENAME_REGEX=a,\$(touch $c),b"
+eq "ignore-filename-regex: a command substitution with no space beside a comma passes" 0 "$STATUS"
+absent "ignore-filename-regex: ... and ran nothing" "$c"
+c="$(canary)"
+run_step "$IGNORE_STEP" "IGNORE_FILENAME_REGEX=a, \$(touch $c)"
+eq "ignore-filename-regex: a command substitution after a space beside a comma is refused" 1 "$STATUS"
+absent "ignore-filename-regex: ... and ran nothing" "$c"
 
 # --- Install omni-dev from source ------------------------------------------------------
 
