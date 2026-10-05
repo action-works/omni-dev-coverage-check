@@ -18,7 +18,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/download-step.test.sh` - Runs the "Download pre-built binary" script read out of `action.yml` against a stub `curl` that serves a tarball and a zip with the layout of the real release assets, and a stub `find` that lists in either order, with `HOME` and every `/tmp` in the script pointed at a directory of the case's own: the file left at `~/.cargo/bin/omni-dev` is the right one, by content, and executable, and an archive with no `omni-dev.exe` fails with a message (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/print-version-step.test.sh` - Runs the "Print omni-dev version" script read out of `action.yml` against a stub `omni-dev` that replays the captured loader output in `tests/fixtures/omni-dev-loader/` and a stub `getconf`: the glibc the binary needs, the one the runner has and the two ways out (`test.yml` runs that)
-- `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
+- `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep`, and, for a runner with no `jq`, on a PATH of links that holds neither `jq` nor anything else the step does not use (`test.yml` runs that)
 - `tests/recompute-worktree.test.sh` - Runs the "Compute baseline from merge-base (fallback)" script read out of `action.yml` with the real `git` in a throwaway repository against a stub `cargo` that can fail, and checks what is on disk afterwards: the `../base` worktree is gone after a recompute and after a failing one, a second recompute in the same workspace succeeds and writes the same baseline, a leftover worktree is cleared, and a plain directory named `base` is kept (`test.yml` runs that)
 - `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the `ignore-filename-regex` check, the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
 - `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` or of a workflow in `.github/workflows/` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
@@ -677,7 +677,8 @@ The action is a composite action with two phases:
       `ubuntu-22.04-arm` image would show the 2.39 case; the unit test replays its capture).
 - **Version resolution (#1, #40)**: `version: latest` costs one call to the GitHub API
   (`.../repos/rust-works/omni-dev/releases/latest`), and one more request if the API gives no
-  release in any attempt (the redirect fallback, below); a pinned version makes none. Made
+  release in any attempt (the redirect fallback, below), and none at all on a runner with no `jq`
+  (#63, below: only the redirect is asked); a pinned version makes none. Made
   unauthenticated from a shared runner address it hit the 60/hr limit and failed the whole job,
   so the step sends `github-token` (default `github.token`, 1000/hr) and tries up to three times,
   sleeping 3s then 6s (none after the last) before the redirect fallback, except that a 401, 403
@@ -728,7 +729,7 @@ The action is a composite action with two phases:
     error page would otherwise end the step with a bare exit code before the retry or the message.
     The test scripts each shape (curl failing or timing out, a body that is not JSON, JSON with no
     `tag_name`). `jq` also hides its stderr there, so a runner without it would look like a rate
-    limit: the step checks for `jq` first and says so.
+    limit: the step checks for `jq` first and, with none, does not ask the API at all (#63, below).
   - No `--fail` on that curl: a 403 keeps its JSON body, which is where GitHub's reason ("API rate
     limit exceeded", "Bad credentials") comes from, and the warning prints it.
   - A leading `v` is dropped from the value however it was obtained (#38), once, after the
@@ -798,9 +799,8 @@ The action is a composite action with two phases:
       and following the redirect would fetch the tag's HTML page, which the step has no use for and
       is one more request that can fail or be throttled. No token: it buys nothing on github.com, as
       with the asset downloads. The call ends in `|| true` for the API call's `-e` reason, and the
-      answer is read with `read` and `[[ =~ ]]`, no jq. A runner with no jq still fails first, with
-      the jq message, although the redirect needs none: the API runs first and the guard keeps a
-      missing jq from being reported as a rate limit.
+      answer is read with `read` and `[[ =~ ]]`, no jq, so a runner with no jq is served by it (#63,
+      below): the API is skipped and the redirect answers.
     - The URL is read from a header, so it is used only if it is exactly
       `https://github.com/rust-works/omni-dev/releases/tag/v<N>.<N>.<N>`, with an optional semver
       pre-release (`-` and dot-separated identifiers of letters, digits and hyphens). The tag goes
@@ -825,6 +825,57 @@ The action is a composite action with two phases:
       and also how the `latest-redirect` job makes the API fail on demand. The warning says the API
       "gave no release", not that it did not answer, because a refusal is an answer (since #62 the
       refusal's own wording says it: "refused the request (HTTP 401) and was not asked again").
+    - **A runner with no `jq` skips the API and asks the redirect (#63).** It used to fail before any
+      request ("jq is required to resolve 'version: latest' ..."), a guard that predates the
+      redirect and existed because the step's `jq` calls end in `|| true` and hide their errors, so
+      a runner without it would be retried three times and reported as a rate limit. The redirect
+      needs only curl and bash, so the one lookup that would have worked was the one the guard
+      stopped, and the rest of the action already tolerates a runner without jq
+      (`find-baseline.sh` gives a warned miss that names it; the percentages step reads with `jq ...
+      || echo ""`). Rules, so they are not re-derived:
+      - **A warned pass, not a hard failure; decided on #63's own proposal.** This trades a clear
+        error for a warning, which can hide a broken runner image (a warning is easier to miss than
+        an error that names what to install). #40 made the same trade for a bad `github-token`, and
+        the warning names `jq` and says to install it, so it is not silent. GitHub-hosted runners
+        all have jq, so this reaches a self-hosted or a minimal image only.
+      - **The step sets `no_jq` and the attempt loop breaks at once**: no API request, no sleep, no
+        `Attempt n/3` warning (it would claim attempts that were not made), and `api_gave` is `The
+        GitHub API was not asked (jq, which reads its answer, was not found on PATH)`. The warning
+        and the error say what to do about it with the same words, `Install jq so the API can be
+        asked, or set 'version' to a release to skip the lookup.`: not the token advice, since the
+        token was never used, and not `If this is a rate limit`. The redirect's one request, its
+        shape check and its error's `HTTP <status>` are unchanged.
+      - **With jq nothing changes, byte for byte.** The old warning and error tails are now the
+        variables `fix` and `error_fix`, and whole-text cases pin both with the API failing
+        (found by mutating them: the first version of the tests asserted only a fragment of each, so
+        a reworded tail survived). `job-errors.test.sh` ties
+        `failure-messages`' way-out fragment to the `fix=` assignment now, since the warning line
+        holds `${fix}` and no longer the words.
+      - `tests/resolve-version-step.test.sh`: the runner with no jq is a directory of links
+        (`env`, `bash`, `grep`, `cat`, the stub `curl` and `sleep`) that a fixture check shows holds
+        no jq; `run_resolve` takes the PATH from `RESOLVE_PATH` and runs `$BASH`. Cases: a redirect
+        that gives a tag resolves it with exactly one warning that names jq and no attempt line, one
+        request that is the redirect's, nothing sent to api.github.com, no sleep, and the old guard's
+        message gone; the same step with jq as the control (the API asked, nothing said about jq); a
+        redirect that fails in seven shapes (a refused connection, a page served, a throttle, a login
+        page, another repository, a tag that is not a version, build metadata) gives the one error
+        that says the API was not asked and offers both ways out; a pinned version with no jq makes no
+        request; a stale RELEASE_TAG or `refused` in the job's environment is not taken for an answer
+        (`RELEASE_TAG=""` and `refused=""` moved above the jq check, and nothing pinned them until
+        the review found the mutant surviving). Mutations checked, each failing at least one case:
+        the flag never set, no break, the old hard failure back, the warning not naming jq, the
+        token advice or `If this is a rate limit` for no jq, either way out missing from the error,
+        either initialisation dropped, and the with-jq tails reworded. The order of the `no_jq` and
+        `refused` branches is an equivalent mutant (the loop breaks before `refused` can be set when
+        `no_jq` is), so no case can tell the two orders apart. A file named `jq` that is on PATH but
+        cannot run is found by `command -v` and fails as it did before #63 (three attempts, then the
+        token advice); that is outside this change and not tested.
+      - **Not run on a runner**: no `integration.yml` scenario hides jq. A job would need its own
+        `latest` install (one omni-dev version per job), and the job's other steps and helpers read
+        with jq too, so hiding it needs care that was not taken. Its evidence is the unit test and one
+        run by hand (2026-10-05, not on a runner): the real step with a PATH holding no jq, against
+        the live github.com redirect, resolved `v0.46.0`, which is what the API said, with the one
+        warning above and exit 0.
     - Whether github.com throttles the redirect on a runner's address is not known. It cannot make a
       run worse (the fallback runs only after the API failed), but it was not measured from a runner
       when this was written. The `latest-redirect` job is that measurement and keeps checking, weekly

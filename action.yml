@@ -230,11 +230,15 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
         if [ "$VERSION" = "latest" ]; then
-          # The jq calls below end in `|| true` and send stderr away, so a runner
-          # with no jq would be retried three times and reported as a rate limit.
+          RELEASE_TAG=""
+          refused=""
+          # The API answer is read with jq, and the jq calls below end in `|| true` and
+          # send stderr away, so a runner with no jq would be retried three times and
+          # reported as a rate limit. With none, the API is not asked at all: the redirect
+          # further down needs only curl and bash, and says why the API was skipped.
+          no_jq=""
           if ! command -v jq >/dev/null; then
-            echo "::error::jq is required to resolve 'version: latest' and was not found on PATH. Install it, or set 'version' to a release to skip the lookup."
-            exit 1
+            no_jq=yes
           fi
           # Authenticate the API call so it draws on the 1000/hr authenticated
           # rate limit rather than the 60/hr unauthenticated, shared-runner-IP
@@ -247,9 +251,8 @@ runs:
           if [ -n "$GH_TOKEN" ]; then
             auth=(-H "Authorization: Bearer $GH_TOKEN")
           fi
-          RELEASE_TAG=""
-          refused=""
           for attempt in 1 2 3; do
+            [ -z "$no_jq" ] || break
             # -w puts the HTTP status on a line after the body (curl still prints 000 for a
             # connection that failed). There is no --fail: a 403 keeps its JSON body, which
             # is where GitHub's reason comes from. The status is split off below.
@@ -283,8 +286,17 @@ runs:
           done
           if [ -z "$RELEASE_TAG" ]; then
             # What the API did, for the messages below: not "after 3 attempts" when it was
-            # asked once.
-            if [ -n "$refused" ]; then
+            # asked once, and not an API failure at all when it was not asked. And what to do
+            # about it, for the warning and the error: check the token when the API answered,
+            # install jq when it was not asked. The first two are the words of the messages
+            # before the API could be skipped, and are kept as they were.
+            fix="Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+            error_fix="If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+            if [ -n "$no_jq" ]; then
+              api_gave="The GitHub API was not asked (jq, which reads its answer, was not found on PATH)"
+              fix="Install jq so the API can be asked, or set 'version' to a release to skip the lookup."
+              error_fix="$fix"
+            elif [ -n "$refused" ]; then
               api_gave="The GitHub API refused the request (HTTP ${refused}) and was not asked again, since retrying cannot change that (API: ${api_message:-unknown error})"
             else
               api_gave="The GitHub API gave no release after 3 attempts (API: ${api_message:-unknown error})"
@@ -308,11 +320,11 @@ runs:
             tag_url='^https://github\.com/rust-works/omni-dev/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?)$'
             if [[ "$redirect_to" =~ $tag_url ]]; then
               RELEASE_TAG="${BASH_REMATCH[1]}"
-              echo "::warning::${api_gave}, so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+              echo "::warning::${api_gave}, so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}. ${fix}"
             fi
           fi
           if [ -z "$RELEASE_TAG" ]; then
-            echo "::error::Could not determine latest omni-dev version. ${api_gave} and the github.com releases/latest redirect gave no release tag (HTTP ${redirect_status:-000}${redirect_to:+ to $redirect_to}). If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+            echo "::error::Could not determine latest omni-dev version. ${api_gave} and the github.com releases/latest redirect gave no release tag (HTTP ${redirect_status:-000}${redirect_to:+ to $redirect_to}). ${error_fix}"
             exit 1
           fi
           VERSION="$RELEASE_TAG"

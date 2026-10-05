@@ -630,18 +630,27 @@ ACTION_TEXT="$(<"$ROOT/action.yml")"
 WORKFLOW_TEXT="$(<"$ROOT/.github/workflows/integration.yml")"
 FALLBACK_LINE="$(grep -F '::warning::${api_gave}, so latest omni-dev was resolved' <<<"$ACTION_TEXT")"
 REFUSED_LINE="$(grep -F 'api_gave="The GitHub API refused the request (HTTP ${refused})' <<<"$ACTION_TEXT")"
+# The way out the warning ends in is `${fix}` since #63 (with no jq it names jq and not the token); scenario 10 has
+# jq and its token refused, so it is the first assignment of `fix`, the token's.
+FIX_LINE="$(grep -F 'fix="Check that github-token holds a valid token' <<<"$ACTION_TEXT")"
 pass "action.yml: the fallback's warning is logged, once" test "$(grep -c . <<<"$FALLBACK_LINE")" -eq 1
 pass "action.yml: the text for a refusal is built, once" test "$(grep -c . <<<"$REFUSED_LINE")" -eq 1
+pass "action.yml: the way out for an API that answered is built, once" test "$(grep -c . <<<"$FIX_LINE")" -eq 1
+has "action.yml: the fallback's warning ends in that way out" "$FALLBACK_LINE" '. ${fix}"'
 has "workflow: failure-messages reads the warnings of scenario 10's job" "$WORKFLOW_TEXT" \
   "bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)'"
 while IFS='|' read -r in_workflow in_action source; do
-  if [ "$source" = refused ]; then line="$REFUSED_LINE"; else line="$FALLBACK_LINE"; fi
+  case "$source" in
+    refused) line="$REFUSED_LINE" ;;
+    fix) line="$FIX_LINE" ;;
+    *) line="$FALLBACK_LINE" ;;
+  esac
   has "action.yml: the $source line holds '$in_action'" "$line" "$in_action"
   has "workflow: ... and the assertion asks for '$in_workflow'" "$WORKFLOW_TEXT" "\"$in_workflow\""
 done <<'EOF'
 (API: Bad credentials)|(API: ${api_message|refused
 so latest omni-dev was resolved from the github.com releases/latest redirect instead: v|so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}|warning
-set 'version' to a release to skip the lookup|set 'version' to a release to skip the lookup|warning
+set 'version' to a release to skip the lookup|set 'version' to a release to skip the lookup|fix
 EOF
 # The three checks as written: each holds the fallback's own words, and each of the other two
 # fragments with it, so all three have to be in one warning (a fragment quoted by another call
