@@ -362,6 +362,11 @@ mutate "failure-messages: the last need dropped (deprecation-control)" integrati
 mutate "failure-messages: a need that is not a job" integration.yml \
   "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - not-a-job" }' \
   "failure-messages needs a job that does not exist: not-a-job"
+# A bogus name that is a substring of a real job is still a name that is no job (a `grep -F` without
+# `-x` would find `thin` inside `thin-mode`).
+mutate "failure-messages: a need that is only a substring of a job" integration.yml \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - thin" }' \
+  "failure-messages needs a job that does not exist: thin"
 mutate "failure-messages: a job added after it that it does not need" integration.yml \
   '{ print } END { print ""; print "  brand-new-job:"; print "    needs:"; print "      - thin-mode"; print "    runs-on: ubuntu-latest"; print "    steps: []" }' \
   "failure-messages does not need: brand-new-job"
@@ -374,6 +379,9 @@ mutate "failure-messages: it needs itself" integration.yml \
 mutate "failure-messages: no needs at all" integration.yml \
   "$IN_JOB"' cur == "failure-messages" && /^    needs:[ \t]*$/ { skip = 1; next } skip && /^      - / { next } { skip = 0; print }' \
   "failure-messages does not need: thin-mode"
+# With no list at all, only the jobs it lacks are named: no phantom empty name for the list's absence.
+eq "failure-messages: no needs at all: no empty name is reported as a job that does not exist" 0 \
+  "$(wiring_problems "$WORK/mutant-$mutant" | grep -c 'failure-messages needs a job that does not exist' || true)"
 mutate "failure-messages: renamed, so the job is not there" integration.yml \
   '$0 == "  failure-messages:" { print "  messages:"; next } { print }' "cannot read the needs of failure-messages"
 mutate "a need that is not a job" integration.yml \

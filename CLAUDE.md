@@ -1161,7 +1161,7 @@ The action is a composite action with two phases:
 - **Failure-message assertions**: a step cannot read its own job's log and a composite
   action exposes no output for a failing step, so the outcome and file checks pin
   the step order, not the text a user reads. The `failure-messages` job (`needs`
-  every scenario job it reads, so it is skipped while one is red) reads their
+  every job but `ci-gate` (#105), so it is skipped while one is red) reads their
   finished logs with `tests/job-errors.sh` and asserts the shard-pattern error
   names the pattern, the `--fail-under-lines` guard names the omni-dev it found and
   both ways out, and (on a pull request only, the one event that runs it) the
@@ -1666,9 +1666,11 @@ The action is a composite action with two phases:
       `on:`) and refuse a flow-style one rather than read it as empty.
     - **And in `failure-messages`' `needs` (#105), which holds every job but itself and `ci-gate`.**
       It reads the finished log of each job it names, and its deprecation step reads EVERY job that
-      finished green, so a job missing from its list can still be running when it is read: the
-      step would assert on a log that is not finished, or fail with "no job of that name", and
-      nothing said which list to fix. Decided so it is not re-derived: the rule is "every job
+      finished green (`conclusion == "success"`), so a job missing from its list that is still running
+      has no conclusion yet and is left out of what the step reads, silently: its deprecation check
+      never runs and the step still passes, the quiet failure #89 is about (the by-name assertions
+      would instead assert on a log that is not finished, if the log can be read at all, which was
+      not established). Nothing said which list to fix. Decided so it is not re-derived: the rule is "every job
       but those two", not "every job it reads a log of by name", because the deprecation step
       reads all of them (a rule over the names it asserts on would leave the others out).
       `ci-gate` is excluded because it needs `failure-messages`, so needing it back would be a
@@ -1676,8 +1678,9 @@ The action is a composite action with two phases:
       job missing (`failure-messages does not need: X`), a name that is no job, itself, `ci-gate`,
       a `needs:` that is not a block list (refused, not read as empty), and a job that is not
       there. It held on the file as it was, so no job was found missing. Mutations checked, each
-      shown to be reported on a copy: the first, a middle and the last need dropped, a bogus name,
-      a job added after it, `ci-gate` and itself added, no `needs:` at all, the job renamed, and a
+      shown to be reported on a copy: the first, a middle and the last need dropped, a bogus name
+      (and one that is only a substring of a real job, which a `grep -F` without `-x` would
+      accept), a job added after it, `ci-gate` and itself added, no `needs:` at all, the job renamed, and a
       flow-style list.
   - **A `merge_group` run is a `push` run that publishes no baseline.** Every event test in
     `integration.yml` and `action.yml` is `pull_request` or `push` to `main`, so the queue's commit

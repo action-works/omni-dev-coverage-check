@@ -1670,9 +1670,9 @@ jobs:
     # that did not run as intended would only add "message missing" errors that
     # bury the cause.
     # Every other job of this file but ci-gate, which waits for this one: this job reads each
-    # one's finished log, and the deprecation step reads all of them, so a job missing here
-    # can still be running when it is read. tests/merge-queue.test.sh fails for one that is
-    # (#105), and for a name that is no job.
+    # one's finished log, and the deprecation step reads every job that finished green, so a job
+    # missing here that is still running has no conclusion yet and is silently not read at all.
+    # tests/merge-queue.test.sh fails for one that is (#105), and for a name that is no job.
     needs:
       - thin-mode
       - thin-mode-old-omni-dev
