@@ -28,7 +28,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/step-lib.sh` - `step_run`, `step_block`, `step_field`, `step_map` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
 - `.omni-dev/` - Project guidelines for commits and PRs
 - `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo (runs on `merge_group` too: `Validate Commit Messages` is a required check of the merge queue)
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `output-flag` job checks the omni-dev floor a pull request needs; the `ignore-filename-regex` job checks the filter on the thin-mode line gate and `ignore-filename-regex-flag` the omni-dev floor for it; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; the `old-glibc` job runs the pre-built binary on ubuntu-22.04, whose glibc is too old for it, with ubuntu-24.04 as its control (#67); a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
+- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `guard-flag` job checks the omni-dev floor a pull request needs for `--output` and the one for `--ignore-filename-regex` (one matrix, a leg either side of each floor); the `ignore-filename-regex` job checks the filter on the thin-mode line gate; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; the `old-glibc` job runs the pre-built binary on ubuntu-22.04, whose glibc is too old for it, with ubuntu-24.04 as its control (#67); a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
 - `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API (the job list and the log are each retried); `job-errors.sh`, `job-deprecations.sh` and `job-warnings.sh` pick their lines from it (`tests/job-errors.test.sh` tests all four against a fake `gh`; `test.yml` runs that)
 - `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
 - `tests/run-jobs.sh` - Prints the jobs of the current run as one JSON array (`id`, `name`, `status`, `conclusion`), looking again at a failed call, a body that is not JSON, an empty list, a list short of the API's `total_count` and one shorter than `RUN_JOBS_MIN`; the deprecation step reads it (`tests/run-jobs.test.sh` tests it against a fake `gh` and reads `integration.yml` for the wiring; `test.yml` runs that)
@@ -949,7 +949,7 @@ The action is a composite action with two phases:
   newest release without `--fail-under-lines`, so it stays put when the `0.45.0`
   floor rises; change it only if the guard starts detecting a newer flag.
   - The poisoned-cache rule is checked by `tests/assert-omni-dev-version.sh <version>`, which
-    the fifteen jobs that assert a scenario's outcome end on, in `integration.yml`,
+    the fourteen jobs that assert a scenario's outcome end on, in `integration.yml`,
     `pr-paths.yml` and `e2e-sharded.yml`. `arm64-release-without-asset` installs nothing
     and `deprecation-control` has one install and asserts no outcome, so neither calls
     it; `old-glibc`'s failing leg installs a binary that cannot start, so only its control
@@ -968,17 +968,21 @@ The action is a composite action with two phases:
       step. `tests/assert-omni-dev-version.test.sh` holds the cases (prefix, suffix, a
       dot that is not a wildcard, a binary that is missing or fails).
   - **One job holds both guard-flag matrices (#50).** `guard-flag` was two jobs,
-    `output-flag` and `ignore-filename-regex-flag`, that differed in the flag, the fixtures'
-    one input and the version list: the same skeleton, the same expectation by event and the
-    same file checks. It is one job with a matrix entry per leg (`title`, `scenario`, `flag`,
-    `filter`, `omni-dev`, `has-flag`), and its `name:` is `<title> (omni-dev <version>)`, so
-    the legs keep the job names they had (`Output flag (omni-dev 0.31.0)`, `Ignore filename
-    regex flag (omni-dev 0.32.0)`): `failure-messages` reads the logs by name, and a name
-    that moved would fail it with "no job of that name". A new floor flag is a few entries
-    in the matrix and one `has_flag` call, not a third copy of the job. `ci-gate` and
-    `failure-messages` need `guard-flag`, and `tests/merge-queue.test.sh` fails until they
-    do. Each entry's `has-flag` says whether its omni-dev has the flag, which is all the
-    assertion step decides on beside the event.
+    `output-flag` and `ignore-filename-regex-flag`, that differed in the flag, the
+    `ignore-filename-regex` input and the version list: the same skeleton, the same
+    expectation by event and the same file checks. It is one job with a matrix entry per leg
+    (`title`, `scenario`, `flag`, `filter`, `omni-dev`, `has-flag`), and its `name:` is
+    `<title> (omni-dev <version>)`, so the legs keep the job names they had (`Output flag
+    (omni-dev 0.31.0)`, `Ignore filename regex flag (omni-dev 0.32.0)`): `failure-messages`
+    reads the logs by name, and a name that moved would fail it with "no job of that name".
+    A new floor flag is a few entries in the matrix and one `has_flag` call, not a third
+    copy of the job. Each entry's `has-flag` says whether its omni-dev has the flag, which is
+    all the assertion step decides on beside the event. `ci-gate` needs `guard-flag`
+    (`tests/merge-queue.test.sh` fails until it does) and so does `failure-messages`, but
+    nothing pins the second: deleting it from `failure-messages`' `needs` leaves every test
+    green (found in review; the gap is older than #50 and holds for every job in that list),
+    and `failure-messages` could then read a leg's log before the leg finishes. Keep the two
+    lists in step by hand until something checks it.
   - The `--output` guard acts only on a `pull_request`, so the `guard-flag` legs for it (a
     matrix: `0.28.0`, the newest release with no `coverage` subcommand at all, `0.31.0`,
     the newest with `coverage diff` but without the flag, and `0.32.0`, the floor)

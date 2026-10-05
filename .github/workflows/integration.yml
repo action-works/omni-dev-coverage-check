@@ -2,8 +2,9 @@ name: Integration
 
 # Runs the action itself (`uses: ./`) on a real runner on every change: in thin
 # mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
-# `ignore-filename-regex`, the `--output` floor a pull request needs, and the
-# `version` input's empty, `v` and `V` spellings), and in fat mode against a
+# `ignore-filename-regex`, the `--output` and `--ignore-filename-regex` floors a
+# pull request needs, and the `version` input's empty, `v` and `V` spellings),
+# and in fat mode against a
 # fixture crate (the instrumented test run, the three report outputs and the one
 # profile merge they share, the fat-mode line gate,
 # `setup-commands`/`extra-test-commands`, `llvm-cov-ignore-filename-regex`). Each
