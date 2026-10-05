@@ -51,8 +51,25 @@
 #     published a baseline; a second parent is a pull request's own branch, which did not.
 #   - A 404 for the workflow is a warned miss and ends the walk: the API knows a workflow
 #     only once its file is on the default branch, and every candidate would 404 alike.
+#   - A candidate the filtered listing gives no baseline for is looked up again in the
+#     workflow's latest 100 runs, unfiltered, which are fetched once and matched here by
+#     head SHA, conclusion and repository (#57). With `head_sha`, `status` or `branch` given,
+#     the API serves the listing from a search index that intermittently returns a random
+#     subset of the matching runs, with nothing in the response to show the gap
+#     (dawidd6/action-download-artifact#432 measured the newest run missing in 3 of 20
+#     calls), and one run's baseline was missed that way for a commit whose baseline had been
+#     published three minutes earlier. The extra listing is only a second chance: it can add
+#     runs, never remove one, a run it adds passes the same tests (success, this repository,
+#     a live artifact), and it helps only for a commit whose run is among the latest 100.
+#     A failure to fetch it is logged and the filtered answer stands.
 #
-# Each candidate costs at least one API request, plus one per successful run it has.
+# One line is logged per candidate: what the listing returned, how many of those were
+# successful runs of this repository, and whether one held a live artifact (and, when the
+# latest runs were consulted, the same for what they added). A candidate that did not hit
+# used to leave no trace, which is why the glitch above could only be inferred.
+#
+# Each candidate costs at least one API request, plus one per successful run it has; the
+# latest runs cost one more, once, and only when a candidate has no baseline.
 
 set -uo pipefail
 
@@ -162,6 +179,53 @@ if ! head_sha="$(git rev-parse --verify --quiet "${start}^{commit}")"; then
   miss "Could not resolve '$start' to a commit, so no baseline '$artifact' was looked up. Continuing without one."
 fi
 
+count_lines() { # <text>: how many non-empty lines
+  printf '%s\n' "$1" | awk 'NF { n++ } END { print n + 0 }'
+}
+
+# check_runs <run ids, one per line>: look in each run, in order, for a live artifact. Sets
+# FOUND_RUN to the first run that has one (empty if none does). A run deleted after it was
+# listed is passed over.
+check_runs() {
+  local run_id live
+  FOUND_RUN=""
+  while IFS= read -r run_id; do
+    [ -n "$run_id" ] || continue
+
+    api "repos/$repo/actions/runs/$run_id/artifacts?name=$artifact_enc&per_page=100"
+    case "$API_STATUS" in
+      200) ;;
+      404) continue ;; # the run was deleted after it was listed
+      *) api_failed "list the artifacts of run $run_id" ;;
+    esac
+    live="$(jq --arg name "$artifact" \
+      '[.artifacts[]? | select(.name == $name and (.expired | not))] | length' \
+      <<<"$API_BODY")" || fail "The artifacts of run $run_id were not JSON"
+    if [ "$live" -gt 0 ]; then
+      FOUND_RUN="$run_id"
+      return 0
+    fi
+  done <<<"$1"
+}
+
+# load_recent: the workflow's latest 100 runs, unfiltered, fetched at most once. RECENT_BODY
+# holds them, or RECENT_WHY says why there are none: a failure here is not the lookup's.
+RECENT_TRIED=""
+RECENT_BODY=""
+RECENT_WHY=""
+load_recent() {
+  [ -z "$RECENT_TRIED" ] || return 0
+  RECENT_TRIED=yes
+  api "repos/$repo/actions/workflows/$workflow_enc/runs?per_page=100"
+  if [ "$API_STATUS" != 200 ]; then
+    if [ "$API_STATUS" = 000 ]; then RECENT_WHY="no response"; else RECENT_WHY="HTTP $API_STATUS"; fi
+  elif ! jq -e '.workflow_runs | type == "array"' <<<"$API_BODY" >/dev/null 2>&1; then
+    RECENT_WHY="the answer was not a list of runs"
+  else
+    RECENT_BODY="$API_BODY"
+  fi
+}
+
 tried=0
 while IFS= read -r sha; do
   distance=$tried
@@ -176,37 +240,56 @@ while IFS= read -r sha; do
     *) api_failed "list the runs of workflow '$workflow'" ;;
   esac
 
+  listed="$(jq '.workflow_runs | length' <<<"$API_BODY")" ||
+    fail "The runs of workflow '$workflow' for ${sha:0:7} were not JSON"
   run_ids="$(jq -r --arg repo "$repo" \
     '.workflow_runs[]? | select(.conclusion == "success" and .head_repository.full_name == $repo) | .id' \
     <<<"$API_BODY")" || fail "The runs of workflow '$workflow' for ${sha:0:7} were not JSON"
+  usable="$(count_lines "$run_ids")"
+  line="Candidate ${sha:0:7} ($distance back): the listing returned $(plural "$listed" run), $usable successful from this repository"
 
-  while IFS= read -r run_id; do
-    [ -n "$run_id" ] || continue
+  check_runs "$run_ids"
+  if [ -z "$FOUND_RUN" ]; then
+    line="$line; none holds a live '$artifact'."
+    load_recent
+    if [ -z "$RECENT_BODY" ]; then
+      line="$line The latest runs could not be listed ($RECENT_WHY), so only the filtered listing was used."
+    else
+      # What the latest runs add: this commit's successful runs of this repository that the
+      # filtered listing did not have.
+      extra_ids="$(jq -r --arg repo "$repo" --arg sha "$sha" --arg known "$run_ids" \
+        '($known | split("\n")) as $k
+         | .workflow_runs[]?
+         | select(.head_sha == $sha and .conclusion == "success" and .head_repository.full_name == $repo)
+         | select((.id | tostring) as $id | $k | index($id) | not)
+         | .id' <<<"$RECENT_BODY")" || fail "The latest runs of workflow '$workflow' were not JSON"
+      line="$line The latest runs add $(plural "$(count_lines "$extra_ids")" "such run")"
+      check_runs "$extra_ids"
+      if [ -n "$FOUND_RUN" ]; then
+        line="$line; run $FOUND_RUN holds one."
+      else
+        line="$line; none holds one."
+      fi
+    fi
+  else
+    line="$line; run $FOUND_RUN holds a live '$artifact'."
+  fi
+  echo "$line"
 
-    api "repos/$repo/actions/runs/$run_id/artifacts?name=$artifact_enc&per_page=100"
-    case "$API_STATUS" in
-      200) ;;
-      404) continue ;; # the run was deleted after it was listed
-      *) api_failed "list the artifacts of run $run_id" ;;
-    esac
-    live="$(jq --arg name "$artifact" \
-      '[.artifacts[]? | select(.name == $name and (.expired | not))] | length' \
-      <<<"$API_BODY")" || fail "The artifacts of run $run_id were not JSON"
-    [ "$live" -gt 0 ] || continue
-
+  if [ -n "$FOUND_RUN" ]; then
     {
       echo "found=true"
-      echo "run-id=$run_id"
+      echo "run-id=$FOUND_RUN"
       echo "sha=$sha"
       echo "distance=$distance"
     } >>"$out"
     if [ "$distance" -eq 0 ]; then
-      echo "Baseline '$artifact': run $run_id published it for ${sha:0:7}."
+      echo "Baseline '$artifact': run $FOUND_RUN published it for ${sha:0:7}."
     else
-      echo "::notice::No baseline '$artifact' for ${head_sha:0:7}; using the one for ${sha:0:7}, $(plural "$distance" commit) before it (run $run_id). The deltas also include whatever those commits changed."
+      echo "::notice::No baseline '$artifact' for ${head_sha:0:7}; using the one for ${sha:0:7}, $(plural "$distance" commit) before it (run $FOUND_RUN). The deltas also include whatever those commits changed."
     fi
     exit 0
-  done <<<"$run_ids"
+  fi
 done < <(git rev-list --first-parent --max-count="$limit" "$head_sha")
 
 if [ "$tried" -le 1 ]; then
