@@ -472,8 +472,10 @@ jobs:
       # 2 of 4 in the head, and no diff touches it), and `all-files` shows what it flips, so
       # filtering it has to take it out of the totals, the per-file deltas and the indirect
       # changes alike: that is the filter applied to the downloaded baseline as well as the head.
-      # The gates are off, so only the comparison is in play. P1 is its control (the same reports
-      # and `all-files`, no filter) and names LICENSE.
+      # The gates are off, so only the comparison is in play. P1 is its control for the filter
+      # (`all-files`, no filter, and it names LICENSE); it ran before the second file was added,
+      # so its head report lacks shard-3 and the two differ by that as well, which no assertion
+      # compares across them.
       - name: 'P10. LICENSE filtered out, every file shown'
         id: p10
         uses: ./
@@ -506,10 +508,10 @@ jobs:
           P4: ${{ steps.p4.outcome }}
           P5: ${{ steps.p5.outcome }}
           P6: ${{ steps.p6.outcome }}
-          P10: ${{ steps.p10.outcome }}
           P7: ${{ steps.p7.outcome }}
           P8: ${{ steps.p8.outcome }}
           P9: ${{ steps.p9.outcome }}
+          P10: ${{ steps.p10.outcome }}
           NOBASE_SHA: ${{ steps.nobase.outputs.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PATCH_PERCENT: ${{ steps.p1.outputs.patch-percent }}
@@ -642,9 +644,9 @@ jobs:
             jq -e '.patch_coverage.percent == 40 and .patch_coverage.total == 20' out/p6/coverage.json
           assert "P6: the comment names the file P5 filtered out" grep -qF patch-extra.txt out/p6/coverage.md
 
-          # P10: the filter on the baseline side. Hit or miss is whatever the lookup found (the
-          # same baseline as P1's, which the next step holds to the Actions API); either way it
-          # must be internally sound.
+          # P10: the filter on the baseline side. Hit or miss is whatever the lookup found, which
+          # the next step holds to the Actions API as it does P1's; either way it must be
+          # internally sound.
           check "P10. LICENSE filtered out, every file shown" success "$P10"
           base10=out/p10/baseline/coverage-head.lcov
           head10=out/p10/coverage-head.lcov
@@ -673,7 +675,7 @@ jobs:
             assert "P10: LICENSE is not among the per-file deltas" \
               jq -e '[.project_delta.files[].path] | index("LICENSE") == null' out/p10/coverage.json
             assert "P10: it has no indirect change, though its coverage flips between the reports" \
-              jq -e '(.indirect_changes.newly_covered + .indirect_changes.newly_uncovered) == 0 and ([.indirect_changes.lines[].path] | index("LICENSE") == null)' out/p10/coverage.json
+              jq -e '(.indirect_changes.newly_covered + .indirect_changes.newly_uncovered) == 0 and ([(.indirect_changes.lines // [])[].path] | index("LICENSE") == null)' out/p10/coverage.json
             assert "P10: the comment names nothing from LICENSE" absent LICENSE out/p10/coverage.md
           else
             # Nothing to filter on the baseline side, so the filter is not shown here; the run
@@ -798,6 +800,10 @@ jobs:
 
           MB="$(git merge-base origin/main HEAD)"
           held_to_the_api "P1" pr-paths.yml coverage-baseline "$MB" out/p1/baseline/coverage-head.lcov out/expected-before-p1.txt
+          # P10 looks from the same merge-base later in the run, so the same snapshot bounds it
+          # (a baseline only appears). Without this a P10 that missed while P1 hit would pass on
+          # the weaker miss path, with the baseline side of the filter not shown.
+          held_to_the_api "P10" pr-paths.yml coverage-baseline "$MB" out/p10/baseline/coverage-head.lcov out/expected-before-p1.txt
           # P7's base has no baseline of its own, so a hit is at least one commit back, and a
           # miss means none within reach.
           held_to_the_api "P7" pr-paths.yml coverage-baseline "$NOBASE_SHA" out/p7/baseline/coverage-head.lcov out/expected-before-p7.txt

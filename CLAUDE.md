@@ -37,8 +37,8 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place); `src/ignored.rs` is the file nothing reaches, which F5 excludes and F6 keeps
 - `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
 - `tests/llvm-tool-shim.sh` - Pass-through for `llvm-cov`/`llvm-profdata` that logs each `llvm-profdata merge`; the fat-mode job installs it to assert the profile is merged once (see "One profile merge"; `tests/llvm-tool-shim.test.sh` tests it, with stub tools; `test.yml` runs that)
-- `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the ancestor fallback, the merge-base worktree recompute, `ignore-filename-regex` reaching the comment and the patch gate, and `llvm-cov-ignore-filename-regex` reaching the recompute's report
-- `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on (`extra` adds a second patched file for P5 and P6)
+- `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the ancestor fallback, the merge-base worktree recompute, `ignore-filename-regex` reaching the comment, the patch gate and the baseline side of the comparison (P10), and `llvm-cov-ignore-filename-regex` reaching the recompute's report
+- `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on (`extra` adds a second patched file for P5, P6 and P10's head report)
 - `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
 - `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit; `ignored.rs` is committed unchanged with both, for the filter scenario
 - `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
@@ -1257,24 +1257,31 @@ The action is a composite action with two phases:
     both reports and in no diff, with `all-files: true`, after P6 (so its head report also holds
     `shard-3`'s `patch-extra.txt`), gates off and `comment: false`. On a hit: `total_before` and
     `total_after` equal the coverage of the downloaded baseline and of the head report with
-    `LICENSE`'s records removed (`without_record`, then `lcov-percent.sh`, to 0.02 as the e2e
-    figures are), `LICENSE` is not among the per-file deltas, it has no indirect change though its
+    `LICENSE`'s records removed (`without_record`, then `lcov-percent.sh`, to 0.02, since omni-dev and
+    that script may round differently; these figures are exact), `LICENSE` is not among the per-file deltas, it has no indirect change though its
     coverage flips, and the comment names nothing from it. Two controls keep that from passing for
-    the wrong reason: the same two reports WITH `LICENSE` give other figures, and P1 (the same
-    reports and `all-files`, no filter) names `LICENSE` in its deltas and its comment. On a miss
+    the wrong reason: the same two reports WITH `LICENSE` give other figures, and P1 (`all-files`, no
+    filter) names `LICENSE` in its deltas and its comment (P1 ran before the second file was
+    added, so it is the filter's control and not an otherwise identical run, and nothing compares
+    figures across the two). On a miss
     (the run found no baseline): no `project_delta`, no indirect changes, and the comment says
     there is none; the baseline side cannot be shown there, since there is nothing to filter, and
     "names no LICENSE" is not asserted because an unfiltered comment without a baseline does not
-    name it either (it would pass vacuously). Hit or miss is whatever P10's own lookup found (the
-    same baseline as P1's unless a newer one was published in between), and the baseline it got is
-    checked for being internally sound (`tn_of`, `check_note`). **Checked offline, on real
+    name it either (it would pass vacuously). Hit or miss is whatever P10's own lookup found, held to the Actions API like
+    P1's (`held_to_the_api`, from the same snapshot, so a P10 that missed while P1 hit cannot pass
+    on the weaker path; found in review), and the baseline it got is checked for being internally
+    sound (`tn_of`, `check_note`). **Checked offline, on real
     omni-dev 0.45.0 output** from the real fixtures (`write-pr-fixtures.sh baseline`, `head`,
     `extra`, combined as the action does) in a throwaway repository: the extracted assertions
     pass on the hit path and on the miss path, and fail where they should: with the filter on the
     head only, `total_before` fails; with no filter, `total_before`, `total_after`, the deltas, the
     indirect change and the comment fail. The JSON the assertions read (`project_delta.files[].path`,
-    `indirect_changes.lines[].path`) is omni-dev's, as the diff printed it; not run on a runner
-    when this was written: the pull request's own `PR paths` run is the first.
+    `indirect_changes.lines[].path`) is omni-dev's, as the diff printed it; run on a
+    runner by the pull request that added it (`PR paths`, omni-dev 0.46.0): the hit path, at
+    distance 0 from the merge-base, every new assertion green, which also shows the paths in
+    omni-dev's JSON are repo-relative (`LICENSE`) there and that mawk runs `without_record`. Not
+    run on a runner: the miss path and an ancestor's baseline (the latter is safe: the baseline
+    and head arrays of `write-pr-fixtures.sh` are the same in the older commits that published).
   - The recompute needs a commit that holds a crate, which the pull request's history
     does not, so the job commits `delta-crate`'s base and head itself and passes the
     first as `base-ref`. Its numbers are then the job's own. Unlike the fat-mode crate
