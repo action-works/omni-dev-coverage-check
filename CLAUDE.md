@@ -1250,6 +1250,31 @@ The action is a composite action with two phases:
     which is a vacuous pass (its own tests call that a trap), and a later omni-dev may
     change it. They run after P1 to P4 so those never see the file (their assertions are
     on 10 lines at 80%), and `comment: false` leaves no comment to read back.
+  - **P10 shows `ignore-filename-regex` on the baseline side (#49).** P5 and P6 filter a file
+    only the head has, so even on a hit the downloaded baseline had nothing to drop, and the
+    filter was never shown reaching it (omni-dev tests it upstream; this repo proved only that the
+    right flag and the right `--baseline-report` go together). P10 filters `LICENSE`, which is in
+    both reports and in no diff, with `all-files: true`, after P6 (so its head report also holds
+    `shard-3`'s `patch-extra.txt`), gates off and `comment: false`. On a hit: `total_before` and
+    `total_after` equal the coverage of the downloaded baseline and of the head report with
+    `LICENSE`'s records removed (`without_record`, then `lcov-percent.sh`, to 0.02 as the e2e
+    figures are), `LICENSE` is not among the per-file deltas, it has no indirect change though its
+    coverage flips, and the comment names nothing from it. Two controls keep that from passing for
+    the wrong reason: the same two reports WITH `LICENSE` give other figures, and P1 (the same
+    reports and `all-files`, no filter) names `LICENSE` in its deltas and its comment. On a miss
+    (the run found no baseline): no `project_delta`, no indirect changes, and the comment says
+    there is none; the baseline side cannot be shown there, since there is nothing to filter, and
+    "names no LICENSE" is not asserted because an unfiltered comment without a baseline does not
+    name it either (it would pass vacuously). Hit or miss is whatever P10's own lookup found (the
+    same baseline as P1's unless a newer one was published in between), and the baseline it got is
+    checked for being internally sound (`tn_of`, `check_note`). **Checked offline, on real
+    omni-dev 0.45.0 output** from the real fixtures (`write-pr-fixtures.sh baseline`, `head`,
+    `extra`, combined as the action does) in a throwaway repository: the extracted assertions
+    pass on the hit path and on the miss path, and fail where they should: with the filter on the
+    head only, `total_before` fails; with no filter, `total_before`, `total_after`, the deltas, the
+    indirect change and the comment fail. The JSON the assertions read (`project_delta.files[].path`,
+    `indirect_changes.lines[].path`) is omni-dev's, as the diff printed it; not run on a runner
+    when this was written: the pull request's own `PR paths` run is the first.
   - The recompute needs a commit that holds a crate, which the pull request's history
     does not, so the job commits `delta-crate`'s base and head itself and passes the
     first as `base-ref`. Its numbers are then the job's own. Unlike the fat-mode crate
