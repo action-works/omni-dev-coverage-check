@@ -845,7 +845,7 @@ runs:
       # By run id, so it downloads what the lookup found and nothing else.
       id: baseline
       if: github.event_name == 'pull_request' && steps.baseline-lookup.outputs.found == 'true'
-      uses: dawidd6/action-download-artifact@v21
+      uses: dawidd6/action-download-artifact@v27
       with:
         name: ${{ inputs.baseline-artifact-name }}
         run_id: ${{ steps.baseline-lookup.outputs.run-id }}

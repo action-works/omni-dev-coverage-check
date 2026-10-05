@@ -149,6 +149,59 @@ The action is a composite action with two phases:
     21 lookups per pull-request run, and none finds anything), and why the depth is a bound.
   - The recompute stays the last resort and runs only when nothing is in reach, so the
     `recompute` job of `pr-paths.yml` turns the walk off: its synthetic base has none.
+- **The pinned actions, and how they are kept current (#58).** `dawidd6/action-download-artifact`
+  is pinned `@v27` (it was `@v21`): since #5 the action passes `run_id`, and v24, v25 and v27 changed
+  what runs only when `run_id` is NOT given (run selection, #57's index glitch); what could touch
+  this path is v22's expired-artifact handling, v23's rewrite of the download and the dependency
+  bumps. Checked, not assumed (found in review): v27's `action.yml` has every input this step
+  passes (`name`, `run_id`, `path`, `if_no_artifact_found`), `github_token` defaults to
+  `github.token`, it runs on `node24` as v21 did, and the real v21 and v27 `main.js` run against the
+  real `coverage-baseline` artifact both leave `baseline/coverage-head.lcov` directly in `path`
+  (no `<name>/` subdirectory, which is what the diff step reads). A wrong artifact name is a
+  warning and exit 0 in both; a bad `run_id` is a 404 in both. What v27 adds and nothing here
+  reads: it checks the artifact's digest, and a mismatch is a hard failure that `warn` does not
+  cover, `found_artifact` is set after the download, and the `dry_run` output is gone. On a
+  runner, the pull request that made the bump showed `dawidd6@v27` ending in "Artifact download
+  completed successfully" on a baseline the lookup found (`pr-paths.yml` and `e2e-sharded.yml`
+  download one by run id when the merge-base has one; the lookup's own message is `published it
+  for`, which says the lookup hit, and the download's is the "completed" line).
+  - **Pins as of 2026-10-05, from each repository's latest release, so the next reader can see
+    the distance:** `actions/checkout@v4` (latest v7; 22 uses), `actions/cache@v4` (v6; the one
+    in `action.yml`, so it is the one callers run), `actions/download-artifact@v8` (v8),
+    `actions/upload-artifact@v7` (v7), `dawidd6/action-download-artifact@v27` (v27),
+    `marocchino/sticky-pull-request-comment@v3` (v3), `codecov/codecov-action@v7` (v7),
+    `Swatinem/rust-cache@v2` (v2), `taiki-e/install-action@v2` (v2) and `@cargo-llvm-cov` (a tag
+    that names a tool, not a version), `dtolnay/rust-toolchain@stable` (a branch; the repository's
+    releases are `v1`). `actions/checkout` and `actions/cache` are the stale ones; they were left,
+    because a major bump of the tools every job runs is a change of its own that needs the whole
+    matrix, not a rider on this one. `action-works/omni-dev-commit-check@v1` is the sibling
+    action, not a third party.
+  - **Dependabot would read all of it: verified from its source** (`dependabot-core`,
+    `github_actions/file_fetcher.rb`): with `directory: "/"` it fetches the root `action.yml` and
+    `action.yaml` AND `.github/workflows/*.yml` (not recursively), so the pins inside the composite
+    action are covered, which the issue could not tell from the docs. A ref that is not a version
+    (`@stable`, `@cargo-llvm-cov`) gives it nothing to update.
+  - **Not enabled, and why (the question is open on #58).** There is no `.github/dependabot.yml`,
+    and one was not added unattended: it makes a bot open pull requests on this repository on a
+    schedule, and one thing needs a person's call first. Its commit messages must pass the
+    required `Validate Commit Messages`, and the default does not: it infers the type from the last
+    100 commits (`chore` if one starts with `chore` and none with `build`, else `build`), both
+    allowed here, but the scope is `deps`, and the project's scopes are `action`, `docs` and `ci`
+    (`.omni-dev/scopes.yaml`; "Scopes" is an error-severity rule). So it needs
+    `commit-message.prefix`, and one prefix cannot be right for both places it edits: `ci(ci)` for
+    a workflow, `ci(action)` for `actions/cache` in `action.yml`, where an accuracy rule may
+    object. Nothing here could run the linter on a bot's message to see, and the lint checks each
+    commit, so a bad one cannot be fixed afterwards (the admin bypass exists). A config that
+    would do: `github-actions`, `directory: "/"`, `schedule.interval: weekly`,
+    `open-pull-requests-limit: 2` (two pins are stale today, so the first run opens two),
+    `commit-message.prefix: "ci(ci)"`. What a Dependabot pull request meets, from the workflows as
+    written: its `GITHUB_TOKEN` is read-only; the `pull-request` jobs of `pr-paths.yml` and
+    `e2e-sharded.yml` skip it (`github.actor != 'dependabot[bot]'`; their other jobs, the
+    recompute and the shards, still run, as those workflows' comments say, and neither workflow is
+    a required check); and `Shell scripts` and `ci-gate` need no write permission, so only the
+    commit message is in doubt. Until it is enabled, a pin is bumped by hand: look at the table
+    above when a release of this action is cut, and when a runner prints the Node.js deprecation
+    notice for an action.
 - **The recompute removes its worktree (#78)**: "Compute baseline from merge-base (fallback)"
   builds at `../base` and removes it when the step ends, so a second run of the action in one job
   after a recompute finds none (it used to stop at `git worktree add` with `'../base' already
@@ -1326,8 +1379,9 @@ The action is a composite action with two phases:
       (`-nomatch\.txt, ^LICENSE$`), which would have made the second pattern ` ^LICENSE$`. 8d is
       8a's patterns as a YAML `|` block, the likeliest way to get it wrong: that its trailing
       newline survives `with:`, the input and the step's `env:` is what the unit test cannot show,
-      since it sets the variable itself (a review could not verify it either), and a runner that
-      trimmed it would turn 8d red. 8a is the control of both (only the space, or the block,
+      since it sets the variable itself. Observed on a runner (the pull request that added it,
+      both legs): 8d was refused, so the block's trailing newline does reach the step; a runner
+      that trimmed it would have turned 8d red. 8a is the control of both (only the space, or the block,
       differs). Each must fail, and no combined report may exist (`out/refused.lcov`,
       `out/refused-block.lcov`: the first step stopped it, a refusal anywhere later would leave
       one), and `failure-messages` asserts from the
