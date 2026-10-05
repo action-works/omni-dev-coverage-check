@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034 # `status` is the sourcing step's: set here, read there
-# Assertion helpers for the e2e-sharded workflow's checking steps. Source it
-# after `status=0`; a failed check or assert sets `status=1` in the caller, which
-# ends its step with `exit "$status"` so every failure is reported, not just the
-# first. tests/assert-lib.test.sh tests it.
+# Assertion helpers for the checking steps of integration.yml, pr-paths.yml and
+# e2e-sharded.yml. Source it after `status=0`; a failed check or assert sets
+# `status=1` in the caller, which ends its step with `exit "$status"` so every
+# failure is reported, not just the first. tests/assert-lib.test.sh tests it.
 #
-# Why this is a file and not inlined in each step, as pr-paths.yml does: the
-# workflow has three checking steps that need the same helpers, and what the
-# numeric ones do with a missing value decides whether a gate's assertion can
-# pass vacuously, so there is one copy to get right.
+# Why this is a file and not inlined in each step: fifteen checking steps need the
+# same helpers (integration.yml and pr-paths.yml each carried a copy of `check` per
+# step, thirteen of them, until #50), and what the numeric ones do with a missing
+# value decides whether a gate's assertion can pass vacuously, so there is one copy
+# to get right.
 #
 # The fixture helpers read the declaration lines of the fixture crate, because the
 # FN records of an lcov carry hash-suffixed mangled names. `fixture` can be set
@@ -20,7 +21,7 @@ check() { # <label> <expected> <actual>
   if [ "$2" = "$3" ]; then
     echo "ok   - $1"
   else
-    echo "::error::$1: expected $2, got $3"
+    echo "::error::$1: expected '$2', got '$3'"
     status=1
   fi
 }

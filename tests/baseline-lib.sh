@@ -2,9 +2,9 @@
 # shellcheck disable=SC2034 # `status` is the sourcing step's: set here, read there
 # Helpers for holding the baseline lookup to what it should have found, shared by
 # pr-paths.yml and e2e-sharded.yml. Source it in a checking step that has `status`,
-# `check` and `assert` (the second workflow gets them from tests/assert-lib.sh, the first
-# defines them inline): a failed check sets `status=1` in the caller, which ends its step
-# with `exit "$status"`. tests/baseline-lib.test.sh tests it.
+# `check` and `assert` (both workflows get them from tests/assert-lib.sh): a failed
+# check sets `status=1` in the caller, which ends its step with `exit "$status"`.
+# tests/baseline-lib.test.sh tests it.
 #
 # A pull request's baseline is the merge-base's own, or the nearest first-parent ancestor's
 # that has one (`baseline-ancestor-depth`). Every record of a published baseline names the
