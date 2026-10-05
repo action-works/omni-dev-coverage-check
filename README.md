@@ -294,8 +294,10 @@ job and the 60-requests-an-hour limit on unauthenticated calls from a shared run
 configuration: the token defaults to the workflow's. A refusal (401, 403 or 429: a bad token, a spent limit, which can
 last up to an hour) is not retried, since asking again cannot change it. When the API gives no release, the step reads
 the release from the redirect of `github.com/rust-works/omni-dev/releases/latest` instead, which draws on no API quota,
-and logs a warning saying so, with the API's reason. It fails only if that fails too, and the error names both. (The API lookup needs `jq`, which GitHub-hosted runners
-have; a runner without it fails first, saying so.)
+and logs a warning saying so, with the API's reason. It fails only if that fails too, and the error names both. (The step reads the API's answer with `jq`, which
+GitHub-hosted runners have. On a runner without it the API is not asked: the step goes straight to the redirect and
+logs a warning that names `jq`, and the error, if the redirect fails too, says the API was not asked. Install `jq`
+to use the API.)
 A pinned `version` makes no request, and may be written as a release tag is, with a leading `v`: `v0.45.0` and
 `0.45.0` give the same `version` (`0.45.0`) and `release-tag` (`v0.45.0`) outputs and share one cache entry. A
 capital `V` is accepted the same way (`V0.45.0`), and `release-tag` stays lowercase. Only one leading character is

@@ -10,7 +10,7 @@
 # retries and their delays, what is retried and what is not (a 401, 403 or 429 is an
 # answer retrying cannot change and goes straight to the redirect, #62), the timeouts
 # that let a hung connection be retried, a
-# runner with no jq, and that a pinned version never touches the network and loses a
+# runner with no jq (which skips the API and asks the redirect, #63), and that a pinned version never touches the network and loses a
 # leading v (#38) or V, and that one with nothing left after it, or empty, fails with a
 # message instead (#51). A spent limit can outlast those attempts, so when all three fail the
 # step reads the tag from the github.com releases/latest redirect instead (#40). This
@@ -98,7 +98,8 @@ RATE_LIMITED='{"message":"API rate limit exceeded for 10.0.0.1. (But here'"'"'s 
 # A refusal the API gives is final (#62), so a retried failure needs a status that is not one: 502.
 SERVER_ERROR='@502@{"message":"Server Error"}'
 
-# run_resolve <version> <token> [response...]: runs the step as the runner would,
+# run_resolve <version> <token> [response...]: runs the step as the runner would (on the PATH in
+# RESOLVE_PATH when a case sets it, as the no-jq cases do),
 # with `VERSION` and `GH_TOKEN` set to <version> and <token> as the step's `env:` does,
 # and the responses replayed one per curl call. Sets STATUS (the step's exit status), OUT (the contents of its $GITHUB_OUTPUT),
 # LOG (what it printed), CALLS (curl calls made), CURLS (their arguments) and SLEEPS
@@ -114,8 +115,8 @@ run_resolve() {
     i=$((i + 1))
     printf '%s' "$response" >"$dir/response.$i"
   done
-  PATH="$BIN:$PATH" CASE_DIR="$dir" GITHUB_OUTPUT="$dir/output" VERSION="$version" GH_TOKEN="$token" \
-    bash --noprofile --norc -eo pipefail -c "$RESOLVE" >"$dir/log" 2>&1
+  PATH="${RESOLVE_PATH:-$BIN:$PATH}" CASE_DIR="$dir" GITHUB_OUTPUT="$dir/output" VERSION="$version" GH_TOKEN="$token" \
+    "$BASH" --noprofile --norc -eo pipefail -c "$RESOLVE" >"$dir/log" 2>&1
   STATUS=$?
   OUT="$(cat "$dir/output")"
   LOG="$(cat "$dir/log")"
@@ -459,6 +460,13 @@ has "redirect: the warning offers the ways out, since the job passed on a failin
   "or set 'version' to a release to skip the lookup."
 lacks "redirect: no error is raised" "$LOG" "::error::"
 lacks "redirect: the token is not printed" "$LOG" "SENTINEL"
+# The whole text of the warning and of the error, with jq: #63 made their tails depend on whether
+# the API was asked, and a caller whose API answers must read what it always did.
+has "redirect: the whole warning, as it was before the API could be skipped (#63)" "$LOG" \
+  "::warning::The GitHub API gave no release after 3 attempts (API: Server Error), so latest omni-dev was resolved from the github.com releases/latest redirect instead: v0.46.1. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" '!7'
+has "redirect fails: the whole error, as it was before the API could be skipped (#63)" "$LOG" \
+  "::error::Could not determine latest omni-dev version. The GitHub API gave no release after 3 attempts (API: Server Error) and the github.com releases/latest redirect gave no release tag (HTTP 000). If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
 
 call="$(call_args 4)"
 call_present "redirect: it asks the releases/latest page" "$call" \
@@ -689,23 +697,100 @@ expect_retry "not JSON" '<html>502 Bad Gateway</html>' "unknown error"
 expect_retry "no tag_name" '{}' "no tag_name in response"
 expect_retry "null tag_name" '{"tag_name":null}' "no tag_name in response"
 
-# --- a runner with no jq ------------------------------------------------------
+# --- a runner with no jq (#63) -----------------------------------------------
 
-# The step's jq calls hide their errors, so without a guard a missing jq looks like
-# a rate limit: three retries, then advice about the token. The guard runs before
-# any call, so the step needs nothing on PATH but the shell itself; an empty
-# directory stands in for a runner that lacks jq.
-nojq="$WORK/nojq"
-mkdir "$nojq"
-dir="$(mktemp -d "$WORK/case.XXXXXX")"
-: >"$dir/output"
-LOG="$(PATH="$nojq" GITHUB_OUTPUT="$dir/output" VERSION=latest GH_TOKEN="$TOKEN" "$BASH" --noprofile --norc -eo pipefail -c "$RESOLVE" 2>&1)"
-STATUS=$?
-eq "no jq: the step fails" 1 "$STATUS"
-has "no jq: the error says jq is missing" "$LOG" "::error::jq is required to resolve 'version: latest'"
-has "no jq: the error offers pinning" "$LOG" "set 'version' to a release to skip the lookup"
-lacks "no jq: it is not mistaken for a rate limit" "$LOG" "::warning::"
-eq "no jq: it wrote no version" "" "$(cat "$dir/output")"
+# The step's jq calls hide their errors, so a missing jq used to look like a rate limit: three
+# retries, then advice about the token. It was a hard failure first, before any request, and is now
+# a skipped API: no attempt and no sleep, and the redirect, which needs only curl and bash, answers
+# in its place with a warning that names jq. The runner here has everything the step and the stub
+# curl use and no jq; one directory of links stands in for it.
+NOJQ_BIN="$WORK/nojq-bin"
+mkdir "$NOJQ_BIN"
+for tool in env bash grep cat; do
+  ln -s "$(command -v "$tool")" "$NOJQ_BIN/$tool"
+done
+ln -s "$BIN/curl" "$NOJQ_BIN/curl"
+ln -s "$BIN/sleep" "$NOJQ_BIN/sleep"
+if PATH="$NOJQ_BIN" command -v jq >/dev/null 2>&1; then
+  bad "fixture: the no-jq PATH has no jq" "it found one"
+else
+  ok "fixture: the no-jq PATH has no jq"
+fi
+if PATH="$NOJQ_BIN" command -v curl >/dev/null 2>&1; then ok "fixture: it has the stub curl"; else bad "fixture: it has the stub curl" "none"; fi
+
+RESOLVE_PATH="$NOJQ_BIN" run_resolve latest "$TOKEN" "302 $TAG_URL/v0.46.1"
+eq "no jq: the step succeeds, from the redirect" 0 "$STATUS"
+eq "no jq: it resolves the tag in the Location" "version=0.46.1
+release-tag=v0.46.1" "$OUT"
+eq "no jq: the API is not asked: one request, the redirect" 1 "$CALLS"
+call_present "no jq: that request is for the releases/latest page" "$(call_args 1)" \
+  "https://github.com/rust-works/omni-dev/releases/latest"
+lacks "no jq: nothing was sent to api.github.com" "$CURLS" "api.github.com"
+eq "no jq: it never waits" "" "$SLEEPS"
+eq "no jq: one warning, and no attempt is warned about" 1 "$(grep -c '^::warning::' <<<"$LOG")"
+lacks "no jq: ... which is not an attempt" "$LOG" "Attempt"
+has "no jq: the warning names jq, and says the API was not asked" "$LOG" \
+  "::warning::The GitHub API was not asked (jq, which reads its answer, was not found on PATH), so latest omni-dev was resolved from the github.com releases/latest redirect instead: v0.46.1."
+has "no jq: and says how to get the API back, or to pin" "$LOG" \
+  "Install jq so the API can be asked, or set 'version' to a release to skip the lookup."
+lacks "no jq: it does not send the caller after the token, which was never used" "$LOG" "github-token"
+lacks "no jq: it is not mistaken for a rate limit" "$LOG" "rate limit"
+lacks "no jq: no error" "$LOG" "::error::"
+lacks "no jq: the token is not printed" "$LOG" "SENTINEL"
+lacks "no jq: the old guard's message is gone" "$LOG" "jq is required"
+# The redirect is still asked as before: the same request, with no token, not followed.
+call="$(call_args 1)"
+call_after "no jq: the redirect asks for the status and the Location" "$call" -w '%{http_code} %{redirect_url}'
+call_after "no jq: and keeps the page itself" "$call" -o /dev/null
+lacks "no jq: and sends no token to github.com" "$call" "Authorization"
+
+# The same step, the same answer, with jq: the control. The API asked, its tag taken, nothing
+# said about jq (the stub curl's API answer is the first response, the redirect is never asked).
+run_resolve latest "$TOKEN" '{"tag_name":"v0.46.1"}'
+eq "no jq's control, with jq: the step succeeds from the API" 0 "$STATUS"
+eq "no jq's control: the API was asked" 1 "$(grep -c 'api.github.com' <<<"$CURLS")"
+eq "no jq's control: no warning" 0 "$(grep -c '^::warning::' <<<"$LOG" || true)"
+lacks "no jq's control: nothing about jq" "$LOG" "jq"
+
+# With no jq and a redirect that gives no release tag, the one error says why the API was not
+# asked and gives both ways out, and the redirect's own shape check is the same as ever.
+expect_nojq_failure() { # <name> <redirect response> <what the error says the redirect gave>
+  RESOLVE_PATH="$NOJQ_BIN" run_resolve latest "$TOKEN" "$2"
+  eq "no jq, $1: the step fails" 1 "$STATUS"
+  eq "no jq, $1: one request, the redirect, and no API call" 1 "$CALLS"
+  eq "no jq, $1: it never waits" "" "$SLEEPS"
+  eq "no jq, $1: it wrote no version" "" "$OUT"
+  has "no jq, $1: the error says the API was not asked because jq is missing, and what the redirect gave" "$LOG" \
+    "::error::Could not determine latest omni-dev version. The GitHub API was not asked (jq, which reads its answer, was not found on PATH) and the github.com releases/latest redirect gave no release tag ($3)."
+  has "no jq, $1: it gives both ways out" "$LOG" "Install jq so the API can be asked, or set 'version' to a release to skip the lookup."
+  lacks "no jq, $1: it does not tell the caller to check a rate limit or the token" "$LOG" "rate limit"
+  lacks "no jq, $1: it does not say the redirect answered" "$LOG" "was resolved from"
+  lacks "no jq, $1: the token is not printed" "$LOG" "SENTINEL"
+}
+expect_nojq_failure "curl cannot connect" '!7' "HTTP 000"
+expect_nojq_failure "the page is served, not redirected" '200 ' "HTTP 200"
+expect_nojq_failure "github.com throttles it" '429 ' "HTTP 429"
+expect_nojq_failure "a login page" "302 https://github.com/login?return_to=%2Frust-works%2Fomni-dev%2Freleases%2Flatest" "HTTP 302 to https://github.com/login?return_to=%2Frust-works%2Fomni-dev%2Freleases%2Flatest"
+expect_nojq_failure "another repository" "302 https://github.com/someone-else/omni-dev/releases/tag/v0.46.1" "HTTP 302 to https://github.com/someone-else/omni-dev/releases/tag/v0.46.1"
+expect_nojq_failure "a tag that is not a version" "302 $TAG_URL/nightly" "HTTP 302 to $TAG_URL/nightly"
+expect_nojq_failure "build metadata in the tag" "302 $TAG_URL/v1.2.3+meta" "HTTP 302 to $TAG_URL/v1.2.3+meta"
+
+# A pinned version needs neither the API nor jq, so a runner without it is as it always was.
+RESOLVE_PATH="$NOJQ_BIN" run_resolve 0.45.0 "$TOKEN"
+eq "no jq, pinned: the step succeeds" 0 "$STATUS"
+eq "no jq, pinned: no request" 0 "$CALLS"
+eq "no jq, pinned: the version is the one given" "version=0.45.0
+release-tag=v0.45.0" "$OUT"
+lacks "no jq, pinned: nothing said about jq" "$LOG" "jq"
+
+# jq counts as missing only when it is not on PATH: one that is somewhere else is not found by
+# `command -v`, and one that is on PATH but is not executable is not found either.
+mkdir "$WORK/elsewhere"
+ln -s "$(command -v jq)" "$WORK/elsewhere/jq"
+RESOLVE_PATH="$NOJQ_BIN" run_resolve latest "$TOKEN" "302 $TAG_URL/v0.46.1"
+eq "jq elsewhere than PATH is no jq: the API is not asked" 0 "$(grep -c 'api.github.com' <<<"$CURLS" || true)"
+RESOLVE_PATH="$NOJQ_BIN:$WORK/elsewhere" run_resolve latest "$TOKEN" '{"tag_name":"v0.46.1"}'
+eq "jq on PATH, the control: the API is asked" 1 "$(grep -c 'api.github.com' <<<"$CURLS")"
 
 # --- the wiring around the script --------------------------------------------
 
