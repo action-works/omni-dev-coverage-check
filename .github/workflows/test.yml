@@ -100,6 +100,12 @@ jobs:
       - name: Test the merge queue's workflow wiring and ci-gate.sh
         run: bash tests/merge-queue.test.sh
 
+      # Dependabot's commit messages must pass the required commit check, and one cannot be
+      # fixed after the bot has written it (#58): the config's prefix is held to the
+      # project's types and scopes and to the subject length.
+      - name: Test the Dependabot config
+        run: bash tests/dependabot-config.test.sh
+
       # Not a lint of the scripts, but it needs no setup and belongs on every pull
       # request: it fails when action.yml (or a script it ships) passes omni-dev a
       # flag omni-dev has deprecated, before a major release removes it.
