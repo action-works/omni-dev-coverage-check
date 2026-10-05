@@ -9,7 +9,8 @@
 #   1. tests/ci-gate.sh, the script the `ci-gate` job runs: red unless every job it needs
 #      succeeded, `skipped` included (GitHub counts a skipped required check as passing).
 #   2. The wiring in .github/workflows: `ci-gate` needs every other job of
-#      integration.yml; it runs `if: always()` and reads its results through `env:`; the
+#      integration.yml, and `failure-messages` every job but those two (#105); `ci-gate`
+#      runs `if: always()` and reads its results through `env:`; the
 #      three workflows a required check comes from run on `merge_group` (without it the
 #      check never reports for the queue's commit and the pull request waits forever); the
 #      two path-filtered ones do not (CLAUDE.md: never required); and the required checks'
@@ -203,7 +204,7 @@ triggers_of() {
 # wiring_problems <directory of the workflows>: one line per problem, nothing if there is
 # none.
 wiring_problems() {
-  local dir=$1 integration="$1/integration.yml" err="$WORK/reader.err" jobs needs job block events wf
+  local dir=$1 integration="$1/integration.yml" err="$WORK/reader.err" jobs needs fm_needs job block events wf
 
   if ! jobs="$(jobs_of "$integration" 2>"$err")"; then
     echo "cannot read the jobs of integration.yml: $(<"$err")"
@@ -219,6 +220,25 @@ wiring_problems() {
       [ -n "$job" ] || continue
       grep -Fxq -- "$job" <<<"$jobs" || echo "ci-gate needs a job that does not exist: $job"
     done <<<"$needs"
+
+    # failure-messages reads the finished log of every job through the API, and its deprecation
+    # step reads EVERY job that finished green, so a job missing from its `needs` can still be
+    # running when it reads, and it would assert on a log that is not finished (#105). It needs
+    # everything but itself and ci-gate, which waits for it: needing ci-gate would be a cycle.
+    if ! fm_needs="$(job_needs "$integration" failure-messages 2>"$err")"; then
+      echo "cannot read the needs of failure-messages: $(<"$err")"
+    else
+      while IFS= read -r job; do
+        case "$job" in ci-gate | failure-messages) continue ;; esac
+        grep -Fxq -- "$job" <<<"$fm_needs" || echo "failure-messages does not need: $job"
+      done <<<"$jobs"
+      while IFS= read -r job; do
+        [ -n "$job" ] || continue
+        grep -Fxq -- "$job" <<<"$jobs" || echo "failure-messages needs a job that does not exist: $job"
+        [ "$job" != ci-gate ] || echo "failure-messages needs ci-gate, which needs it: a cycle"
+        [ "$job" != failure-messages ] || echo "failure-messages needs itself"
+      done <<<"$fm_needs"
+    fi
 
     # A job-level `continue-on-error` lets a red job report `success`, which passes the gate;
     # a job-level `if:` can make it `skipped`, which turns the gate red on every run it
@@ -332,6 +352,38 @@ mutate "a need dropped (failure-messages)" integration.yml \
 mutate "a job added after ci-gate that it does not need" integration.yml \
   '{ print } END { print ""; print "  brand-new-job:"; print "    needs:"; print "      - thin-mode"; print "    runs-on: ubuntu-latest"; print "    steps: []" }' \
   "ci-gate does not need: brand-new-job"
+# failure-messages' own list (#105), scoped to its block as ci-gate's edits are to ci-gate's.
+mutate "failure-messages: a need dropped (guard-flag)" integration.yml \
+  "$IN_JOB"' cur == "failure-messages" && /^      - guard-flag$/ { next } { print }' "failure-messages does not need: guard-flag"
+mutate "failure-messages: the first need dropped (thin-mode)" integration.yml \
+  "$IN_JOB"' cur == "failure-messages" && /^      - thin-mode$/ { next } { print }' "failure-messages does not need: thin-mode"
+mutate "failure-messages: the last need dropped (deprecation-control)" integration.yml \
+  "$IN_JOB"' cur == "failure-messages" && /^      - deprecation-control$/ { next } { print }' "failure-messages does not need: deprecation-control"
+mutate "failure-messages: a need that is not a job" integration.yml \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - not-a-job" }' \
+  "failure-messages needs a job that does not exist: not-a-job"
+# A bogus name that is a substring of a real job is still a name that is no job (a `grep -F` without
+# `-x` would find `thin` inside `thin-mode`).
+mutate "failure-messages: a need that is only a substring of a job" integration.yml \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - thin" }' \
+  "failure-messages needs a job that does not exist: thin"
+mutate "failure-messages: a job added after it that it does not need" integration.yml \
+  '{ print } END { print ""; print "  brand-new-job:"; print "    needs:"; print "      - thin-mode"; print "    runs-on: ubuntu-latest"; print "    steps: []" }' \
+  "failure-messages does not need: brand-new-job"
+mutate "failure-messages: it needs ci-gate, a cycle" integration.yml \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - ci-gate" }' \
+  "failure-messages needs ci-gate, which needs it: a cycle"
+mutate "failure-messages: it needs itself" integration.yml \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - failure-messages" }' \
+  "failure-messages needs itself"
+mutate "failure-messages: no needs at all" integration.yml \
+  "$IN_JOB"' cur == "failure-messages" && /^    needs:[ \t]*$/ { skip = 1; next } skip && /^      - / { next } { skip = 0; print }' \
+  "failure-messages does not need: thin-mode"
+# With no list at all, only the jobs it lacks are named: no phantom empty name for the list's absence.
+eq "failure-messages: no needs at all: no empty name is reported as a job that does not exist" 0 \
+  "$(wiring_problems "$WORK/mutant-$mutant" | grep -c 'failure-messages needs a job that does not exist' || true)"
+mutate "failure-messages: renamed, so the job is not there" integration.yml \
+  '$0 == "  failure-messages:" { print "  messages:"; next } { print }' "cannot read the needs of failure-messages"
 mutate "a need that is not a job" integration.yml \
   "$IN_JOB"' { print } cur == "ci-gate" && /^      - failure-messages$/ { print "      - not-a-job" }' \
   "ci-gate needs a job that does not exist: not-a-job"
@@ -371,6 +423,9 @@ mutate "Validate Commit Messages renamed" commit-check.yml \
 mutate "a flow-style needs: is refused" integration.yml \
   "$IN_JOB"' cur == "ci-gate" && /^    needs:[ \t]*$/ { print "    needs: [thin-mode]"; skip = 1; next } skip && /^      - / { next } { skip = 0; print }' \
   "cannot read the needs of ci-gate"
+mutate "failure-messages: a flow-style needs: is refused" integration.yml \
+  "$IN_JOB"' cur == "failure-messages" && /^    needs:[ \t]*$/ { print "    needs: [thin-mode]"; skip = 1; next } skip && /^      - / { next } { skip = 0; print }' \
+  "cannot read the needs of failure-messages"
 mutate "a flow-style on: is refused" test.yml '/^on:[ \t]*$/ { print "on: [push, pull_request]"; skip = 1; next } skip && /^  / { next } /^[^ \t]/ { skip = 0 } { print }' \
   "cannot read the triggers of test.yml"
 
