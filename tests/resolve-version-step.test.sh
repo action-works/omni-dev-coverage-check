@@ -783,14 +783,34 @@ eq "no jq, pinned: the version is the one given" "version=0.45.0
 release-tag=v0.45.0" "$OUT"
 lacks "no jq, pinned: nothing said about jq" "$LOG" "jq"
 
-# jq counts as missing only when it is not on PATH: one that is somewhere else is not found by
-# `command -v`, and one that is on PATH but is not executable is not found either.
-mkdir "$WORK/elsewhere"
-ln -s "$(command -v jq)" "$WORK/elsewhere/jq"
-RESOLVE_PATH="$NOJQ_BIN" run_resolve latest "$TOKEN" "302 $TAG_URL/v0.46.1"
-eq "jq elsewhere than PATH is no jq: the API is not asked" 0 "$(grep -c 'api.github.com' <<<"$CURLS" || true)"
-RESOLVE_PATH="$NOJQ_BIN:$WORK/elsewhere" run_resolve latest "$TOKEN" '{"tag_name":"v0.46.1"}'
-eq "jq on PATH, the control: the API is asked" 1 "$(grep -c 'api.github.com' <<<"$CURLS")"
+# jq is found the way `command -v` finds it, on PATH: the same step with the links' directory and
+# one holding a jq asks the API, as the control for every no-jq case above. (A file named jq that is
+# on PATH but cannot run is found too, and fails as it did before #63: three attempts, then the
+# token advice. That is outside this change and not tested.)
+mkdir "$WORK/with-jq"
+ln -s "$(command -v jq)" "$WORK/with-jq/jq"
+RESOLVE_PATH="$NOJQ_BIN:$WORK/with-jq" run_resolve latest "$TOKEN" '{"tag_name":"v0.46.1"}'
+eq "jq on PATH, the control: the step succeeds from the API" 0 "$STATUS"
+eq "jq on PATH, the control: the API is asked, once" 1 "$(grep -c 'api.github.com' <<<"$CURLS")"
+eq "jq on PATH, the control: it resolves the API's tag" "version=0.46.1
+release-tag=v0.46.1" "$OUT"
+eq "jq on PATH, the control: no warning" 0 "$(grep -c '^::warning::' <<<"$LOG" || true)"
+
+# The step starts from nothing: a RELEASE_TAG or a `refused` the job's environment happens to hold
+# is not an answer. With no jq the loop never runs, so only the initialisation stops a stale
+# RELEASE_TAG from being taken as the resolved release; and with jq, a stale `refused` would make
+# a failing API read as a refusal that did not happen.
+RELEASE_TAG=v9.9.9 refused=401 RESOLVE_PATH="$NOJQ_BIN" run_resolve latest "$TOKEN" "302 $TAG_URL/v0.46.1"
+eq "a stale RELEASE_TAG in the environment: the redirect's tag is the one resolved" "version=0.46.1
+release-tag=v0.46.1" "$OUT"
+RELEASE_TAG=v9.9.9 refused=401 RESOLVE_PATH="$NOJQ_BIN" run_resolve latest "$TOKEN" '!7'
+eq "a stale RELEASE_TAG in the environment: with the redirect failing, it is an error and not v9.9.9" 1 "$STATUS"
+RELEASE_TAG=v9.9.9 refused=401 run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "302 $TAG_URL/v0.46.1"
+eq "a stale RELEASE_TAG in the environment, with jq: the redirect's tag is the one resolved" "version=0.46.1
+release-tag=v0.46.1" "$OUT"
+has "a stale refused in the environment, with jq: the API's failure is the retried one" "$LOG" \
+  "::warning::The GitHub API gave no release after 3 attempts (API: Server Error), so latest omni-dev"
+lacks "a stale refused in the environment, with jq: no refusal is named" "$LOG" "refused the request"
 
 # --- the wiring around the script --------------------------------------------
 

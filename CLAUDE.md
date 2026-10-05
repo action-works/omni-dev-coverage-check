@@ -18,7 +18,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/download-step.test.sh` - Runs the "Download pre-built binary" script read out of `action.yml` against a stub `curl` that serves a tarball and a zip with the layout of the real release assets, and a stub `find` that lists in either order, with `HOME` and every `/tmp` in the script pointed at a directory of the case's own: the file left at `~/.cargo/bin/omni-dev` is the right one, by content, and executable, and an archive with no `omni-dev.exe` fails with a message (`test.yml` runs that)
 - `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
 - `tests/print-version-step.test.sh` - Runs the "Print omni-dev version" script read out of `action.yml` against a stub `omni-dev` that replays the captured loader output in `tests/fixtures/omni-dev-loader/` and a stub `getconf`: the glibc the binary needs, the one the runner has and the two ways out (`test.yml` runs that)
-- `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
+- `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep`, and, for a runner with no `jq`, on a PATH of links that holds neither `jq` nor anything else the step does not use (`test.yml` runs that)
 - `tests/recompute-worktree.test.sh` - Runs the "Compute baseline from merge-base (fallback)" script read out of `action.yml` with the real `git` in a throwaway repository against a stub `cargo` that can fail, and checks what is on disk afterwards: the `../base` worktree is gone after a recompute and after a failing one, a second recompute in the same workspace succeeds and writes the same baseline, a leftover worktree is cleared, and a plain directory named `base` is kept (`test.yml` runs that)
 - `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the `ignore-filename-regex` check, the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
 - `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` or of a workflow in `.github/workflows/` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
@@ -860,10 +860,16 @@ The action is a composite action with two phases:
         redirect that fails in seven shapes (a refused connection, a page served, a throttle, a login
         page, another repository, a tag that is not a version, build metadata) gives the one error
         that says the API was not asked and offers both ways out; a pinned version with no jq makes no
-        request; a jq that is somewhere else than PATH counts as none. Mutations checked, each failing
-        at least one case: the flag never set, no break, the old hard failure back, the warning not
-        naming jq, the token advice or `If this is a rate limit` for no jq, either way out missing from
-        the error, and the order of the `no_jq` and `refused` tests.
+        request; a stale RELEASE_TAG or `refused` in the job's environment is not taken for an answer
+        (`RELEASE_TAG=""` and `refused=""` moved above the jq check, and nothing pinned them until
+        the review found the mutant surviving). Mutations checked, each failing at least one case:
+        the flag never set, no break, the old hard failure back, the warning not naming jq, the
+        token advice or `If this is a rate limit` for no jq, either way out missing from the error,
+        either initialisation dropped, and the with-jq tails reworded. The order of the `no_jq` and
+        `refused` branches is an equivalent mutant (the loop breaks before `refused` can be set when
+        `no_jq` is), so no case can tell the two orders apart. A file named `jq` that is on PATH but
+        cannot run is found by `command -v` and fails as it did before #63 (three attempts, then the
+        token advice); that is outside this change and not tested.
       - **Not run on a runner**: no `integration.yml` scenario hides jq. A job would need its own
         `latest` install (one omni-dev version per job), and the job's other steps and helpers read
         with jq too, so hiding it needs care that was not taken. Its evidence is the unit test and one
