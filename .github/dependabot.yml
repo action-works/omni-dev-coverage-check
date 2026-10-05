@@ -5,9 +5,10 @@
 # Its commit messages must pass the required `Validate Commit Messages`, and one cannot be
 # amended after the fact. The default scope, `deps`, is not one of this project's
 # (.omni-dev/scopes.yaml), so the prefix is set: `ci(ci): bump <action> from <a> to <b>`.
-# tests/dependabot-config.test.sh holds the prefix to the project's types and scopes and to
-# the subject length, since a prefix that fails the lint would fail every pull request the
-# bot opens.
+# Do not add `commit-message.include: scope`: Dependabot would write `ci(ci)(deps): ...`, which
+# the lint rejects. tests/dependabot-config.test.sh holds every entry to the project's scopes
+# and types, to no `include:` and to the subject length, since a prefix that fails the lint
+# would fail every pull request the bot opens.
 version: 2
 updates:
   - package-ecosystem: github-actions
