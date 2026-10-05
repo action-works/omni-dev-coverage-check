@@ -144,9 +144,85 @@ The action is a composite action with two phases:
     reads that. The patch is unaffected: `--base-ref` stays the merge-base.
     `tests/baseline-lib.sh` pins the wording against the real step.
   - Each commit tried costs at least one API request, plus one per successful run it
-    has; a full miss spends `depth + 1`. `GITHUB_TOKEN` has 1,000 an hour per
-    repository, which is why `integration.yml` passes `baseline-ancestor-depth: 0` (up to
-    21 lookups per pull-request run, and none finds anything), and why the depth is a bound.
+    has; a full miss spends `depth + 1`, plus one for the latest runs (below, #57). `GITHUB_TOKEN` has
+    1,000 an hour per repository, which is why `integration.yml` passes
+    `baseline-ancestor-depth: 0` (the count of lookups per pull-request run was written as 21
+    and not recounted: the file has 26 `uses: ./` steps, several in matrices), and why the
+    depth is a bound. At depth 0 a lookup in integration.yml is a miss: the filtered listing, one
+    request for each run it gives (the review of #57 saw a lookup from `main` return two
+    successful runs with no baseline artifact, so two), and now the latest runs: four requests
+    where it was three before the fallback. Still far under the 1,000 an hour.
+  - **A listing that is incomplete (#57).** One lookup missed a baseline whose `push` run had
+    finished three minutes earlier (run 37176604241, PR #47's `pr-paths.yml` job, scenario P4: it
+    logged the parent's baseline, `d48987c`'s, and P7's lookup six seconds later hit). The cause
+    is INFERRED, not proven: the response was not logged. `dawidd6/action-download-artifact#432`
+    (v27) reports that a runs listing given `branch`, `event` or `commit` is served from a search
+    index that returns a random subset of the matches, with nothing in the response to show it, and
+    measured `status=success` missing the newest run in 3 of 20 calls. `find-baseline.sh` asks with
+    `head_sha` and `status=success`, so it has the exposure. Rules, so they are not re-derived:
+    - **Merge, not retry, not loosen.** A candidate with no baseline in the filtered listing is
+      looked up again in the workflow's latest 100 runs, unfiltered and fetched ONCE per lookup
+      (`?per_page=100`, no `head_sha`, no `status`), matched here by `head_sha`, `conclusion` and
+      `head_repository` (the filtered listing's own tests, so a fork's run is still skipped), minus
+      the runs the filtered listing already gave. It is a second chance and adds only: a run it
+      adds must still hold a live artifact. It is asked only after a candidate had no baseline, so
+      a hit on the merge-base costs nothing extra (still two requests) and any other outcome costs
+      one more, once per lookup, whatever the depth (a hit on an ancestor included: its
+      predecessors had none). Rejected: asking the filtered listing twice (it doubles the requests
+      of every miss and the glitch is random, not a stale cache: a second ask helps, but the
+      unfiltered listing is what upstream measured and shipped); dropping `status=success` and
+      filtering locally (removes one filter, not the index); and widening `held_to_the_api` to "no
+      nearer than the later answer", which would excuse a lookup that skips a baseline, the one
+      thing that check exists to catch.
+    - **What it does not cover, so the issue's fourth criterion ("a single flaky listing cannot turn
+      `pr-paths.yml` or `e2e-sharded.yml` red") holds for a recent merge-base and not in general.**
+      A commit whose run is older than the latest 100 of the workflow still depends on the filtered
+      listing alone: the merge-base of a long-lived pull request, in a repository busy enough to
+      have 100 runs of that workflow since (both workflows run on every push and, path-filtered, on
+      pull requests; the review of #57 counted about a day of runs in the latest 100 of
+      `pr-paths.yml`). The unfiltered listing itself dropping a run is not allowed for. The lookup
+      carries on when its latest-runs request fails, and the oracle does not, so one failure there
+      fails `held_to_the_api`: the oracle makes one more call, which is one more point of failure
+      per checking job (it is by design: a call that failed is not an answer). Not shown to happen.
+    - **The latest runs can never fail the lookup, only add to it.** The filtered request stays the
+      FIRST request, so a permission or an outage still fails there. A failure of the second (after
+      the same three attempts for a transient status), an answer that is not a list of runs, a run
+      in it of a shape that cannot be read, and a failure to list the artifacts of a run ONLY the
+      latest runs gave (a 5xx, a 403, an answer that is not JSON) are each logged in the
+      candidate's line and the walk goes on (`so only the filtered listing was used`, `run N could
+      not be looked in (HTTP 500)`). The contrast is deliberate: the same failure on a run the
+      filtered listing gave is still the lookup's own error at the merge-base (a warned miss
+      further in), as it was before #57. Not a `::warning::`: the answer is no worse than it was
+      (found in review: the first version made an added run's failed artifacts request fatal at
+      the merge-base, which contradicted this).
+    - **One line per candidate**, `Candidate <sha7> (<n> back): the listing returned N runs, S
+      successful from this repository; ...`, then either `run R holds a live '<artifact>'` or
+      `none holds a live '<artifact>'.` and what the latest runs added. A request that fails in the
+      middle of a candidate logs what had been read first (`; stopped at run R: its artifacts could
+      not be listed.`), since that is when it is wanted most. `tests/find-baseline.test.sh` pins
+      the wording of each shape. The existing `Baseline '<name>': run R published it for <sha7>.`
+      line and the ancestor notice are unchanged: `tests/baseline-lib.sh` and the workflows read
+      those.
+    - **`tests/expected-baseline.sh` unions the same runs, in separate variables.** The first
+      version piped two `jq`s through one group into `awk`, which loses the first one's failure to
+      the last one's status: a filtered listing that was not JSON, beside a good one of the latest
+      runs, became a guess instead of a failure (found in review; each listing is now captured on
+      its own under `set -e`, and a case per listing shows it).
+    - `tests/find-baseline.test.sh` (203 cases; 118 before) holds the incomplete listing in each
+      shape: a run only the latest runs have, a subset (the run kept has no baseline and the one
+      left out has it), the same run, and two runs, in both listings (each looked in once),
+      another commit's run, a failed, cancelled, fork's or expired one among them, a fetch that
+      fails, is not a list, or holds a run it cannot read, a 502 that is retried, an added run's
+      artifacts failing or not JSON, the latest runs fetched once for a walk of three, a workflow
+      name that needs encoding, and the first request still the filtered one. Each case that finds
+      something has a control with the run in the filtered listing or in neither.
+      `tests/expected-baseline.test.sh` has 50 (30 before). Mutations checked, each failing at least
+      one case: no fallback, `head_sha`, conclusion or repository not matched, no dedup, the
+      known runs not split by line, fetched per candidate, a failed fetch, an unreadable answer or
+      an added run's failed or non-JSON artifacts made fatal, the fetch filtered by `head_sha` or
+      with an unencoded name, the line text changed, the skipped runs not shown, the partial line
+      not logged, a non-list or a list of non-objects accepted; in the oracle, no union, no dedup,
+      each filter dropped, a failed call tolerated, the old group form.
   - The recompute stays the last resort and runs only when nothing is in reach, so the
     `recompute` job of `pr-paths.yml` turns the walk off: its synthetic base has none.
 - **The pinned actions, and how they are kept current (#58).** `dawidd6/action-download-artifact`
@@ -1231,7 +1307,10 @@ The action is a composite action with two phases:
   - A baseline hit is not assumed: it needs a published baseline for the merge-base,
     which the first pull request cannot have and a recent merge-base may still be
     producing. `tests/expected-baseline.sh` (which walks the same first-parent ancestors
-    through `gh` and not through the lookup's own code) is asked before the scenarios and
+    through `gh` and not through the lookup's own code; it also reads the latest 100 runs
+    unfiltered, once, and unions this commit's with the filtered listing's, so the same
+    omission cannot make it name a farther commit than a lookup that was right, #57; a failed
+    call there fails it, as every call of it does) is asked before the scenarios and
     again in the last step, and the lookup must land within the span of the two answers: a
     baseline can be published while the job runs (the `push` run for the merge-base
     finishing), so one answer taken at the end could expect a nearer commit than the lookup

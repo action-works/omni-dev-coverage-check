@@ -47,14 +47,23 @@ cat >"$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 # `gh api <path>`: answers from files under $FAKE, as the Actions API would.
 #   runs-<sha>.list        one JSON run per line      (.../workflows/<wf>/runs?head_sha=<sha>)
+#   runs-latest.list       the same, for the unfiltered listing (.../workflows/<wf>/runs?per_page=100)
+#   runs-latest.fail       the request for it fails, printing this text on stderr
+#   runs-<sha>.raw         the answer to a runs request, verbatim (runs-latest.raw: for the unfiltered one)
+#   gh.log                 every path asked for, one per line
 #   artifacts-<id>.list    one JSON artifact per line (.../runs/<id>/artifacts)
 #   artifacts-<id>.fail    the request fails, printing this text on stderr, as `gh` does for an HTTP error
 [ "$1" = api ] || { echo "stub gh: unexpected arguments: $*" >&2; exit 99; }
 path="$2"
+echo "$path" >>"$FAKE/gh.log"
 case "$path" in
   *"/actions/workflows/"*)
-    sha="${path#*head_sha=}"
-    key="runs-${sha%%&*}"
+    if [[ "$path" == *"head_sha="* ]]; then
+      sha="${path#*head_sha=}"
+      key="runs-${sha%%&*}"
+    else
+      key=runs-latest
+    fi
     wrap=workflow_runs
     ;;
   *"/actions/runs/"*"/artifacts"*)
@@ -70,6 +79,10 @@ esac
 if [ -f "$FAKE/$key.fail" ]; then
   cat "$FAKE/$key.fail" >&2
   exit 1
+fi
+if [ -f "$FAKE/$key.raw" ]; then
+  cat "$FAKE/$key.raw"
+  exit 0
 fi
 if [ -f "$FAKE/$key.list" ]; then
   jq -s --arg w "$wrap" '{($w): .}' "$FAKE/$key.list"
@@ -88,9 +101,17 @@ reset() {
 
 # run <tag> <id> <status> <conclusion> [head repository]
 run() {
-  jq -cn --argjson id "$2" --arg s "$3" --arg c "$4" --arg r "${5:-$REPOSITORY}" \
-    '{id: $id, status: $s, conclusion: (if $c == "" then null else $c end), head_repository: {full_name: $r}}' \
+  jq -cn --argjson id "$2" --arg s "$3" --arg c "$4" --arg r "${5:-$REPOSITORY}" --arg sha "$(sha "$1")" \
+    '{id: $id, head_sha: $sha, status: $s, conclusion: (if $c == "" then null else $c end), head_repository: {full_name: $r}}' \
     >>"$FAKE/runs-$(sha "$1").list"
+}
+
+# latest_run <tag> <id> <status> <conclusion> [head repository]: the same, in the unfiltered listing
+# of the latest runs only, as when the filtered listing omitted it (#57).
+latest_run() {
+  jq -cn --argjson id "$2" --arg s "$3" --arg c "$4" --arg r "${5:-$REPOSITORY}" --arg sha "$(sha "$1")" \
+    '{id: $id, head_sha: $sha, status: $s, conclusion: (if $c == "" then null else $c end), head_repository: {full_name: $r}}' \
+    >>"$FAKE/runs-latest.list"
 }
 
 # artifact <run id> <name> [expired]
@@ -286,6 +307,101 @@ echo "gh: Internal Server Error (HTTP 500)" >"$FAKE/artifacts-604.fail"
 expected c14
 eq "failure: another HTTP error is not guessed at: the script fails" 1 "$STATUS"
 has "failure: and shows what gh said" "$ANSWER" "HTTP 500"
+
+# --- the filtered listing is incomplete (#57) -----------------------------------------------------
+
+# A listing filtered by `head_sha` has been seen to return a random subset of its matches. The
+# latest runs, unfiltered, are read as well, so a run the filtered listing left out is found.
+reset
+latest_run c14 701 completed success
+artifact 701 coverage-baseline
+expected c14
+eq "incomplete listing: a run only the latest runs have is a baseline" "hit c14 0" "$ANSWER"
+eq "incomplete listing: the script succeeds" 0 "$STATUS"
+reset
+baseline_at c14 701
+expected c14
+eq "incomplete listing's control, the run in the filtered listing" "hit c14 0" "$ANSWER"
+reset
+artifact 701 coverage-baseline
+expected c14
+eq "incomplete listing's control, the run in neither listing" miss "$ANSWER"
+
+# Without it the oracle would name the farther commit and fail a lookup that was right.
+reset
+latest_run c14 702 completed success
+artifact 702 coverage-baseline
+baseline_at c12 703
+expected c14
+eq "incomplete listing: the nearer commit wins over an ancestor's" "hit c14 0" "$ANSWER"
+reset
+latest_run c13 704 completed success
+artifact 704 coverage-baseline
+expected c14
+eq "incomplete listing: an ancestor's run in the latest runs is found at its distance" "hit c13 1" "$ANSWER"
+
+# What the latest runs add is held to the same tests as the rest.
+for shape in "completed|failure|$REPOSITORY" "completed|cancelled|$REPOSITORY" "in_progress||$REPOSITORY" "completed|success|evil/fork"; do
+  IFS='|' read -r st concl repo <<<"$shape"
+  reset
+  latest_run c14 705 "$st" "$concl" "$repo"
+  artifact 705 coverage-baseline
+  expected c14
+  eq "latest runs: a ${concl:-unfinished} run of $repo is not a baseline" miss "$ANSWER"
+done
+reset
+latest_run c13 706 completed success # another commit's, with the run both listings could have had
+artifact 706 coverage-baseline
+expected c14 0
+eq "latest runs: a run for another commit is not this commit's baseline" miss "$ANSWER"
+reset
+latest_run c14 707 completed success
+artifact 707 coverage-baseline true
+expected c14
+eq "latest runs: an expired artifact is not a baseline" miss "$ANSWER"
+
+# A run both listings have is one run.
+reset
+baseline_at c14 708
+latest_run c14 708 completed success
+expected c14
+eq "both listings: one run, found once" "hit c14 0" "$ANSWER"
+
+# One answer that is not JSON is not an answer, whichever listing it was, and the other being
+# fine must not hide it (a group of two `jq`s piped on would report only the last one's status).
+reset
+latest_run c14 711 completed success
+artifact 711 coverage-baseline
+echo 'this is not json' >"$FAKE/runs-$(sha c14).raw"
+expected c14
+if [ "$STATUS" -ne 0 ]; then ok "a filtered listing that is not JSON: the script fails, not a hit from the other listing"; else bad "a filtered listing that is not JSON: the script fails, not a hit from the other listing" "it said: $ANSWER"; fi
+reset
+baseline_at c14 712
+echo 'this is not json' >"$FAKE/runs-latest.raw"
+expected c14
+if [ "$STATUS" -ne 0 ]; then ok "a latest listing that is not JSON: the script fails, not a hit from the other listing"; else bad "a latest listing that is not JSON: the script fails, not a hit from the other listing" "it said: $ANSWER"; fi
+reset
+baseline_at c14 712
+expected c14
+eq "those two's control, both listings JSON: a hit" "hit c14 0" "$ANSWER"
+
+# A run both listings have is looked in once: observable only for a run with no baseline, which
+# is looked in and passed over.
+reset
+run c14 713 completed success
+artifact 713 coverage-summary
+latest_run c14 713 completed success
+expected c14
+eq "both listings: the run they share is a miss" miss "$ANSWER"
+eq "both listings: and is looked in once, not once per listing" 1 "$(grep -c '/actions/runs/713/artifacts' "$FAKE/gh.log")"
+
+# A failed call is not an answer, for the latest runs as for the rest.
+reset
+baseline_at c14 709
+echo "gh: Internal Server Error (HTTP 500)" >"$FAKE/runs-latest.fail"
+expected c14
+eq "latest runs failing: the script fails, as for any call that is not an answer" 1 "$STATUS"
+has "latest runs failing: and shows what gh said" "$ANSWER" "HTTP 500"
 
 # --- usage ------------------------------------------------------------------------------------------------------------------
 

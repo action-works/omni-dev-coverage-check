@@ -440,9 +440,21 @@ publishes) cannot hide the run that has it. Runs from forks are ignored.
 - **A run that is still in progress is not used**, even if it has already uploaded the
   artifact. If the `push` run for the merge-base has not finished, the next ancestor's
   baseline is used instead of rebuilding.
+- **A listing that is incomplete is asked a second way.** GitHub's list of a workflow's runs,
+  when filtered by commit and status, has been reported to leave out runs that match, with nothing
+  in the answer to say so. A commit that has no baseline in that list is therefore looked up
+  again in the workflow's latest 100 runs, listed once without a filter and matched by commit,
+  conclusion and repository. It can only find a run the first list missed, and only one among
+  the latest 100; an older commit's run still depends on the filtered list. If the latest runs
+  cannot be listed, the filtered answer stands.
+- **The log says what each commit held.** One line per commit tried: how many runs the list
+  returned, how many of them were a success from this repository, and whether one held the
+  artifact (and the same for what the latest runs added), so a baseline that was missed can be
+  told apart from one that was never there.
 - **Cost.** Each commit tried costs at least one GitHub API request, plus one for each
   successful run it has (under a merge queue that includes the queue's own run), so a lookup
-  that finds nothing spends `baseline-ancestor-depth + 1` at the least.
+  that finds nothing spends `baseline-ancestor-depth + 1` at the least. The list of the latest
+  runs costs one more, once per lookup, and only when a commit had no baseline in the first.
   On github.com the workflow token allows 1,000 requests an hour per repository.
 
 ### When the baseline is an ancestor's

@@ -31,6 +31,16 @@
 #     holds an unexpired artifact of that name; ANY such run counts, not the newest, because a
 #     `merge_group` run that has none must not hide the `push` run that has one
 #   - a run deleted after it was listed (a 404 for its artifacts) is passed over
+#
+# A listing filtered by `head_sha` has been seen to return a random subset of the runs it
+# matches, with nothing in the answer to show it (#57), which would make this script name a
+# farther commit than the lookup found, and fail a lookup that was right. So the workflow's
+# latest 100 runs are also read, unfiltered and once, and each commit's runs are what the
+# filtered listing returned plus the ones of that commit among those. The lookup does the
+# same for its own reasons (scripts/find-baseline.sh), but through `curl` and on its own
+# code; this is the check on it, and it is not satisfied by the same omission. Unlike the
+# lookup it does not carry on without that listing: a call that failed is not an answer, as
+# below.
 set -euo pipefail
 
 workflow="${1:?usage: expected-baseline.sh <workflow> <artifact> <start-sha> [depth]}"
@@ -52,12 +62,20 @@ else
   esac
 fi
 
+recent="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?per_page=100")"
+
 distance=0
 while IFS= read -r sha; do
   runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100")"
-  # `.head_repository.full_name`: a run from a fork is not a baseline.
-  ids="$(jq -r --arg r "$GITHUB_REPOSITORY" \
+  # `.head_repository.full_name`: a run from a fork is not a baseline. The filtered listing's
+  # runs come first, then this commit's among the latest runs, each id once.
+  # Each into a variable of its own: in a group piped to awk, a `jq` that failed on the first
+  # listing would be lost to the status of the last, and the check would go on with a guess.
+  filtered_ids="$(jq -r --arg r "$GITHUB_REPOSITORY" \
     '.workflow_runs[] | select(.head_repository.full_name == $r and .conclusion == "success") | .id' <<<"$runs")"
+  recent_ids="$(jq -r --arg r "$GITHUB_REPOSITORY" --arg sha "$sha" \
+    '.workflow_runs[] | select(.head_sha == $sha and .head_repository.full_name == $r and .conclusion == "success") | .id' <<<"$recent")"
+  ids="$(printf '%s\n%s\n' "$filtered_ids" "$recent_ids" | awk 'NF && !seen[$0]++')"
 
   for id in $ids; do
     if ! artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" 2>&1)"; then
