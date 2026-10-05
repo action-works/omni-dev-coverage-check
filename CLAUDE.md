@@ -43,7 +43,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit; `ignored.rs` is committed unchanged with both, for the filter scenario
 - `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
 - `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally (`tests/prepare-shard-crate.test.sh` tests it; `test.yml` runs that)
-- `tests/assert-lib.sh` - Assertion helpers the `e2e-sharded.yml` checking steps source (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
+- `tests/assert-lib.sh` - Assertion helpers every checking step of `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml` sources (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
 - `tests/expected-baseline.sh` - What the baseline lookup should find for a commit, read from the Actions API through `gh` (`tests/expected-baseline.test.sh` tests it against a stub `gh`; `test.yml` runs that)
 - `tests/baseline-lib.sh` - Checks of a baseline's `TN:` commit, the comment's ancestor note and the lookup against `expected-baseline.sh`, sourced by `pr-paths.yml` and `e2e-sharded.yml` (`tests/baseline-lib.test.sh` tests it, including against the real diff step; `test.yml` runs that)
 - `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
@@ -518,7 +518,7 @@ The action is a composite action with two phases:
       `version-pin` removes the binary so nothing is saved; these legs do not, because the
       hashed entries are reused.
     - Settled with it, so it is not re-derived. Only the jobs whose point is the install take
-      the prefix: `thin-mode-old-omni-dev`, `output-flag`, `ignore-filename-regex*`,
+      the prefix: `thin-mode-old-omni-dev`, `guard-flag`, `ignore-filename-regex*`,
       `latest-redirect`, `fat-mode`, `deprecation-control`, `pr-paths.yml` and
       `e2e-sharded.yml` exist for something else and keep the cache, which is useful to them;
       `version-pin` already forces the install with a key of its own; and
@@ -574,7 +574,7 @@ The action is a composite action with two phases:
       attempt, as `version-pin`'s does, and a last step removes the binary so no entry is saved
       that nothing would restore. If GitHub retires the `ubuntu-22.04` image the leg
       ends at the runner, not at an assertion. Both legs check out with `fetch-depth: 0`, as
-      `output-flag` does: on a pull request the control goes on to "Determine merge-base", which
+      `guard-flag` does: on a pull request the control goes on to "Determine merge-base", which
       needs `origin/main`, and the job's first run died there (`fatal: Not a valid object name
       origin/main`, exit 128) on a shallow clone. The failing leg stops long before that.
     - **Observed on a real runner (2026-10-04, `ubuntu-22.04` image 20260927.309.1, glibc 2.35, omni-dev
@@ -878,7 +878,7 @@ The action is a composite action with two phases:
     claims, since a fail-open step passes an empty one. The tests do not inherit `NO_COLOR` or
     `CLICOLOR_FORCE` from the shell running them, or a developer's `NO_COLOR` would turn the
     forced-colour cases into no-ops. It
-    does not reach the step's `if:`, which `output-flag` covers. A new flag is one more
+    does not reach the step's `if:`, which `guard-flag` covers. A new flag is one more
     `has_flag` call (a plain long flag: it goes into the match as a fixed string) and a case
     there. What it cannot tell: a flag that still works but is deprecated reads as present,
     which is right for this step and is what the deprecated-flag checks below are for.
@@ -886,7 +886,7 @@ The action is a composite action with two phases:
   and ends on `summary`, whose status is the test's exit status; do not define `ok`, `bad`,
   `eq` and the rest in a test again. The command checker is `pass` (and `fail` for one that
   must fail), not `check`: `tests/assert-lib.sh` defines a different `check <label> <expected>
-  <actual>` for the e2e workflow, and a file should not source both. `test-lib.test.sh` runs
+  <actual>` for the workflows' checking steps, and a file should not source both. `test-lib.test.sh` runs
   failing cases because no other test does, and every test ends on `summary`: one that
   returned 0 would pass them all. A test that runs a step's script, or matches on a step or
   an input, reads it with `tests/step-lib.sh`, which takes the file from `$ACTION`. Rules:
@@ -967,10 +967,22 @@ The action is a composite action with two phases:
     - A new leg or job that runs an omni-dev gets this call at the end of its checking
       step. `tests/assert-omni-dev-version.test.sh` holds the cases (prefix, suffix, a
       dot that is not a wildcard, a binary that is missing or fails).
-  - The `--output` guard acts only on a `pull_request`, so the `output-flag` job (a
+  - **One job holds both guard-flag matrices (#50).** `guard-flag` was two jobs,
+    `output-flag` and `ignore-filename-regex-flag`, that differed in the flag, the fixtures'
+    one input and the version list: the same skeleton, the same expectation by event and the
+    same file checks. It is one job with a matrix entry per leg (`title`, `scenario`, `flag`,
+    `filter`, `omni-dev`, `has-flag`), and its `name:` is `<title> (omni-dev <version>)`, so
+    the legs keep the job names they had (`Output flag (omni-dev 0.31.0)`, `Ignore filename
+    regex flag (omni-dev 0.32.0)`): `failure-messages` reads the logs by name, and a name
+    that moved would fail it with "no job of that name". A new floor flag is a few entries
+    in the matrix and one `has_flag` call, not a third copy of the job. `ci-gate` and
+    `failure-messages` need `guard-flag`, and `tests/merge-queue.test.sh` fails until they
+    do. Each entry's `has-flag` says whether its omni-dev has the flag, which is all the
+    assertion step decides on beside the event.
+  - The `--output` guard acts only on a `pull_request`, so the `guard-flag` legs for it (a
     matrix: `0.28.0`, the newest release with no `coverage` subcommand at all, `0.31.0`,
     the newest with `coverage diff` but without the flag, and `0.32.0`, the floor)
-    runs on EVERY event and expects by event: the old legs fail at the guard on a
+    run on EVERY event and expect by event: the old legs fail at the guard on a
     pull request and must succeed on any other, so a guard that over-fires is caught
     too. The `0.32.0` leg is the old legs' control (only `version` differs). The
     other-event expectations first run on the push after a merge. The matrix cannot
@@ -1120,7 +1132,7 @@ The action is a composite action with two phases:
   - It is the only job with `actions: read` (job-level `permissions` drops the rest,
     so it also lists `contents: read` for the checkout). Keep it that way.
   - It names the jobs it reads, including the thin-mode matrix versions and the
-    `output-flag` and `ignore-filename-regex-flag` legs without the flag. Renaming a
+    `guard-flag` legs without the flag. Renaming a
     job or changing the matrix fails it loudly (no job of that name); a new matrix leg
     is not checked until it is added to the list.
   - A scenario that exists for its message gets an assertion here; edit a message
@@ -1325,9 +1337,12 @@ The action is a composite action with two phases:
     which omni-dev and `lcov-percent.sh` round to different neighbours, so compare
     their figures with a tolerance of 0.02, not 0.01.
   - The checking steps source `tests/assert-lib.sh` rather than inlining `check` and
-    `assert` as the other workflows do: three steps need the same helpers, and what the
-    numeric ones do with a missing value decides whether a gate's assertion can pass
-    vacuously. `lt` and `ge` succeed only for two numbers: awk compares `null` (what
+    `assert`: three steps here need the same helpers, and what the numeric ones do with a
+    missing value decides whether a gate's assertion can pass vacuously. `integration.yml`
+    and `pr-paths.yml` did inline them, a copy of `check` in each of thirteen steps (#50),
+    and source the library now too (fifteen steps in all, with the three here), so there is one `check` and one `assert` to get right;
+    a step that needs a helper of its own beside them (`decl_line` in `pr-paths.yml`, named
+    so it does not shadow the library's `line_of`) defines it after the `source` line. `lt` and `ge` succeed only for two numbers: awk compares `null` (what
     `jq -r` prints for a missing field) as text, which made `ge` pass quietly. `assert`
     prints what a failed command printed, and the steps print the measured figures, so a
     first red run on a runner can be read without a re-run.
@@ -1428,8 +1443,8 @@ The action is a composite action with two phases:
   - Tests: the `ignore-filename-regex` job (8a, a gate of 70 passes with LICENSE
     filtered out, 8b the control without the filter fails: 50% against 100%, 8c the same
     filter with a space beside the comma is refused, 8d the same as a YAML block, #48),
-    `ignore-filename-regex-flag` (9: 0.32.0 is stopped by the guard on a pull request
-    only, 0.33.0 is its control), `pr-paths.yml` P5 and P6 for the comment and the
+    `guard-flag`'s `--ignore-filename-regex` legs (9: 0.32.0 is stopped by the guard on a
+    pull request only, 0.33.0 is its control), `pr-paths.yml` P5 and P6 for the comment and the
     patch gate, and `tests/guard-step.test.sh` for the probe and the floor.
 - **`llvm-cov-ignore-filename-regex`** (#2): the cargo-llvm-cov half of the filter, a second
   input and not `ignore-filename-regex` passed to cargo as well. The issue's comment left

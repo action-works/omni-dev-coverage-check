@@ -57,7 +57,7 @@ pass "check: equal values print ok" grep -qx 'ok   - same' <<<"$out"
 pass "check: equal values leave the status" grep -qx 'status=0' <<<"$out"
 
 out="$(lib 'status=0; check "differ" a b; echo "status=$status"')"
-pass "check: a mismatch names expected and actual" grep -qx '::error::differ: expected a, got b' <<<"$out"
+pass "check: a mismatch names expected and actual" grep -qx '::error::differ: expected '"'"'a'"'"', got '"'"'b'"'"'' <<<"$out"
 pass "check: a mismatch sets the status" grep -qx 'status=1' <<<"$out"
 
 # --- assert ------------------------------------------------------------------

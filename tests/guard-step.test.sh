@@ -31,8 +31,8 @@
 # What this does not reach: the step's `if:`, which decides whether it runs at all. The
 # script asks about a flag whatever the event only when the run needs it, so the "flag not
 # needed" cases show it does not demand or ask about a flag the run does not use, not that it
-# is skipped. The `output-flag` job of integration.yml runs on every event and covers the
-# `if:`.
+# is skipped. The `guard-flag` job of integration.yml runs on every event and covers the
+# `if:`, for `--output` and for `--ignore-filename-regex`.
 
 set -uo pipefail
 
