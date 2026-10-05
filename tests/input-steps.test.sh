@@ -331,10 +331,15 @@ eq "recompute: it runs nothing" "" "$CALLS"
 
 run_step "$RECOMPUTE" "${recompute_env[@]}"
 eq "recompute: the step succeeds" 0 "$STATUS"
-eq "recompute: no system deps means no sudo; the merge-base is checked out and measured" \
-  'git [worktree] [add] [../base] [mergebase0123456789]
+# A stale worktree is cleared and its records pruned before the add, and the worktree is removed
+# when the step ends (#78); tests/recompute-worktree.test.sh runs that against a real git.
+eq "recompute: no system deps means no sudo; the merge-base is checked out, measured and removed" \
+  'git [worktree] [remove] [--force] [../base]
+git [worktree] [prune]
+git [worktree] [add] [../base] [mergebase0123456789]
 cargo [llvm-cov] [--all-features] [--workspace] [--no-report]
-cargo [llvm-cov] [report] [--lcov] [--output-path] [head.lcov]' "$CALLS"
+cargo [llvm-cov] [report] [--lcov] [--output-path] [head.lcov]
+git [worktree] [remove] [--force] [../base]' "$CALLS"
 eq "recompute: the baseline is written for the diff" "yes" "$([ -f "$REPO/baseline/head.lcov" ] && echo yes || echo no)"
 # git runs before the variables are dropped and needs them; the merge-base's tests, run by
 # cargo after, must not see them.
@@ -349,9 +354,12 @@ libbar" TEST_ARGS="" BASE_SHA=abc123
 eq "recompute: the packages are split on whitespace, a newline included" \
   'sudo [apt-get] [update]
 sudo [apt-get] [install] [-y] [libasound2-dev] [libfoo-dev] [libbar]
+git [worktree] [remove] [--force] [../base]
+git [worktree] [prune]
 git [worktree] [add] [../base] [abc123]
 cargo [llvm-cov] [--no-report]
-cargo [llvm-cov] [report] [--lcov] [--output-path] [head.lcov]' "$CALLS"
+cargo [llvm-cov] [report] [--lcov] [--output-path] [head.lcov]
+git [worktree] [remove] [--force] [../base]' "$CALLS"
 
 PRE='touch libx-dev'
 run_step "$RECOMPUTE" REPORT=head.lcov WORKTREE_SYSTEM_DEPS="lib*-dev" TEST_ARGS="" BASE_SHA=abc123

@@ -835,7 +835,21 @@ runs:
         if [ -n "$WORKTREE_SYSTEM_DEPS" ]; then
           sudo apt-get update && sudo apt-get install -y "${system_deps[@]}"
         fi
+        # The worktree is removed when the step ends, so a second recompute in one job finds
+        # none (#78). A stale one is cleared first: a registered worktree left by an earlier
+        # run that was cancelled before this step ended (a reused runner), or a record whose
+        # directory is gone, stops `git worktree add`. `remove` only touches a worktree git
+        # knows, so a directory that merely has the name `base` is kept, and the add then
+        # fails as it did.
+        git worktree remove --force ../base 2>/dev/null || true
+        git worktree prune || true
         git worktree add ../base "$BASE_SHA"
+        # However the step ends: the merge-base's build (`../base/target`) is as large as the
+        # whole build, and the job has no further use for it. Set after the add, so a worktree
+        # that was not made by this run is never removed by it. The command holds no variable
+        # (the step drops its own before the tests run), and a failed removal changes nothing
+        # about the step's own status.
+        trap 'git worktree remove --force ../base || true' EXIT
         # The baseline is filtered like the head report, or the comparison would count
         # files on one side only. The worktree is another directory than the workspace, so
         # a pattern that holds the workspace's path or its directory's name would match the
