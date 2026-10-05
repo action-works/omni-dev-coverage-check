@@ -50,6 +50,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
 - `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run and attempt on `schedule` and `workflow_dispatch`, and the leg in both) and checks the action's `omni-dev-cache-hit` output (`check` for the `thin-mode` legs, `check-fresh`, which refuses a hit on every event, for `version-pin`) (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
 - `tests/ci-gate.sh` - What the `ci-gate` job of `integration.yml` runs: fails unless every job it needs finished `success`, from `toJSON(needs)` in `$NEEDS`
+- `.github/dependabot.yml` - Keeps the pinned actions current: weekly pull requests for `github-actions` at the root (the workflows and `action.yml`), at most two open, with the commit-message prefix `ci(ci)` so a bot's message passes the required commit check (`tests/dependabot-config.test.sh` holds every entry to the project's scopes and types, no `include:` and the subject length; `test.yml` runs that)
 - `tests/merge-queue.test.sh` - Tests `ci-gate.sh`, and reads the workflows to check what the merge queue relies on: `ci-gate` needs every job of `integration.yml` and runs `always()`, `failure-messages` needs every job but those two (#105), `merge_group` is a trigger of the three workflows a required check comes from and of neither path-filtered one, and the required checks' names are still the jobs' names (`test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `tests/fixtures/omni-dev-probe/` - What the real releases either side of each guard floor (and 0.28.0, which has no `coverage`) answered to the guard's probe, one `<version>/<flag>.txt` each: `exit=<status>`, then the output (`tests/guard-step.test.sh` replays them)
@@ -242,7 +243,7 @@ The action is a composite action with two phases:
   download one by run id when the merge-base has one; the lookup's own message is `published it
   for`, which says the lookup hit, and the download's is the "completed" line).
   - **Pins as of 2026-10-05, from each repository's latest release, so the next reader can see
-    the distance:** `actions/checkout@v4` (latest v7; 22 uses), `actions/cache@v4` (v6; the one
+    the distance:** `actions/checkout@v4` (latest v7; 21 uses), `actions/cache@v4` (v6; the one
     in `action.yml`, so it is the one callers run), `actions/download-artifact@v8` (v8),
     `actions/upload-artifact@v7` (v7), `dawidd6/action-download-artifact@v27` (v27),
     `marocchino/sticky-pull-request-comment@v3` (v3), `codecov/codecov-action@v7` (v7),
@@ -257,27 +258,63 @@ The action is a composite action with two phases:
     `action.yaml` AND `.github/workflows/*.yml` (not recursively), so the pins inside the composite
     action are covered, which the issue could not tell from the docs. A ref that is not a version
     (`@stable`, `@cargo-llvm-cov`) gives it nothing to update.
-  - **Not enabled, and why (the question is open on #58).** There is no `.github/dependabot.yml`,
-    and one was not added unattended: it makes a bot open pull requests on this repository on a
-    schedule, and one thing needs a person's call first. Its commit messages must pass the
-    required `Validate Commit Messages`, and the default does not: it infers the type from the last
-    100 commits (`chore` if one starts with `chore` and none with `build`, else `build`), both
-    allowed here, but the scope is `deps`, and the project's scopes are `action`, `docs` and `ci`
-    (`.omni-dev/scopes.yaml`; "Scopes" is an error-severity rule). So it needs
-    `commit-message.prefix`, and one prefix cannot be right for both places it edits: `ci(ci)` for
-    a workflow, `ci(action)` for `actions/cache` in `action.yml`, where an accuracy rule may
-    object. Nothing here could run the linter on a bot's message to see, and the lint checks each
-    commit, so a bad one cannot be fixed afterwards (the admin bypass exists). A config that
-    would do: `github-actions`, `directory: "/"`, `schedule.interval: weekly`,
-    `open-pull-requests-limit: 2` (two pins are stale today, so the first run opens two),
-    `commit-message.prefix: "ci(ci)"`. What a Dependabot pull request meets, from the workflows as
-    written: its `GITHUB_TOKEN` is read-only; the `pull-request` jobs of `pr-paths.yml` and
-    `e2e-sharded.yml` skip it (`github.actor != 'dependabot[bot]'`; their other jobs, the
-    recompute and the shards, still run, as those workflows' comments say, and neither workflow is
-    a required check); and `Shell scripts` and `ci-gate` need no write permission, so only the
-    commit message is in doubt. Until it is enabled, a pin is bumped by hand: look at the table
-    above when a release of this action is cut, and when a runner prints the Node.js deprecation
-    notice for an action.
+  - **Enabled (the owner's instruction in the grinding session, 2026-10-05: "enable dependabot";
+    not a comment on #58, where the question had been put).** `.github/dependabot.yml`:
+    `github-actions`, `directory: /`, `schedule.interval: weekly`, `open-pull-requests-limit: 2`,
+    `commit-message.prefix: "ci(ci)"`. It was held back until a person decided, because it makes a
+    bot open pull requests on this repository on a schedule. Rules, so they are not re-derived:
+    - **The prefix is the part that can break, and cannot be fixed afterwards.** Dependabot's commit
+      messages must pass the required `Validate Commit Messages` (`omni-dev git commit message
+      lint`, which an error fails; a warning does not, without `--strict`), and a bot's commit is
+      already written. Its default scope is `deps`, which is not one of this project's (`action`,
+      `docs`, `ci`). One prefix cannot be exactly right for both places it edits (`ci(ci)` for a
+      workflow, `ci(action)` for `actions/cache` in `action.yml`), but Scope Specificity is a warning
+      in the guidelines and not an error, and the deterministic lint raised nothing. **Run, not
+      assumed:** omni-dev 0.45.0 (and 0.46.0 in review) on Dependabot's message shape and the whole
+      body it writes (release notes, the `updated-dependencies` block, the `Signed-off-by`): `ci(ci)`
+      passes on a workflow and on `action.yml`, `ci(action)` and `ci(ci,action)` pass, a capitalised
+      `Bump` and a 250-character body line pass, subjects of 72, 73 and 80 characters pass, and 81
+      fails; `chore(deps)`, `build(deps)` and `ci(deps)` fail on their scope, and so do `ci(ci)(deps)`
+      and `ci(ci):bump` on the format, so the pass is not vacuous. It was a throwaway repository with
+      this repository's `.omni-dev/`, not a real Dependabot pull request.
+    - **From dependabot-core's source, read in review** (not run): the prefix gets `: ` when it ends
+      in a letter, digit or closing parenthesis, so `ci(ci)` gives `ci(ci): bump <action> from <a>
+      to <b>`; `bump` is lower-case after a lower-case prefix; a subject over 72 characters loses its
+      ` from X to Y`; a security update adds `[Security]`, which the lint passes; and
+      **`commit-message.include: scope` would append a second scope, `ci(ci)(deps): ...`, which the
+      lint rejects**, so the test refuses that key. The default weekly day (Monday, 05:00 UTC) is
+      from memory, not the docs. A pin that is not a version (`@stable`, `@cargo-llvm-cov`) gives it
+      nothing to update (the source returns nothing for a tag that is neither version-like nor a SHA).
+    - **`tests/dependabot-config.test.sh` holds EVERY entry to that** (26 cases): the prefix must be
+      `type(scope[,scope])` with every scope in `.omni-dev/scopes.yaml` (what the lint reads), a type
+      the commit guidelines list, and no `include:`; the `github-actions` entry must be at `/` and
+      its worst subject (`<prefix>: bump <owner/repo> from 99 to 100`, for every action the
+      repository uses) must fit in 72 characters, pinned at 72 and 73 exactly. It is stricter than the
+      check on the type (the lint's built-in list also takes `build`, `perf` and `style`) and the
+      length (the lint's limit is 80), on purpose, and the same on scopes. A second entry, of
+      any ecosystem, is held to the same rules, and one with a good prefix needs no edit. Fourteen
+      mutations of a copy and two appended entries are each reported, an appended entry with a good
+      prefix is not, and every edit is checked to have changed the copy. It reads the file for the layout it has, and reports a layout it cannot
+      read. Mutants of the test itself checked, each failing a case: the limit loosened or `-le` made
+      `-lt`, `include` not read, the empty-list guard (a loop fed an empty here-string runs once
+      with an empty name), only the first entry checked, the scope check and the type check dropped.
+    - **What the first run opens.** Two pins were behind (`actions/checkout@v4`, latest v7, 21 uses;
+      and `actions/cache@v4`, v6), so two pull requests: a major bump of the actions every job runs,
+      each of which runs the whole matrix. They were left alone by hand because that is a change of
+      its own (see the pins above); now their CI is the evidence, and a red one is the answer. After
+      them, a weekly run opens a pull request for each pin that moved.
+    - **What a Dependabot pull request meets**, from the workflows as written: its `GITHUB_TOKEN`
+      is read-only; the workflows use no secret; the `pull-request` jobs of `pr-paths.yml` and
+      `e2e-sharded.yml` skip it (`github.actor != 'dependabot[bot]'`; their other jobs, the
+      recompute and the shards, still run, as those workflows' comments say, and neither workflow is
+      a required check); no job `ci-gate` needs has an `if:`, so nothing leaves a required check red
+      or pending for it. A pull request is merged through the queue like any other, and nothing
+      enqueues it for the bot (auto-merge is off).
+    - **Not verified:** that Dependabot's own message matches the simulated one byte for byte (the
+      first real pull request is the evidence), that it opens exactly two pull requests, and what it
+      does with an update a person has already made by hand (it is expected to close its pull
+      request). Pins are no longer bumped by hand, except to act on a Dependabot pull request or on
+      the Node.js deprecation notice a runner prints for an action.
 - **The recompute removes its worktree (#78)**: "Compute baseline from merge-base (fallback)"
   builds at `../base` and removes it when the step ends, so a second run of the action in one job
   after a recompute finds none (it used to stop at `git worktree add` with `'../base' already
