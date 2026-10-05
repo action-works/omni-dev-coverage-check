@@ -49,10 +49,13 @@ cat >"$BIN/gh" <<'EOF'
 #   runs-<sha>.list        one JSON run per line      (.../workflows/<wf>/runs?head_sha=<sha>)
 #   runs-latest.list       the same, for the unfiltered listing (.../workflows/<wf>/runs?per_page=100)
 #   runs-latest.fail       the request for it fails, printing this text on stderr
+#   runs-<sha>.raw         the answer to a runs request, verbatim (runs-latest.raw: for the unfiltered one)
+#   gh.log                 every path asked for, one per line
 #   artifacts-<id>.list    one JSON artifact per line (.../runs/<id>/artifacts)
 #   artifacts-<id>.fail    the request fails, printing this text on stderr, as `gh` does for an HTTP error
 [ "$1" = api ] || { echo "stub gh: unexpected arguments: $*" >&2; exit 99; }
 path="$2"
+echo "$path" >>"$FAKE/gh.log"
 case "$path" in
   *"/actions/workflows/"*)
     if [[ "$path" == *"head_sha="* ]]; then
@@ -76,6 +79,10 @@ esac
 if [ -f "$FAKE/$key.fail" ]; then
   cat "$FAKE/$key.fail" >&2
   exit 1
+fi
+if [ -f "$FAKE/$key.raw" ]; then
+  cat "$FAKE/$key.raw"
+  exit 0
 fi
 if [ -f "$FAKE/$key.list" ]; then
   jq -s --arg w "$wrap" '{($w): .}' "$FAKE/$key.list"
@@ -359,6 +366,34 @@ baseline_at c14 708
 latest_run c14 708 completed success
 expected c14
 eq "both listings: one run, found once" "hit c14 0" "$ANSWER"
+
+# One answer that is not JSON is not an answer, whichever listing it was, and the other being
+# fine must not hide it (a group of two `jq`s piped on would report only the last one's status).
+reset
+latest_run c14 711 completed success
+artifact 711 coverage-baseline
+echo 'this is not json' >"$FAKE/runs-$(sha c14).raw"
+expected c14
+if [ "$STATUS" -ne 0 ]; then ok "a filtered listing that is not JSON: the script fails, not a hit from the other listing"; else bad "a filtered listing that is not JSON: the script fails, not a hit from the other listing" "it said: $ANSWER"; fi
+reset
+baseline_at c14 712
+echo 'this is not json' >"$FAKE/runs-latest.raw"
+expected c14
+if [ "$STATUS" -ne 0 ]; then ok "a latest listing that is not JSON: the script fails, not a hit from the other listing"; else bad "a latest listing that is not JSON: the script fails, not a hit from the other listing" "it said: $ANSWER"; fi
+reset
+baseline_at c14 712
+expected c14
+eq "those two's control, both listings JSON: a hit" "hit c14 0" "$ANSWER"
+
+# A run both listings have is looked in once: observable only for a run with no baseline, which
+# is looked in and passed over.
+reset
+run c14 713 completed success
+artifact 713 coverage-summary
+latest_run c14 713 completed success
+expected c14
+eq "both listings: the run they share is a miss" miss "$ANSWER"
+eq "both listings: and is looked in once, not once per listing" 1 "$(grep -c '/actions/runs/713/artifacts' "$FAKE/gh.log")"
 
 # A failed call is not an answer, for the latest runs as for the rest.
 reset

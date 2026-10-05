@@ -69,14 +69,13 @@ while IFS= read -r sha; do
   runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100")"
   # `.head_repository.full_name`: a run from a fork is not a baseline. The filtered listing's
   # runs come first, then this commit's among the latest runs, each id once.
-  ids="$(
-    {
-      jq -r --arg r "$GITHUB_REPOSITORY" \
-        '.workflow_runs[] | select(.head_repository.full_name == $r and .conclusion == "success") | .id' <<<"$runs"
-      jq -r --arg r "$GITHUB_REPOSITORY" --arg sha "$sha" \
-        '.workflow_runs[] | select(.head_sha == $sha and .head_repository.full_name == $r and .conclusion == "success") | .id' <<<"$recent"
-    } | awk '!seen[$0]++'
-  )"
+  # Each into a variable of its own: in a group piped to awk, a `jq` that failed on the first
+  # listing would be lost to the status of the last, and the check would go on with a guess.
+  filtered_ids="$(jq -r --arg r "$GITHUB_REPOSITORY" \
+    '.workflow_runs[] | select(.head_repository.full_name == $r and .conclusion == "success") | .id' <<<"$runs")"
+  recent_ids="$(jq -r --arg r "$GITHUB_REPOSITORY" --arg sha "$sha" \
+    '.workflow_runs[] | select(.head_sha == $sha and .head_repository.full_name == $r and .conclusion == "success") | .id' <<<"$recent")"
+  ids="$(printf '%s\n%s\n' "$filtered_ids" "$recent_ids" | awk 'NF && !seen[$0]++')"
 
   for id in $ids; do
     if ! artifacts="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" 2>&1)"; then

@@ -745,4 +745,115 @@ has "a miss: the first is the merge-base" "$STDOUT" "Candidate $(short c12) (0 b
 has "a miss: the last is two back" "$STDOUT" "Candidate $(short c10) (2 back):"
 has "a miss: the final warning is as it was" "$STDOUT" "or the 2 ancestors checked before it"
 
+# --- the latest runs can never fail the lookup, only add to it (review of #57) --------------------
+
+# A run only the latest runs gave, whose artifacts cannot be listed: a miss for that run, the walk
+# goes on. Before this, `api_failed` made it an error at the merge-base, which the same failure on
+# a run the filtered listing gave still is (the contrast below).
+reset
+latest_run c12 1101 success
+artifact 1101 coverage-baseline
+baseline_at c11 1102
+fail_with artifacts-1101 500 '{"message":"stub failure"}'
+lookup c12 10
+eq "an added run's artifacts failing: the script succeeds" 0 "$STATUS"
+eq "an added run's artifacts failing: the walk goes on to the ancestor's baseline" "$(sha c11)" "$(out sha)"
+lacks "an added run's artifacts failing: not an error" "$STDOUT" "::error::"
+has "an added run's artifacts failing: the line says which run, and why" "$STDOUT" \
+  "The latest runs add 1 such run; run 1101 could not be looked in (HTTP 500: stub failure); none holds one."
+reset
+latest_run c12 1101 success
+artifact 1101 coverage-baseline
+baseline_at c11 1102
+lookup c12 10
+eq "an added run's control, its artifacts listed: the merge-base's own run is found" 1101 "$(out run-id)"
+reset
+run c12 1101 success
+artifact 1101 coverage-baseline
+baseline_at c11 1102
+fail_with artifacts-1101 500 '{"message":"stub failure"}'
+lookup c12 10
+eq "contrast: the same failure on a run the filtered listing gave is still the error" 1 "$STATUS"
+has "contrast: ... and the line of what had been read so far is logged before it" "$STDOUT" \
+  "Candidate $(short c12) (0 back): the listing returned 1 run, 1 successful from this repository; stopped at run 1101: its artifacts could not be listed."
+
+reset
+latest_run c12 1109 success
+artifact 1109 coverage-baseline
+baseline_at c11 1110
+fail_with artifacts-1109 200 'this is not json'
+lookup c12 10
+eq "an added run's artifacts that are not JSON: the script succeeds" 0 "$STATUS"
+eq "an added run's artifacts that are not JSON: the walk goes on to the ancestor" "$(sha c11)" "$(out sha)"
+has "an added run's artifacts that are not JSON: the line says so" "$STDOUT" "run 1109 could not be looked in (the answer was not JSON)"
+reset
+run c12 1109 success
+artifact 1109 coverage-baseline
+baseline_at c11 1110
+fail_with artifacts-1109 200 'this is not json'
+lookup c12 10
+eq "contrast: artifacts that are not JSON for a run the filtered listing gave are still the error" 1 "$STATUS"
+
+# Answers for the latest runs that are not a list of runs, or that hold one this cannot read: they
+# are not used, and the lookup is as it was without them.
+reset
+baseline_at c11 1103
+fail_with runs-latest 200 '{"workflow_runs":[1]}'
+lookup c12 10
+eq "latest runs that are not objects: the script succeeds" 0 "$STATUS"
+eq "latest runs that are not objects: the filtered listing's baseline is found" "$(sha c11)" "$(out sha)"
+lacks "latest runs that are not objects: not an error" "$STDOUT" "::error::"
+has "latest runs that are not objects: the line says they were not used" "$STDOUT" \
+  "The latest runs could not be listed (the answer was not a list of runs)"
+# A run of this commit whose head_repository is a string: the list is of objects, and the one
+# that matters cannot be read, which jq says only when it reaches it.
+reset
+baseline_at c11 1103
+fail_with runs-latest 200 "{\"workflow_runs\":[{\"id\":5,\"head_sha\":\"$(sha c12)\",\"conclusion\":\"success\",\"head_repository\":\"acme/widgets\"}]}"
+lookup c12 10
+eq "a run of the commit with an unreadable repository: the script succeeds" 0 "$STATUS"
+eq "a run of the commit with an unreadable repository: the filtered listing's baseline is found" "$(sha c11)" "$(out sha)"
+lacks "a run of the commit with an unreadable repository: not an error" "$STDOUT" "::error::"
+has "a run of the commit with an unreadable repository: the line says so" "$STDOUT" \
+  "The latest runs could not be read (a run in the answer has an unexpected shape), so only the filtered listing was used."
+lacks "a run of the commit with an unreadable repository: and nothing from jq reached the log" "$STDOUT" "jq: error"
+
+# Two runs both listings have: each is looked in once (a `known` list of one id would pass the
+# single-run overlap case above).
+reset
+run c12 1104 success
+artifact 1104 coverage-summary
+run c12 1105 success
+artifact 1105 coverage-summary
+latest_run c12 1104 success
+latest_run c12 1105 success
+lookup c12 0
+eq "overlap of two: nothing is found" false "$(out found)"
+eq "overlap of two: the first is looked in once" 1 "$(asked '/actions/runs/1104/artifacts')"
+eq "overlap of two: the second is looked in once" 1 "$(asked '/actions/runs/1105/artifacts')"
+
+# The workflow name is encoded in the request for the latest runs as in the others.
+reset
+lookup c12 0 "BASELINE_WORKFLOW=my flow.yml"
+eq "a workflow name with a space: the filtered request encodes it" 1 "$(asked 'workflows/my%20flow.yml/runs?head_sha=')"
+eq "a workflow name with a space: so does the request for the latest runs" 1 "$(asked 'workflows/my%20flow.yml/runs?per_page=100')"
+
+# Controls for the finds above that had none of their own: the same baseline in the filtered
+# listing is found, and nothing is asked of the latest runs when the first candidate has it.
+reset
+baseline_at c10 1106
+lookup c12 10
+eq "walk's control: the same baseline 2 back, in the filtered listing, is found" "$(sha c10)" "$(out sha)"
+eq "walk's control: the latest runs were still asked, once, by the candidates before it" 1 "$(asked 'runs?per_page=100')"
+reset
+run c12 1107 success
+artifact 1107 coverage-summary
+run c12 1108 success
+artifact 1108 coverage-baseline
+latest_run c12 1107 success
+latest_run c12 1108 success
+lookup c12 0
+eq "subset's control, both runs in the filtered listing: the baseline is found" 1108 "$(out run-id)"
+eq "subset's control: the latest runs were not asked" 0 "$(asked 'runs?per_page=100')"
+
 summary

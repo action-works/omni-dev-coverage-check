@@ -441,7 +441,7 @@ publishes) cannot hide the run that has it. Runs from forks are ignored.
   artifact. If the `push` run for the merge-base has not finished, the next ancestor's
   baseline is used instead of rebuilding.
 - **A listing that is incomplete is asked a second way.** GitHub's list of a workflow's runs,
-  when filtered by commit and status, has been seen to leave out runs that match, with nothing
+  when filtered by commit and status, has been reported to leave out runs that match, with nothing
   in the answer to say so. A commit that has no baseline in that list is therefore looked up
   again in the workflow's latest 100 runs, listed once without a filter and matched by commit,
   conclusion and repository. It can only find a run the first list missed, and only one among
