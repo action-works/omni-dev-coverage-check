@@ -20,7 +20,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/print-version-step.test.sh` - Runs the "Print omni-dev version" script read out of `action.yml` against a stub `omni-dev` that replays the captured loader output in `tests/fixtures/omni-dev-loader/` and a stub `getconf`: the glibc the binary needs, the one the runner has and the two ways out (`test.yml` runs that)
 - `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep` (`test.yml` runs that)
 - `tests/recompute-worktree.test.sh` - Runs the "Compute baseline from merge-base (fallback)" script read out of `action.yml` with the real `git` in a throwaway repository against a stub `cargo` that can fail, and checks what is on disk afterwards: the `../base` worktree is gone after a recompute and after a failing one, a second recompute in the same workspace succeeds and writes the same baseline, a leftover worktree is cleared, and a plain directory named `base` is kept (`test.yml` runs that)
-- `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
+- `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the `ignore-filename-regex` check, the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
 - `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` or of a workflow in `.github/workflows/` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
 - `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
 - `tests/llvm-cov-ignore-steps.test.sh` - Runs the five steps that run `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate and the recompute's report), read out of `action.yml`, against a stub `cargo`, and checks the one `--ignore-filename-regex=<value>` each gets, or none when the input is empty; it fails when another step runs `cargo llvm-cov report` (`test.yml` runs that)
@@ -1305,26 +1305,43 @@ The action is a composite action with two phases:
     - `tests/input-steps.test.sh`: each row of the issue's table and the neighbours (a trailing
       space, a space before the comma, a tab, a carriage return, CRLF), the controls that must
       pass, a value with a command substitution (data, never run), and the `if:`, the env wiring
-      and the position. Against the old action 141 cases fail, and each of these mutations fails at
-      least one: the newline rule (10) or the carriage-return rule (1) dropped, the leading (23),
-      trailing (23), before-comma (19) or after-comma (19) rule dropped, spaces only and not tabs
-      (7), any inner space refused (7), the value not sanitised (5) or not cut (1), a refusal that
-      does not stop (15), the `if:` loosened (1) and the env read from another input (1).
-    - **Scenario 8c** of the `ignore-filename-regex` job is the runner's test (both legs, every
-      event): 8a's patterns with one space added beside the comma (`-nomatch\.txt, ^LICENSE$`),
-      which would have made the second pattern ` ^LICENSE$`. 8a is its control (only the space
-      differs). It must fail, and no combined report may exist (`out/refused.lcov`: the first step
-      stopped it, a refusal anywhere later would leave one), and `failure-messages` asserts from the
-      refusal's own message that it names the input and what it holds, that the files would stay with
-      no warning, and the fix. Checked by hand, not on a runner: the real step script with that value
-      gave the message, and the workflow's own `expect` calls passed on it. Not run on a runner when
+      and the position. It fails on the old action, and each rule fails at least one case when it
+      is removed (the newline rule 10, the carriage-return rule 1; the others vary with how the
+      rule is cut out, so no count is kept for them: a reviewer's removals gave different
+      numbers from the author's), as do spaces and not tabs, refusing any inner space, the value
+      not sanitised or cut, a refusal that does not stop, the `if:` loosened and the env read
+      from another input.
+    - **The message says what to do, and no more** (found in review): `|-` only drops the last
+      newline, so a block of several lines is still refused; the advice is one line, with bare
+      commas, as a plain or quoted value, and `[ ]` for a space that is meant. The clause that
+      explains a `?` appears only when the value had a character that does not print.
+    - **Known limits, accepted:** `[[:space:]]` is the platform's: a non-breaking space or U+2003
+      beside a comma is whitespace on macOS in a UTF-8 locale and not under C, and on a runner it
+      is whatever glibc says (not tested there), so one pasted from a web page may pass and then
+      exclude nothing. A pattern in `(?x)` verbose mode that ends in a space is refused, and `[ ]`
+      is the wrong advice for it. "Matches no path" is loose for a piece that is only a space,
+      which matches any path with a space in it.
+    - **Scenarios 8c and 8d** of the `ignore-filename-regex` job are the runner's tests (both
+      legs, every event). 8c is 8a's patterns with one space added beside the comma
+      (`-nomatch\.txt, ^LICENSE$`), which would have made the second pattern ` ^LICENSE$`. 8d is
+      8a's patterns as a YAML `|` block, the likeliest way to get it wrong: that its trailing
+      newline survives `with:`, the input and the step's `env:` is what the unit test cannot show,
+      since it sets the variable itself (a review could not verify it either), and a runner that
+      trimmed it would turn 8d red. 8a is the control of both (only the space, or the block,
+      differs). Each must fail, and no combined report may exist (`out/refused.lcov`,
+      `out/refused-block.lcov`: the first step stopped it, a refusal anywhere later would leave
+      one), and `failure-messages` asserts from the
+      refusal's own message (8c: the input and what it holds, that the files would stay with no
+      warning, and the fix; 8d: the line break named and shown as a `?`, and what a YAML block
+      does). Checked by hand, not on a runner: the real step script with those values gave the
+      messages, and the workflow's own `expect` calls passed on them. Not run on a runner when
       this was written: the pull request's own `Integration` run is the first.
   - The two gates differ when a filter removes everything: the patch gate passes (an
     empty patch is not an error to omni-dev, and the comment says so), the thin-mode
     line gate fails with "no executable lines". Documented in the README.
   - Tests: the `ignore-filename-regex` job (8a, a gate of 70 passes with LICENSE
     filtered out, 8b the control without the filter fails: 50% against 100%, 8c the same
-    filter with a space beside the comma is refused, #48),
+    filter with a space beside the comma is refused, 8d the same as a YAML block, #48),
     `ignore-filename-regex-flag` (9: 0.32.0 is stopped by the guard on a pull request
     only, 0.33.0 is its control), `pr-paths.yml` P5 and P6 for the comment and the
     patch gate, and `tests/guard-step.test.sh` for the probe and the floor.

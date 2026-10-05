@@ -193,9 +193,10 @@ expect_refused() { # <name> <value> <what the error says the value holds>
     "::error::The 'ignore-filename-regex' input holds $3"
   has "ignore-filename-regex, $1: it says the file would stay with no warning" "$OUT" \
     "which matches no path: the files would stay in the comment and the gates, with no warning"
-  has "ignore-filename-regex, $1: it says what to write" "$OUT" "bare commas ('a,b')"
-  has "ignore-filename-regex, $1: it says what a YAML block needs" "$OUT" "write |- or a plain value"
-  has "ignore-filename-regex, $1: it says how to write a space that is meant" "$OUT" "write [ ] for a space that is meant"
+  has "ignore-filename-regex, $1: it says what to write" "$OUT" "Write all the patterns on ONE line with bare commas ('a,b')"
+  has "ignore-filename-regex, $1: it says to write one line, and what a YAML block does" "$OUT" \
+    "a YAML | block keeps its line breaks (|- only drops the last one)"
+  has "ignore-filename-regex, $1: it says how to write a space that is meant" "$OUT" "Write [ ] for a space that is meant"
   # Non-empty lines: a line break in the value must not make a second line, which a runner
   # would read as another workflow command.
   eq "ignore-filename-regex, $1: it logs one line, whatever the value held" 1 "$(grep -c . <<<"$OUT" || true)"
@@ -224,7 +225,12 @@ expect_refused "a block of several lines" $'a\nb\nc\n' "a line break"
 expect_refused "only a space" ' ' "a space or tab at the start or end"
 expect_refused "a space after a comma that ends the value" 'a, ' "a space or tab at the start or end"
 
-# What is shown of it: a line break is a ?, and a long value is cut at 60.
+# What is shown of it: a line break is a ?, and says so; a value with nothing unprintable says
+# nothing of a ?; and a long value is cut at 60.
+run_step "$IGNORE_STEP" 'IGNORE_FILENAME_REGEX=a, b'
+lacks "ignore-filename-regex: a plain space does not explain a ?" "$OUT" "where a ? stands for"
+run_step "$IGNORE_STEP" $'IGNORE_FILENAME_REGEX=a\nb'
+has "ignore-filename-regex: a line break does" "$OUT" "(got 'a?b', where a ? stands for a line break or another character that does not print)"
 run_step "$IGNORE_STEP" $'IGNORE_FILENAME_REGEX=nomatch\n::error::forged'
 has "ignore-filename-regex: a workflow command in the value is shown with the break replaced" "$OUT" "(got 'nomatch?::error::forged'"
 long="$(printf 'x, %.0s' {1..40})"
