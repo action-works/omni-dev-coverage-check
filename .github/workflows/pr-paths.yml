@@ -10,7 +10,8 @@ name: PR paths
 #                 `coverage-baseline` artifact.
 #   pull-request  a pull request: the sticky comment, the baseline lookup (a hit or
 #                 a miss, both are legitimate), the patch gate and its ordering,
-#                 and `ignore-filename-regex` reaching both the comment and the gate.
+#                 and `ignore-filename-regex` reaching the comment, the gate and the
+#                 baseline side of the comparison (P10).
 #   recompute     a pull request, fat mode: the baseline rebuilt at the merge-base
 #                 in a git worktree, and `llvm-cov-ignore-filename-regex` reaching the
 #                 report that recompute builds.
@@ -465,6 +466,37 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/move-outputs.sh p6
 
+      # `ignore-filename-regex` on the BASELINE side (#49). P5 and P6 filter a file that only the
+      # head has, so even on a hit the downloaded baseline had nothing to drop and the filter was
+      # never shown reaching it. LICENSE is in both reports (3 of 4 lines covered in the baseline,
+      # 2 of 4 in the head, and no diff touches it), and `all-files` shows what it flips, so
+      # filtering it has to take it out of the totals, the per-file deltas and the indirect
+      # changes alike: that is the filter applied to the downloaded baseline as well as the head.
+      # The gates are off, so only the comparison is in play. P1 is its control for the filter
+      # (`all-files`, no filter, and it names LICENSE); it ran before the second file was added,
+      # so its head report lacks shard-3 and the two differ by that as well, which no assertion
+      # compares across them.
+      - name: 'P10. LICENSE filtered out, every file shown'
+        id: p10
+        uses: ./
+        continue-on-error: true
+        with:
+          run-coverage: false
+          shard-reports: shards/shard-*.lcov
+          report: out/p10/coverage-head.lcov
+          fail-under-lines: ''
+          fail-under-patch: ''
+          all-files: true
+          ignore-filename-regex: 'LICENSE'
+          comment: false
+          upload-artifacts: false
+          publish-baseline: false
+          baseline-workflow: pr-paths.yml
+
+      - name: Move P10 outputs aside
+        if: ${{ !cancelled() }}
+        run: bash tests/move-outputs.sh p10
+
       - name: Assert every outcome
         if: ${{ !cancelled() }}
         env:
@@ -479,6 +511,7 @@ jobs:
           P7: ${{ steps.p7.outcome }}
           P8: ${{ steps.p8.outcome }}
           P9: ${{ steps.p9.outcome }}
+          P10: ${{ steps.p10.outcome }}
           NOBASE_SHA: ${{ steps.nobase.outputs.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PATCH_PERCENT: ${{ steps.p1.outputs.patch-percent }}
@@ -531,6 +564,16 @@ jobs:
                   if (((1 SUBSEP l) in h) && ((2 SUBSEP l) in h) && ((h[1 SUBSEP l] > 0) != (h[2 SUBSEP l] > 0))) c++
                 print c + 0
               }' "$1" "$2"
+          }
+
+          # An lcov report without the records of one source file: a record runs from its first
+          # line (`TN:` or `SF:`) to `end_of_record`, and the last has no newline after it.
+          without_record() { # <file> <lcov>
+            awk -v want="$1" '
+              { buf = buf $0 "\n" }
+              /^SF:/ { drop = (substr($0, 4) ~ ("/" want "$")) }
+              /^end_of_record/ { if (!drop) printf "%s", buf; buf = ""; drop = 0 }
+              END { if (buf != "" && !drop) printf "%s", buf }' "$2"
           }
 
           # distance_of, tn_of and check_note, which the baseline checks below use. They need
@@ -601,6 +644,49 @@ jobs:
             jq -e '.patch_coverage.percent == 40 and .patch_coverage.total == 20' out/p6/coverage.json
           assert "P6: the comment names the file P5 filtered out" grep -qF patch-extra.txt out/p6/coverage.md
 
+          # P10: the filter on the baseline side. Hit or miss is whatever the lookup found, which
+          # the next step holds to the Actions API as it does P1's; either way it must be
+          # internally sound.
+          check "P10. LICENSE filtered out, every file shown" success "$P10"
+          base10=out/p10/baseline/coverage-head.lcov
+          head10=out/p10/coverage-head.lcov
+          # shellcheck disable=SC2016 # `$v`, `$a` and `$b` are jq's, not the shell's
+          if [ -s "$base10" ]; then
+            echo "note - P10 found a baseline: the hit path ran"
+            tn10="$(tn_of "$base10")"
+            check "P10: the baseline names one commit" 1 "$(printf '%s\n' "$tn10" | grep -c .)"
+            check_note P10 "$MB" "$tn10" out/p10/coverage.md
+            # The totals are recomputed from the reports with LICENSE's records removed, as P1's
+            # are from the whole reports, so the figures survive an edit of the fixtures.
+            without_record LICENSE "$base10" > out/p10/baseline-without-license.lcov
+            without_record LICENSE "$head10" > out/p10/head-without-license.lcov
+            before10="$(bash tests/lcov-percent.sh out/p10/baseline-without-license.lcov)"
+            after10="$(bash tests/lcov-percent.sh out/p10/head-without-license.lcov)"
+            assert "P10: total_before is the baseline's coverage with LICENSE removed" \
+              jq -e --argjson v "$before10" '((.project_delta.total_before - $v) | fabs) < 0.02' out/p10/coverage.json
+            assert "P10: total_after is the head report's coverage with LICENSE removed" \
+              jq -e --argjson v "$after10" '((.project_delta.total_after - $v) | fabs) < 0.02' out/p10/coverage.json
+            # The control: with LICENSE in, the same two reports give other figures, so the
+            # two assertions above are not ones an unfiltered baseline would also pass.
+            assert "P10: with LICENSE in, the baseline's coverage is another figure" \
+              jq -en --argjson a "$(bash tests/lcov-percent.sh "$base10")" --argjson b "$before10" '(($a - $b) | fabs) > 0.02'
+            assert "P10: with LICENSE in, the head report's coverage is another figure" \
+              jq -en --argjson a "$(bash tests/lcov-percent.sh "$head10")" --argjson b "$after10" '(($a - $b) | fabs) > 0.02'
+            assert "P10: LICENSE is not among the per-file deltas" \
+              jq -e '[.project_delta.files[].path] | index("LICENSE") == null' out/p10/coverage.json
+            assert "P10: it has no indirect change, though its coverage flips between the reports" \
+              jq -e '(.indirect_changes.newly_covered + .indirect_changes.newly_uncovered) == 0 and ([(.indirect_changes.lines // [])[].path] | index("LICENSE") == null)' out/p10/coverage.json
+            assert "P10: the comment names nothing from LICENSE" absent LICENSE out/p10/coverage.md
+          else
+            # Nothing to filter on the baseline side, so the filter is not shown here; the run
+            # must still be sound.
+            echo "note - P10 found no baseline: the miss path ran"
+            assert "P10: without a baseline there is no project_delta" \
+              jq -e '.project_delta == null' out/p10/coverage.json
+            assert "P10: nor indirect changes" jq -e '.indirect_changes == null' out/p10/coverage.json
+            assert "P10: the comment says there is no baseline" grep -q 'No baseline available' out/p10/coverage.md
+          fi
+
           # P8 is P7 with the walk off, from a commit no run was ever for: no baseline of its
           # own, so a miss on every run, whatever main has published.
           assert "P8: no baseline was found" test ! -e out/p8/baseline/coverage-head.lcov
@@ -663,6 +749,10 @@ jobs:
               "$(flipped "$base" "$head" LICENSE)" \
               "$(jq -r '.indirect_changes.newly_covered + .indirect_changes.newly_uncovered' out/p1/coverage.json)"
             assert "P1: the comment differs from the one without a baseline" differ out/comment-p1.md out/comment-p3.md
+            # P10 is P1 with LICENSE filtered out, so P1 is its control and must name it.
+            assert "P1: the per-file deltas name LICENSE, which P10 filters out" \
+              jq -e '[.project_delta.files[].path] | index("LICENSE") != null' out/p1/coverage.json
+            assert "P1: the comment names LICENSE, which P10 filters out" grep -qF LICENSE out/p1/coverage.md
           else
             echo "note - P1 found no baseline: the miss path ran"
             assert "P1: without a baseline there is no project_delta" \
@@ -710,6 +800,10 @@ jobs:
 
           MB="$(git merge-base origin/main HEAD)"
           held_to_the_api "P1" pr-paths.yml coverage-baseline "$MB" out/p1/baseline/coverage-head.lcov out/expected-before-p1.txt
+          # P10 looks from the same merge-base later in the run, so the same snapshot bounds it
+          # (a baseline only appears). Without this a P10 that missed while P1 hit would pass on
+          # the weaker miss path, with the baseline side of the filter not shown.
+          held_to_the_api "P10" pr-paths.yml coverage-baseline "$MB" out/p10/baseline/coverage-head.lcov out/expected-before-p1.txt
           # P7's base has no baseline of its own, so a hit is at least one commit back, and a
           # miss means none within reach.
           held_to_the_api "P7" pr-paths.yml coverage-baseline "$NOBASE_SHA" out/p7/baseline/coverage-head.lcov out/expected-before-p7.txt
