@@ -523,8 +523,11 @@ eq "deprecations: the list was read three times" 3 "$(cat "$d/jobs-reads")"
 
 # The warnings the resolve step logged in the `latest-redirect` job of PR #53 (job
 # 111359543489), as the runner printed them, with the other warnings that log holds: the
-# runner's own Node.js notice and another step's. The text of the last one is the shape
-# the assertion in `failure-messages` reads (#61).
+# runner's own Node.js notice and another step's. The text of the fallback's is the shape
+# the assertion in `failure-messages` reads (#61). Since #62 a token the API refuses logs only
+# a warning of that kind, worded "refused the request (HTTP 401) and was not asked again", and
+# no `Attempt n/3` lines, which would claim retries that did not happen; this log is the older
+# shape, which the reader reads just the same. The pairing below is with the current text.
 W_ATTEMPT1='Attempt 1/3: could not resolve latest omni-dev version (API: Bad credentials)'
 W_ATTEMPT2='Attempt 2/3: could not resolve latest omni-dev version (API: Bad credentials)'
 W_ATTEMPT3='Attempt 3/3: could not resolve latest omni-dev version (API: Bad credentials)'
@@ -616,24 +619,29 @@ eq "warnings: and prints nothing" "" "$OUT"
 # `failure-messages` asserts from ONE warning of scenario 10's job. The fragments it holds
 # are fixed strings, so a rewording of the action's warning would fail the assertion on a
 # runner; these hold the two ends to each other here, read from the files and not copied.
-# The warning is the `::warning::` line of the resolve step that says the redirect answered.
-# It holds two values the runner fills in, so each fragment of the workflow is paired with
-# the text the action's script has for it: the API's reason (`Bad credentials` is what the
-# API says to the token scenario 10 sends) and the tag, which the redirect's shape check
-# says starts with `v`.
+# The warning is the `::warning::` line of the resolve step that says the redirect answered,
+# and it starts with `${api_gave}`, the text the step builds for what the API did. Scenario 10
+# sends a token the API refuses with 401, so the one that matters is the refusal's (#62). The
+# warning holds values the runner fills in, so each fragment of the workflow is paired with the
+# text the action's script has for it: the API's reason (`Bad credentials` is what the API says
+# to the token scenario 10 sends) and the tag, which the redirect's shape check says starts
+# with `v`.
 ACTION_TEXT="$(<"$ROOT/action.yml")"
 WORKFLOW_TEXT="$(<"$ROOT/.github/workflows/integration.yml")"
-FALLBACK_LINE="$(grep -F '::warning::The GitHub API gave no release after 3 attempts' <<<"$ACTION_TEXT")"
+FALLBACK_LINE="$(grep -F '::warning::${api_gave}, so latest omni-dev was resolved' <<<"$ACTION_TEXT")"
+REFUSED_LINE="$(grep -F 'api_gave="The GitHub API refused the request (HTTP ${refused})' <<<"$ACTION_TEXT")"
 pass "action.yml: the fallback's warning is logged, once" test "$(grep -c . <<<"$FALLBACK_LINE")" -eq 1
+pass "action.yml: the text for a refusal is built, once" test "$(grep -c . <<<"$REFUSED_LINE")" -eq 1
 has "workflow: failure-messages reads the warnings of scenario 10's job" "$WORKFLOW_TEXT" \
   "bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)'"
-while IFS='|' read -r in_workflow in_action; do
-  has "action.yml: the warning holds '$in_action'" "$FALLBACK_LINE" "$in_action"
+while IFS='|' read -r in_workflow in_action source; do
+  if [ "$source" = refused ]; then line="$REFUSED_LINE"; else line="$FALLBACK_LINE"; fi
+  has "action.yml: the $source line holds '$in_action'" "$line" "$in_action"
   has "workflow: ... and the assertion asks for '$in_workflow'" "$WORKFLOW_TEXT" "\"$in_workflow\""
 done <<'EOF'
-(API: Bad credentials)|(API: ${api_message
-so latest omni-dev was resolved from the github.com releases/latest redirect instead: v|so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}
-set 'version' to a release to skip the lookup|set 'version' to a release to skip the lookup
+(API: Bad credentials)|(API: ${api_message|refused
+so latest omni-dev was resolved from the github.com releases/latest redirect instead: v|so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}|warning
+set 'version' to a release to skip the lookup|set 'version' to a release to skip the lookup|warning
 EOF
 # The three checks as written: each holds the fallback's own words, and each of the other two
 # fragments with it, so all three have to be in one warning (a fragment quoted by another call

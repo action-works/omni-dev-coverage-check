@@ -7,7 +7,9 @@
 # The step resolves `version: latest` with one GitHub API call. Run unauthenticated
 # from a shared runner IP that call hit the 60/hr limit and failed the whole job (#1),
 # so it now sends the token and tries three times. This pins that: the header, the
-# retries and their delays, the timeouts that let a hung connection be retried, a
+# retries and their delays, what is retried and what is not (a 401, 403 or 429 is an
+# answer retrying cannot change and goes straight to the redirect, #62), the timeouts
+# that let a hung connection be retried, a
 # runner with no jq, and that a pinned version never touches the network and loses a
 # leading v (#38) or V, and that one with nothing left after it, or empty, fails with a
 # message instead (#51). A spent limit can outlast those attempts, so when all three fail the
@@ -22,7 +24,9 @@
 #
 # `curl` is a stub that replays the responses a case scripts, one per call, and logs
 # each call's arguments; `sleep` is a stub that logs its argument and returns, so no
-# case touches the network or waits. `jq` is the real one, as on the runner.
+# case touches the network or waits. `jq` is the real one, as on the runner. A response
+# may start with `@<status>@` to give the HTTP status the API call's `-w` asks for (200
+# without it); the redirect call gets its scripted answer as it is.
 
 set -uo pipefail
 
@@ -53,19 +57,33 @@ mkdir "$BIN"
 # One argument per line under a `call` header, so a case can look for an exact
 # argument (or the absence of one) instead of a substring of a joined line. The
 # Nth call replays $CASE_DIR/response.N; a leading `!<code>` in it means curl
-# failed with that status and printed nothing, as for a refused connection. A call
+# failed with that status and printed no body, as for a refused connection. A call
 # past the scripted ones gets an empty body, which the call count then exposes.
+# The API call asks for the status after the body (-w '\n%{http_code}'), and the stub
+# prints it as curl does: the `@<status>@` prefix of the response, or 200, and 000 when
+# curl failed. The redirect call asks for another format and gets its response as written.
 cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(grep -c '^call ' "$CASE_DIR/curl.log") + 1 ))
 { echo "call $n"; printf '%s\n' "$@"; } >>"$CASE_DIR/curl.log"
+status_line=0
+for a in "$@"; do
+  if [ "$a" = '\n%{http_code}' ]; then status_line=1; fi
+done
 [ -f "$CASE_DIR/response.$n" ] || exit 0
 response="$(cat "$CASE_DIR/response.$n")"
 if [[ "$response" == '!'* ]]; then
   echo "curl: (${response#!}) stub failure" >&2
+  if [ "$status_line" -eq 1 ]; then printf '\n000'; fi
   exit "${response#!}"
 fi
+status=200
+if [[ "$response" =~ ^@([0-9][0-9][0-9])@ ]]; then
+  status="${BASH_REMATCH[1]}"
+  response="${response#@???@}"
+fi
 printf '%s' "$response"
+if [ "$status_line" -eq 1 ]; then printf '\n%s' "$status"; fi
 EOF
 cat >"$BIN/sleep" <<'EOF'
 #!/usr/bin/env bash
@@ -75,6 +93,8 @@ chmod +x "$BIN/curl" "$BIN/sleep"
 
 TOKEN='ghs_SENTINEL_not_a_real_token'
 RATE_LIMITED='{"message":"API rate limit exceeded for 10.0.0.1. (But here'"'"'s the good news: Authenticated requests get a higher rate limit.)","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}'
+# A refusal the API gives is final (#62), so a retried failure needs a status that is not one: 502.
+SERVER_ERROR='@502@{"message":"Server Error"}'
 
 # run_resolve <version> <token> [response...]: runs the step as the runner would,
 # with `VERSION` and `GH_TOKEN` set to <version> and <token> as the step's `env:` does,
@@ -379,6 +399,7 @@ arg_present "latest: it asks for the GitHub JSON media type" "Accept: applicatio
 arg_present "latest: it pins the API version" "X-GitHub-Api-Version: 2022-11-28"
 arg_after "latest: it bounds the connection, so a hang is retried" --connect-timeout 10
 arg_after "latest: it bounds the whole call, so a hang is retried" --max-time 30
+arg_after "latest: it asks curl for the HTTP status after the body" -w '\n%{http_code}'
 # With --fail curl drops the body of a 403, and GitHub's reason with it: the warning
 # would say "unknown error" for a rate limit.
 eq "latest: curl is not told to --fail, so GitHub's reason stays in the body" 0 \
@@ -399,11 +420,11 @@ release-tag=v0.46.1" "$OUT"
 lacks "no token: no Authorization header is sent" "$CURLS" "Authorization"
 eq "no token: no empty argument stands in for one" 0 "$(grep -c '^$' <<<"$CURLS" || true)"
 
-# --- latest, rate limited, then good -----------------------------------------
+# --- latest, a server error, then good ---------------------------------------
 
 # A fourth response, a redirect to another release, is scripted and must stay unread:
 # the redirect only changes a run that would have failed.
-run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" '{"tag_name":"v0.46.1"}' \
+run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" '{"tag_name":"v0.46.1"}' \
   "302 https://github.com/rust-works/omni-dev/releases/tag/v9.9.9"
 eq "recovers: the step succeeds on the third attempt" 0 "$STATUS"
 eq "recovers: it made three calls, so the redirect was not asked" 3 "$CALLS"
@@ -411,7 +432,7 @@ eq "recovers: it backed off 3s then 6s" "3 6" "$SLEEPS"
 eq "recovers: it resolved the version" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
 has "recovers: attempt 1 is warned about, with GitHub's reason" "$LOG" \
-  "::warning::Attempt 1/3: could not resolve latest omni-dev version (API: API rate limit exceeded for 10.0.0.1."
+  "::warning::Attempt 1/3: could not resolve latest omni-dev version (API: Server Error)"
 has "recovers: attempt 2 is warned about" "$LOG" "::warning::Attempt 2/3:"
 lacks "recovers: attempt 3 worked, so it is not warned about" "$LOG" "Attempt 3/3"
 lacks "recovers: no error is raised" "$LOG" "::error::"
@@ -421,7 +442,7 @@ lacks "recovers: the token is not printed" "$LOG" "SENTINEL"
 
 TAG_URL=https://github.com/rust-works/omni-dev/releases/tag
 
-run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v0.46.1"
+run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "302 $TAG_URL/v0.46.1"
 eq "redirect: the step succeeds" 0 "$STATUS"
 eq "redirect: three API attempts, then one request for the redirect and no more" 4 "$CALLS"
 eq "redirect: it waited between the API attempts only" "3 6" "$SLEEPS"
@@ -429,7 +450,7 @@ eq "redirect: the version comes from the tag in the Location" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
 has "redirect: attempt 3 is still warned about" "$LOG" "::warning::Attempt 3/3:"
 has "redirect: a warning says the redirect answered and why the API did not" "$LOG" \
-  "::warning::The GitHub API gave no release after 3 attempts (API: API rate limit exceeded for 10.0.0.1."
+  "::warning::The GitHub API gave no release after 3 attempts (API: Server Error)"
 has "redirect: the warning names the release it resolved" "$LOG" \
   "was resolved from the github.com releases/latest redirect instead: v0.46.1."
 has "redirect: the warning offers the ways out, since the job passed on a failing API" "$LOG" \
@@ -452,17 +473,17 @@ lacks "redirect: no token is sent to github.com" "$call" "Authorization"
 lacks "redirect: no token is sent to github.com, even as an argument" "$call" "SENTINEL"
 
 # Whatever the tag is, it is taken from the Location, and a pre-release suffix is a tag.
-run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v10.20.300"
+run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "302 $TAG_URL/v10.20.300"
 eq "redirect: a tag of several digits is taken whole" "version=10.20.300
 release-tag=v10.20.300" "$OUT"
-run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v0.46.1-rc.1"
+run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "302 $TAG_URL/v0.46.1-rc.1"
 eq "redirect: a pre-release suffix is part of the tag" "version=0.46.1-rc.1
 release-tag=v0.46.1-rc.1" "$OUT"
-run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v1.0.0-rc-1.x-2"
+run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "302 $TAG_URL/v1.0.0-rc-1.x-2"
 eq "redirect: a pre-release identifier may hold a hyphen, as in semver" "version=1.0.0-rc-1.x-2
 release-tag=v1.0.0-rc-1.x-2" "$OUT"
 
-run_resolve latest "" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "302 $TAG_URL/v0.46.1"
+run_resolve latest "" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "302 $TAG_URL/v0.46.1"
 eq "redirect, no token: the step succeeds" 0 "$STATUS"
 eq "redirect, no token: it resolves the version" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
@@ -474,7 +495,7 @@ release-tag=v0.46.1" "$OUT"
 # case must end in the one error, with the three API attempts and one request for the
 # redirect made, and nothing written for the steps after it.
 expect_failure() { # <name> <redirect response> <what the error says the redirect gave>
-  run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "$2"
+  run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "$2"
   eq "$1: the step fails" 1 "$STATUS"
   eq "$1: it asked the redirect once" 4 "$CALLS"
   eq "$1: it wrote no version" "" "$OUT"
@@ -526,12 +547,90 @@ expect_location "redirect fails: a suffix with an escaped newline" "$TAG_URL/v0.
 expect_location "redirect fails: a newline smuggled in, escaped" "$TAG_URL/v0.46.1%0Aversion=9.9.9"
 expect_location "redirect fails: a command after the tag" "$TAG_URL/v0.46.1;id"
 
+# --- latest, the API refuses: it is not asked again (#62) --------------------
+
+# A bad or revoked token (401) and a spent rate limit (403, 429) are answers retrying cannot
+# change, and a limit can outlast any wait the attempts make, so the step goes to the redirect
+# at once: one API call, no wait, and no `Attempt n/3` warning, which would claim retries that
+# did not happen. The warning names the reason and the status instead. The scripted third
+# response must stay unread, and the two after it show the redirect is the second call.
+refusal_case() { # <name> <status> <body> <the reason as the warning prints it, up to its end>
+  local name=$1 code=$2 body=$3 reason=$4
+  run_resolve latest "$TOKEN" "@$code@$body" "302 $TAG_URL/v0.46.1" "$SERVER_ERROR"
+  eq "$name: the step succeeds" 0 "$STATUS"
+  eq "$name: one API call, then the redirect, and no more" 2 "$CALLS"
+  eq "$name: it never waits" "" "$SLEEPS"
+  eq "$name: the version comes from the redirect" "version=0.46.1
+release-tag=v0.46.1" "$OUT"
+  eq "$name: it logs one warning" 1 "$(grep -c '^::warning::' <<<"$LOG" || true)"
+  has "$name: the warning says it was refused, with the status and that it was not asked again" "$LOG" \
+    "::warning::The GitHub API refused the request (HTTP $code) and was not asked again, since retrying cannot change that (API: $reason"
+  has "$name: and that the redirect answered, with the release" "$LOG" \
+    ", so latest omni-dev was resolved from the github.com releases/latest redirect instead: v0.46.1."
+  has "$name: and offers the ways out" "$LOG" "or set 'version' to a release to skip the lookup."
+  lacks "$name: it does not claim attempts that did not happen" "$LOG" "Attempt"
+  lacks "$name: nor three of them" "$LOG" "3 attempts"
+  lacks "$name: no error is raised" "$LOG" "::error::"
+  lacks "$name: the token is not printed" "$LOG" "SENTINEL"
+  call_present "$name: the second call is the redirect" "$(call_args 2)" \
+    "https://github.com/rust-works/omni-dev/releases/latest"
+}
+refusal_case "401, a bad token" 401 '{"message":"Bad credentials"}' "Bad credentials)"
+refusal_case "403, a spent rate limit" 403 "$RATE_LIMITED" "API rate limit exceeded for 10.0.0.1."
+refusal_case "429, too many requests" 429 '{"message":"Too Many Requests"}' "Too Many Requests)"
+refusal_case "403 with no body" 403 "" "unknown error)"
+
+# With no token the 60/hr limit answers 403 the same way.
+run_resolve latest "" "@403@$RATE_LIMITED" "302 $TAG_URL/v0.46.1"
+eq "no token, 403: one API call, then the redirect" 2 "$CALLS"
+eq "no token, 403: it never waits" "" "$SLEEPS"
+
+# What is retried is what a retry can help: a 5xx and a status that is neither a success nor
+# a refusal, as before. (A refused connection, a timeout, a body that is not JSON and JSON
+# with no tag are in expect_retry below.) Each fails three times, waits 3s then 6s, and says
+# `after 3 attempts`.
+for code in 404 500 502 503 504; do
+  run_resolve latest "$TOKEN" "@$code@{\"message\":\"Nope\"}" "@$code@{\"message\":\"Nope\"}" "@$code@{\"message\":\"Nope\"}" "302 $TAG_URL/v0.46.1"
+  eq "HTTP $code: it is asked three times, then the redirect" 4 "$CALLS"
+  eq "HTTP $code: it waits 3s then 6s" "3 6" "$SLEEPS"
+  has "HTTP $code: all three attempts are warned about" "$LOG" "::warning::Attempt 3/3: could not resolve latest omni-dev version (API: Nope)"
+  has "HTTP $code: the fallback says after 3 attempts" "$LOG" "::warning::The GitHub API gave no release after 3 attempts (API: Nope), so latest omni-dev was resolved"
+  lacks "HTTP $code: it does not say it was refused" "$LOG" "was not asked again"
+done
+
+# A server error and then a refusal: the first is retried, the second ends it.
+run_resolve latest "$TOKEN" "$SERVER_ERROR" '@401@{"message":"Bad credentials"}' "302 $TAG_URL/v0.46.1" "$SERVER_ERROR"
+eq "a 502 then a 401: the step succeeds" 0 "$STATUS"
+eq "a 502 then a 401: two API calls, then the redirect" 3 "$CALLS"
+eq "a 502 then a 401: it waited once, after the first" "3" "$SLEEPS"
+has "a 502 then a 401: the first attempt is warned about" "$LOG" "::warning::Attempt 1/3: could not resolve latest omni-dev version (API: Server Error)"
+lacks "a 502 then a 401: the refused attempt is not one of three" "$LOG" "Attempt 2/3"
+has "a 502 then a 401: the refusal is named" "$LOG" "::warning::The GitHub API refused the request (HTTP 401) and was not asked again"
+
+# A refusal and a redirect that does not answer: the one error says the API refused, not that
+# it was asked three times, and carries what the redirect gave.
+for code in 401 403 429; do
+  run_resolve latest "$TOKEN" "@$code@{\"message\":\"Refused\"}" "429 "
+  eq "HTTP $code, redirect fails: the step fails" 1 "$STATUS"
+  eq "HTTP $code, redirect fails: one API call and one redirect request" 2 "$CALLS"
+  eq "HTTP $code, redirect fails: it never waits" "" "$SLEEPS"
+  eq "HTTP $code, redirect fails: it wrote no version" "" "$OUT"
+  has "HTTP $code, redirect fails: the error says the API refused" "$LOG" \
+    "::error::Could not determine latest omni-dev version. The GitHub API refused the request (HTTP $code) and was not asked again, since retrying cannot change that (API: Refused)"
+  has "HTTP $code, redirect fails: and what the redirect gave" "$LOG" \
+    "and the github.com releases/latest redirect gave no release tag (HTTP 429)."
+  has "HTTP $code, redirect fails: and both ways out" "$LOG" "or set 'version' to a release to skip the lookup."
+  lacks "HTTP $code, redirect fails: it does not claim attempts" "$LOG" "Attempt"
+  lacks "HTTP $code, redirect fails: nor three of them" "$LOG" "3 attempts"
+  eq "HTTP $code, redirect fails: a single error is raised" 1 "$(grep -c '^::error::' <<<"$LOG" || true)"
+done
+
 # The one error names both failures and both ways out.
-run_resolve latest "$TOKEN" "$RATE_LIMITED" "$RATE_LIMITED" "$RATE_LIMITED" "429 "
+run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "429 "
 has "both fail: the error says the API gave no release, after how many attempts" "$LOG" \
   "::error::Could not determine latest omni-dev version. The GitHub API gave no release after 3 attempts"
 has "both fail: the error carries the API's reason" "$LOG" \
-  "(API: API rate limit exceeded for 10.0.0.1."
+  "(API: Server Error)"
 has "both fail: the error says what the redirect gave" "$LOG" \
   "and the github.com releases/latest redirect gave no release tag (HTTP 429)."
 has "both fail: the error names the input to check" "$LOG" "check that github-token holds a valid token"

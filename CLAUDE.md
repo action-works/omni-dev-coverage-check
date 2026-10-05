@@ -550,11 +550,40 @@ The action is a composite action with two phases:
   (`.../repos/rust-works/omni-dev/releases/latest`), and one more request if the API gives no
   release in any attempt (the redirect fallback, below); a pinned version makes none. Made
   unauthenticated from a shared runner address it hit the 60/hr limit and failed the whole job,
-  so the step sends `github-token` (default `github.token`, 1000/hr) and tries three times,
-  sleeping 3s then 6s (none after the last) before the redirect fallback; if that fails too,
-  one error names both failures, the input to check and the other way out, pinning `version`.
+  so the step sends `github-token` (default `github.token`, 1000/hr) and tries up to three times,
+  sleeping 3s then 6s (none after the last) before the redirect fallback, except that a 401, 403
+  or 429 is not retried (#62, below); if that fails too, one error names both failures, the input
+  to check and the other way out, pinning `version`.
   Each call is bounded (`--connect-timeout 10 --max-time 30`), so a hung connection is
   retried instead of waited on until the job's timeout. Rules:
+  - **A refusal is not retried (#62).** The API call asks curl for the status (`-w '\n%{http_code}'`,
+    after the body; curl prints `000` for a connection that failed, and there is still no `--fail`,
+    so a 403 keeps the body GitHub's reason comes from), and a 401, 403 or 429 ends the API's part
+    at the first call: no wait, no `Attempt n/3` warning (it would claim retries that did not
+    happen), and straight to the redirect. Retried as before, up to three times with the waits:
+    no answer, a timeout, a 5xx, a 404, a body that is not JSON, JSON with no `tag_name`: what a
+    retry can help. Decided so it is not re-derived: a 403 can be a rate limit or a plain refusal,
+    and a secondary limit asks for a wait of a minute or more, so a 9s retry helps neither and all
+    three are final; a 401 is a token that is wrong however often it is sent. It costs nothing a
+    run could have used: the three attempts of a refused token spent 9.3s (3s, 6s) of the run, and
+    the `latest-redirect` job (scenario 10) went from that to about a second. The step builds one
+    text for what the API did, `api_gave`, that both the fallback's warning and the error start
+    with: `The GitHub API gave no release after 3 attempts (API: <reason>)` after retries, and
+    `The GitHub API refused the request (HTTP <status>) and was not asked again, since retrying
+    cannot change that (API: <reason>)` after a refusal. A 502 and then a 401 retries once and
+    stops (the warning for the 502 is `Attempt 1/3`, the refusal is named separately).
+    `tests/resolve-version-step.test.sh`: the stub `curl` prints the status line the way curl does
+    (`@<status>@` in a scripted response, 200 without it, `000` when curl failed), the cases that
+    retried on a rate-limit body now use a 502 (a real rate limit is 403 and is final), and new
+    cases pin each of 401, 403, 429 (one API call and the redirect, no wait, one warning that names
+    the reason and the status and does not say `Attempt` or `3 attempts`, and the error for a
+    refusal when the redirect fails too), the statuses still retried (404, 500, 502, 503, 504), a
+    502 then a 401, and no token. Against the old step 70 cases fail, and each of these mutations
+    fails at least one: 401, 403 or 429 left out of the refused set (22, 30, 17), a 502 or a 404
+    added to it (109, 5), no `break` on a refusal or the `Attempt` warning kept (62 each), no `-w`
+    (70), the refusal's text saying `3 attempts` (15) and the error ignoring the refusal (6). One
+    mutant survives and is equivalent: not splitting the status line off the body, since `jq`
+    reads the first JSON value and is silent about the number after it.
   - The token reaches the script through `env: GH_TOKEN`, never as an expression in the script.
     The runner evaluates every `${{ }}` in a `run:` block, in a comment or a message, and a
     backslash does not escape one: a message that wrote the expression would show the masked
@@ -665,8 +694,8 @@ The action is a composite action with two phases:
       run worse (the fallback runs only after the API failed), but it was not measured from a runner
       when this was written. The `latest-redirect` job is that measurement and keeps checking, weekly
       too: scenario 10 sends the token `not-a-token`, which the API refuses with 401 whatever the rate
-      limit and without spending any, so its three attempts fail on demand and the redirect must
-      answer; the job asks the API directly, with the workflow token, what "latest" is, and the two
+      limit and without spending any, so its one API call fails on demand (a 401 is not retried,
+      #62) and the redirect must answer; the job asks the API directly, with the workflow token, what "latest" is, and the two
       must agree. A second run of the action is not the control: with the fallback it would use the
       redirect too whenever the API failed, and a second `latest` install would break the one
       omni-dev version per job rule. The 401 is recorded just before 10 and asserted at the end,
@@ -674,23 +703,26 @@ The action is a composite action with two phases:
       `failure-messages` reads the job's `##[warning]` lines with `tests/job-warnings.sh` and
       requires ONE warning to hold the API's reason (`(API: Bad credentials)`), the redirect
       answering (`so latest omni-dev was resolved from the github.com releases/latest redirect
-      instead: v`) and the way out (`set 'version' to a release to skip the lookup`). The job's log
-      holds four warnings that name the API's reason (three `Attempt n/3` and the fallback's), so
-      the checks hold the fallback's own words and all three must be in the same warning: the
-      attempts alone, which a run whose redirect never answered would also log, cannot pass. A
-      reworded warning, or the workflow token reaching 10 so that the API answers and no fallback
+      instead: v`) and the way out (`set 'version' to a release to skip the lookup`). Until #62 the
+      job's log held four warnings that named the API's reason (three `Attempt n/3` and the
+      fallback's), so the checks hold the fallback's own words and all three must be in the same
+      warning: that stays the rule, though a refused token now logs only the fallback's, worded
+      `The GitHub API refused the request (HTTP 401) and was not asked again, ... (API: Bad
+      credentials), so latest omni-dev was resolved ...`. A reworded warning, or the workflow token reaching 10 so that the API answers and no fallback
       is logged, fails it. That `github-token` reaches the step is still pinned only by the unit
       test.
       - The assertion's fragments are fixed strings, and the warning holds two values the runner
         fills in (the API's reason, the tag), so `job-errors.test.sh` pairs each fragment with the
         text of `action.yml`'s script for it, read from the files and not copied (the tag's `v` is
-        the redirect shape check's, `Bad credentials` is what the API says to 10's token), and fails
+        the redirect shape check's, `Bad credentials` is what the API says to 10's token; the reason
+        is paired with the `api_gave` text for a refusal, since that is the one 10 takes), and fails
         when either side is edited alone.
       - Checked by hand, not on a runner: the real resolve step run locally with
         `GH_TOKEN=not-a-token` against the live API gave exactly the four warnings #61 quotes
         (v0.46.0), and the workflow's own `expect` calls passed on them; with the fallback's wording
         changed, with no warnings, and with only the three `Attempt` lines each of the three checks
-        failed. The runner's first run of it is the pull request that adds it.
+        failed. Run again for #62 it gave the one refusal warning in about a second (it was 9s),
+        and the same three checks passed on it.
       - The reader only reads: a warning is not a failure, so nothing turns a job red for logging
         one, and `job-deprecations.sh` still skips `##[warning]` lines on purpose.
 - **No first-class shard mode (decided in #24)**: there is no `mode: shard` / `mode: report`,

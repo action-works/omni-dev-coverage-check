@@ -288,11 +288,12 @@ Both hooks are shell, evaluated in one `bash`: see
 | `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
 
 `version: latest` makes one call to the GitHub API to find the newest release. It sends `github-token` and tries
-three times (waiting 3s, then 6s), so the 60-requests-an-hour limit on unauthenticated calls from a shared runner
-address does not fail the job. It needs no configuration: the token defaults to the workflow's. If all three fail (a
-spent limit can last up to an hour), the step reads the release from the redirect of
-`github.com/rust-works/omni-dev/releases/latest` instead, which draws on no API quota, and logs a warning saying so.
-It fails only if that fails too, and the error names both. (The API lookup needs `jq`, which GitHub-hosted runners
+up to three times (waiting 3s, then 6s) when a retry can help (no answer, a timeout, a 5xx), so a blip does not fail the
+job and the 60-requests-an-hour limit on unauthenticated calls from a shared runner address does not either. It needs no
+configuration: the token defaults to the workflow's. A refusal (401, 403 or 429: a bad token, a spent limit, which can
+last up to an hour) is not retried, since asking again cannot change it. When the API gives no release, the step reads
+the release from the redirect of `github.com/rust-works/omni-dev/releases/latest` instead, which draws on no API quota,
+and logs a warning saying so, with the API's reason. It fails only if that fails too, and the error names both. (The API lookup needs `jq`, which GitHub-hosted runners
 have; a runner without it fails first, saying so.)
 A pinned `version` makes no request, and may be written as a release tag is, with a leading `v`: `v0.45.0` and
 `0.45.0` give the same `version` (`0.45.0`) and `release-tag` (`v0.45.0`) outputs and share one cache entry. A
