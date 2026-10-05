@@ -546,11 +546,16 @@ report you upload elsewhere.
 
 - The value is a list of regexes on one line, separated by commas, each matched against
   a file's repo-relative path (after `strip-prefix`) and unanchored, so `src/gpu/`
-  excludes everything under it. Only a comma separates patterns: a newline or a space is
-  part of a pattern, so a `|` block (which ends in a newline) or `a, b` (which looks for
-  ` b`) excludes nothing, and a pattern cannot contain a comma (`a{1,3}` is split in two
-  and fails as an invalid regex). An empty piece (`a,,b`, a trailing comma) is ignored,
-  so a typo cannot exclude everything.
+  excludes everything under it. Only a comma separates patterns, and nothing is trimmed, so a
+  newline, or a space or tab at either end or beside a comma, would become part of a pattern
+  and match no path: a `|` block (which ends in a newline) or `a, b` (which looks for ` b`)
+  would exclude nothing, with no warning. **The action refuses such a value** (first, before
+  any install, where the value is used: on a pull request, and in thin mode with the line
+  gate on) with an error that names the input: write the patterns on one line with bare
+  commas, `|-` for a block, and `[ ]` for a space that is meant. A space inside a pattern
+  (`src/my dir/`) is a character of it and is allowed. A pattern cannot contain a comma
+  (`a{1,3}` is split in two and fails as an invalid regex). An empty piece (`a,,b`, a
+  trailing comma) is ignored, so a typo cannot exclude everything.
 - The path is repo-relative, where `cargo llvm-cov --ignore-filename-regex` matches the
   absolute one: a pattern written there, such as `^/home/runner/work/…/gpu/`, matches
   nothing here, with no warning, and `^src/` written here would match nothing there.

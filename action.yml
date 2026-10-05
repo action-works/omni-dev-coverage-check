@@ -87,7 +87,7 @@ inputs:
     required: false
     default: ''
   ignore-filename-regex:
-    description: 'Exclude files whose repo-relative path matches any of these regexes from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Separate patterns with commas on one line: a newline or a space is part of a pattern, and a pattern cannot contain a comma. Matched after strip-prefix and unanchored, like cargo llvm-cov --ignore-filename-regex except that it sees the repo-relative path, not the absolute one, and takes Rust regex syntax, not LLVM''s. It does not reach what cargo-llvm-cov computes in fat mode (the summary, the `fail-under-lines` gate): `llvm-cov-ignore-filename-regex` does. Needs omni-dev 0.33.0 or later. Empty disables'
+    description: 'Exclude files whose repo-relative path matches any of these regexes from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Separate patterns with bare commas on one line: a newline, or a space or tab at either end or beside a comma, would become part of a pattern and match no path, so the step refuses such a value (a YAML `|` block ends in a newline: use `|-`; write `[ ]` for a space that is meant). A pattern cannot contain a comma. Matched after strip-prefix and unanchored, like cargo llvm-cov --ignore-filename-regex except that it sees the repo-relative path, not the absolute one, and takes Rust regex syntax, not LLVM''s. It does not reach what cargo-llvm-cov computes in fat mode (the summary, the `fail-under-lines` gate): `llvm-cov-ignore-filename-regex` does. Needs omni-dev 0.33.0 or later. Empty disables'
     required: false
     default: ''
   report-format:
@@ -178,6 +178,44 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    # -------------------------------------------------------------------------
+    # Check the inputs that can be wrong without anything saying so
+    # -------------------------------------------------------------------------
+    - name: Check the ignore-filename-regex value
+      # The value is a comma-separated list on one line, and nothing is trimmed (#48). A newline,
+      # or a space or tab at either end or beside a comma, is not a separator: it becomes part
+      # of a pattern, which then matches no path, so nothing is excluded and nothing says so.
+      # A YAML `|` block does it by ending in a newline. Refused here, first, so a mistake in a
+      # workflow file fails in seconds and not after the install. A space inside a pattern
+      # (`src/my dir/`) is a character and stays; `[ ]` writes one beside a comma.
+      # Runs where the value is used: the guard's own third need, a diff on a pull request, or
+      # the thin-mode line gate. A fat-mode push runs no `omni-dev coverage diff`, so a value
+      # set there is not looked at, as the guard does not ask omni-dev about it either.
+      if: inputs.ignore-filename-regex != '' && (github.event_name == 'pull_request' || (inputs.run-coverage != 'true' && inputs.fail-under-lines != ''))
+      shell: bash
+      env:
+        IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
+      run: |
+        problem=""
+        case "$IGNORE_FILENAME_REGEX" in
+          *$'\n'* | *$'\r'*) problem="a line break" ;;
+        esac
+        if [ -z "$problem" ]; then
+          if [[ "$IGNORE_FILENAME_REGEX" =~ ^[[:space:]] || "$IGNORE_FILENAME_REGEX" =~ [[:space:]]$ ]]; then
+            problem="a space or tab at the start or end"
+          elif [[ "$IGNORE_FILENAME_REGEX" =~ [[:space:]], || "$IGNORE_FILENAME_REGEX" =~ ,[[:space:]] ]]; then
+            problem="a space or tab beside a comma"
+          fi
+        fi
+        if [ -n "$problem" ]; then
+          # Shown with what is not printable replaced by ?, and cut short: a line break in a
+          # message would start another workflow command on the next line.
+          shown="${IGNORE_FILENAME_REGEX//[^[:print:]]/?}"
+          [ "${#shown}" -le 60 ] || shown="${shown:0:60}..."
+          echo "::error::The 'ignore-filename-regex' input holds $problem (got '$shown', where a ? is a line break or another character that does not print). Patterns are separated by a comma and nothing is trimmed, so that character would become part of a pattern, which matches no path: the files would stay in the comment and the gates, with no warning. Write the patterns on one line with bare commas ('a,b'); a YAML | block ends in a newline, so write |- or a plain value; write [ ] for a space that is meant."
+          exit 1
+        fi
+
     # -------------------------------------------------------------------------
     # Install + cache omni-dev (carried over from omni-dev-commit-check)
     # -------------------------------------------------------------------------

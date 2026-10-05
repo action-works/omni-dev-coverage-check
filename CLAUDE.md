@@ -1279,15 +1279,52 @@ The action is a composite action with two phases:
   - Commas split the patterns (omni-dev's `value_delimiter`), so a pattern cannot hold
     one (`a{1,3}` fails as an invalid regex); omni-dev ignores an empty piece. Nothing
     else separates them and nothing is trimmed: a newline or a space is part of the
-    pattern, so a `|` block or `a, b` filters nothing, silently. That was left as
-    documented (README, input description) rather than normalised: the issue specifies
-    a comma-separated list, normalising would alter a pattern that holds a space, and
-    the file stays in the comment, visibly, as it did before the input existed.
+    pattern, so a `|` block or `a, b` filters nothing, silently. #43 left that documented;
+    **#48 decided to refuse it** (the issue's option 2, its stated preference): the step
+    "Check the ignore-filename-regex value" fails, with one `::error::`, a value that holds a
+    line break (`\n` or `\r`), a space or tab at either end, or one right beside a comma. Rules,
+    so they are not re-derived:
+    - **Refuse, do not normalise.** Normalising (newlines to commas, trimming) was rejected: it
+      alters what a caller wrote, and a pattern that holds a leading or trailing space on purpose
+      would change meaning. A refusal changes no pattern, so no working value changes: a value
+      that excluded something before (bare commas, a space inside a pattern) still does.
+    - **A separate step, first in the action**, not a part of the omni-dev flag guard: the guard
+      is about what omni-dev accepts and runs after the install, and this needs no omni-dev, so
+      a mistake in a workflow file fails in seconds, not after a `cargo install`. Its `if:` is the
+      guard's own third need (the input set, and a diff runs: a pull request, or thin mode with
+      the line gate); a fat-mode push runs no `omni-dev coverage diff`, so a value set there is not
+      looked at. `input-steps.test.sh` pins the `if:` as text, and that it is the first step.
+    - **A space inside a pattern is allowed** (`src/my dir/`): it is a character of the regex, not
+      a separator. Only whitespace where a separator would be (an end, or beside a comma) is
+      refused. `[ ]` writes a space there on purpose, and `\s` is not whitespace in the value, so
+      it passes. A leading or trailing comma and `a,,b` pass: omni-dev ignores an empty piece.
+    - The message names the input, what it holds, why it matters (the files would stay in the
+      comment and the gates, with no warning) and the fixes (bare commas, `|-` for a YAML block,
+      `[ ]`). The value is shown with what does not print replaced by `?` and cut at 60, so a line
+      break in it cannot start a second workflow command (`input-steps.test.sh` asserts one line).
+    - `tests/input-steps.test.sh`: each row of the issue's table and the neighbours (a trailing
+      space, a space before the comma, a tab, a carriage return, CRLF), the controls that must
+      pass, a value with a command substitution (data, never run), and the `if:`, the env wiring
+      and the position. Against the old action 141 cases fail, and each of these mutations fails at
+      least one: the newline rule (10) or the carriage-return rule (1) dropped, the leading (23),
+      trailing (23), before-comma (19) or after-comma (19) rule dropped, spaces only and not tabs
+      (7), any inner space refused (7), the value not sanitised (5) or not cut (1), a refusal that
+      does not stop (15), the `if:` loosened (1) and the env read from another input (1).
+    - **Scenario 8c** of the `ignore-filename-regex` job is the runner's test (both legs, every
+      event): 8a's patterns with one space added beside the comma (`-nomatch\.txt, ^LICENSE$`),
+      which would have made the second pattern ` ^LICENSE$`. 8a is its control (only the space
+      differs). It must fail, and no combined report may exist (`out/refused.lcov`: the first step
+      stopped it, a refusal anywhere later would leave one), and `failure-messages` asserts from the
+      refusal's own message that it names the input and what it holds, that the files would stay with
+      no warning, and the fix. Checked by hand, not on a runner: the real step script with that value
+      gave the message, and the workflow's own `expect` calls passed on it. Not run on a runner when
+      this was written: the pull request's own `Integration` run is the first.
   - The two gates differ when a filter removes everything: the patch gate passes (an
     empty patch is not an error to omni-dev, and the comment says so), the thin-mode
     line gate fails with "no executable lines". Documented in the README.
   - Tests: the `ignore-filename-regex` job (8a, a gate of 70 passes with LICENSE
-    filtered out, 8b the control without the filter fails: 50% against 100%),
+    filtered out, 8b the control without the filter fails: 50% against 100%, 8c the same
+    filter with a space beside the comma is refused, #48),
     `ignore-filename-regex-flag` (9: 0.32.0 is stopped by the guard on a pull request
     only, 0.33.0 is its control), `pr-paths.yml` P5 and P6 for the comment and the
     patch gate, and `tests/guard-step.test.sh` for the probe and the floor.
