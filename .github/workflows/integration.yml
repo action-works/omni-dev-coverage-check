@@ -946,13 +946,13 @@ jobs:
           exit "$status"
 
   # `version: latest` when the releases API gives no release (#40). A spent rate limit
-  # can last up to an hour, so after its three attempts the step reads the tag from
+  # can last up to an hour, so when the API gives no release the step reads the tag from
   # the github.com releases/latest redirect. That redirect is not a documented
   # interface and is used only when the API is already failing, so nothing else
   # would notice if GitHub changed it, or began throttling a runner's address; this
   # job, which also runs weekly, does. A token that is not one is refused by the API
-  # with 401 whatever the rate limit and spends none of it, so 10's API attempts fail
-  # on demand and the step has to use the redirect. The job asks the API directly,
+  # with 401 whatever the rate limit and spends none of it, so 10's API call fails
+  # on demand (a refusal is not retried, #62) and the step has to use the redirect. The job asks the API directly,
   # with the workflow token, what "latest" is, and the redirect must have given the
   # same release: that shows on a real runner that the redirect is reachable and means
   # the API's "latest". (A second run of the action as the control would not do: with

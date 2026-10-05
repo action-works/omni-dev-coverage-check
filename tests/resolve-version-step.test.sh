@@ -61,7 +61,7 @@ mkdir "$BIN"
 # past the scripted ones gets an empty body, which the call count then exposes.
 # The API call asks for the status after the body (-w '\n%{http_code}'), and the stub
 # prints it as curl does: the `@<status>@` prefix of the response, or 200, and 000 when
-# curl failed. The redirect call asks for another format and gets its response as written.
+# curl failed. A body keeps its trailing newline, as the API's pretty-printed JSON has one. The redirect call asks for another format and gets its response as written.
 cat >"$BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 n=$(( $(grep -c '^call ' "$CASE_DIR/curl.log") + 1 ))
@@ -71,7 +71,9 @@ for a in "$@"; do
   if [ "$a" = '\n%{http_code}' ]; then status_line=1; fi
 done
 [ -f "$CASE_DIR/response.$n" ] || exit 0
-response="$(cat "$CASE_DIR/response.$n")"
+# Read raw: a trailing newline is part of the body, as it is in the API's pretty-printed JSON.
+response="$(cat "$CASE_DIR/response.$n"; printf x)"
+response="${response%x}"
 if [[ "$response" == '!'* ]]; then
   echo "curl: (${response#!}) stub failure" >&2
   if [ "$status_line" -eq 1 ]; then printf '\n000'; fi
@@ -584,6 +586,32 @@ refusal_case "403 with no body" 403 "" "unknown error)"
 run_resolve latest "" "@403@$RATE_LIMITED" "302 $TAG_URL/v0.46.1"
 eq "no token, 403: one API call, then the redirect" 2 "$CALLS"
 eq "no token, 403: it never waits" "" "$SLEEPS"
+
+# The real API pretty-prints, over several lines, and ends the body with a newline, so curl's
+# output is `...}\n` then the status line's own `\n`, a blank line between: the status is what
+# follows the LAST newline and the body is what precedes it, whichever the match. A split that
+# took the first newline would hand jq `{` and lose the tag and the reason (found in review: the
+# step then retried three times, quietly, and the redirect saved the run). A CRLF inside a body
+# is whitespace to jq. Each shape is a success or a refusal, and the success or the refusal
+# must be seen as one.
+PRETTY_OK=$'@200@{\n  "tag_name": "v0.46.1",\n  "name": "v0.46.1",\n  "draft": false\n}\n'
+PRETTY_401=$'@401@{\n  "message": "Bad credentials",\n  "documentation_url": "https://docs.github.com/rest",\n  "status": "401"\n}\n'
+PRETTY_403_CRLF=$'@403@{\r\n  "message": "API rate limit exceeded for 10.0.0.1.",\r\n  "status": "403"\r\n}\r\n'
+run_resolve latest "$TOKEN" "$PRETTY_OK" "302 $TAG_URL/v9.9.9"
+eq "a pretty-printed success: the step succeeds" 0 "$STATUS"
+eq "a pretty-printed success: one call, so the tag was read from the whole body" 1 "$CALLS"
+eq "a pretty-printed success: the version is the API's" "version=0.46.1
+release-tag=v0.46.1" "$OUT"
+lacks "a pretty-printed success: it warns of nothing" "$LOG" "::warning::"
+run_resolve latest "$TOKEN" "$PRETTY_401" "302 $TAG_URL/v0.46.1" "$SERVER_ERROR"
+eq "a pretty-printed 401: the step succeeds" 0 "$STATUS"
+eq "a pretty-printed 401: one API call, then the redirect" 2 "$CALLS"
+has "a pretty-printed 401: the reason was read from the whole body" "$LOG" \
+  "(HTTP 401) and was not asked again, since retrying cannot change that (API: Bad credentials), so latest"
+run_resolve latest "$TOKEN" "$PRETTY_403_CRLF" "302 $TAG_URL/v0.46.1" "$SERVER_ERROR"
+eq "a pretty-printed 403 with CRLF: one API call, then the redirect" 2 "$CALLS"
+has "a pretty-printed 403 with CRLF: the reason was read" "$LOG" \
+  "(HTTP 403) and was not asked again, since retrying cannot change that (API: API rate limit exceeded for 10.0.0.1.), so latest"
 
 # What is retried is what a retry can help: a 5xx and a status that is neither a success nor
 # a refusal, as before. (A refused connection, a timeout, a body that is not JSON and JSON

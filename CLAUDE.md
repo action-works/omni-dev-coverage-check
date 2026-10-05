@@ -581,9 +581,13 @@ The action is a composite action with two phases:
     502 then a 401, and no token. Against the old step 70 cases fail, and each of these mutations
     fails at least one: 401, 403 or 429 left out of the refused set (22, 30, 17), a 502 or a 404
     added to it (109, 5), no `break` on a refusal or the `Attempt` warning kept (62 each), no `-w`
-    (70), the refusal's text saying `3 attempts` (15) and the error ignoring the refusal (6). One
-    mutant survives and is equivalent: not splitting the status line off the body, since `jq`
-    reads the first JSON value and is silent about the number after it.
+    (70), the refusal's text saying `3 attempts` (15), the error ignoring the refusal (6), and the
+    split taking the first newline and not the last (found in review: every body in the stub was one
+    line with no trailing newline, so it passed, while the real API's `...}\n` then curl's own `\n`
+    gave jq a lone `{` and the step retried three times, quietly, with the redirect saving the run;
+    the stub now keeps a body's trailing newline and the pretty-printed 200, 401 and CRLF 403 cases
+    catch it). One mutant survives and is equivalent: not splitting the status line off the body,
+    since `jq` reads the first JSON value and is silent about the number after it.
   - The token reaches the script through `env: GH_TOKEN`, never as an expression in the script.
     The runner evaluates every `${{ }}` in a `run:` block, in a comment or a message, and a
     backslash does not escape one: a message that wrote the expression would show the masked
@@ -656,7 +660,8 @@ The action is a composite action with two phases:
     `Authorization` on the redirect to the asset CDN: the header would only send the token somewhere
     it buys nothing.
   - **Redirect fallback (#40)**: a spent limit can last up to an hour, longer than the attempts can
-    wait, so after the third failure the step reads the tag from the redirect of
+    wait, so when the API gives no release (after the third failure, or at once after a refusal, #62)
+    the step reads the tag from the redirect of
     `https://github.com/rust-works/omni-dev/releases/latest`. The API stays first (it is the
     documented interface and the redirect is not), so the fallback only changes a run that would have
     failed, and the one warning it logs says it did, with the API's reason. Rules:
@@ -689,7 +694,8 @@ The action is a composite action with two phases:
       the redirect and logs the warning, which names the API's reason ("Bad credentials") and says to
       check the token. That is the point of the fallback (the step resolves whatever the API says),
       and also how the `latest-redirect` job makes the API fail on demand. The warning says the API
-      "gave no release", not that it did not answer, because a refusal is an answer.
+      "gave no release", not that it did not answer, because a refusal is an answer (since #62 the
+      refusal's own wording says it: "refused the request (HTTP 401) and was not asked again").
     - Whether github.com throttles the redirect on a runner's address is not known. It cannot make a
       run worse (the fallback runs only after the API failed), but it was not measured from a runner
       when this was written. The `latest-redirect` job is that measurement and keeps checking, weekly
