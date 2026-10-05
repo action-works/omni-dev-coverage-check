@@ -275,8 +275,8 @@ The action is a composite action with two phases:
       passes on a workflow and on `action.yml`, `ci(action)` and `ci(ci,action)` pass, a capitalised
       `Bump` and a 250-character body line pass, subjects of 72, 73 and 80 characters pass, and 81
       fails; `chore(deps)`, `build(deps)` and `ci(deps)` fail on their scope, and so do `ci(ci)(deps)`
-      and `ci(ci):bump` on the format, so the pass is not vacuous. It was a throwaway repository with
-      this repository's `.omni-dev/`, not a real Dependabot pull request.
+      and `ci(ci):bump` on the format, so the pass is not vacuous. That was a throwaway repository
+      with this repository's `.omni-dev/`; the real pull requests are below.
     - **From dependabot-core's source, read in review** (not run): the prefix gets `: ` when it ends
       in a letter, digit or closing parenthesis, so `ci(ci)` gives `ci(ci): bump <action> from <a>
       to <b>`; `bump` is lower-case after a lower-case prefix; a subject over 72 characters loses its
@@ -298,9 +298,14 @@ The action is a composite action with two phases:
       read. Mutants of the test itself checked, each failing a case: the limit loosened or `-le` made
       `-lt`, `include` not read, the empty-list guard (a loop fed an empty here-string runs once
       with an empty name), only the first entry checked, the scope check and the type check dropped.
-    - **What the first run opens.** Two pins were behind (`actions/checkout@v4`, latest v7, 21 uses;
-      and `actions/cache@v4`, v6), so two pull requests: a major bump of the actions every job runs,
-      each of which runs the whole matrix. They were left alone by hand because that is a change of
+    - **What the first run opened, within minutes of the config landing on `main` (2026-10-05):** #110
+      `ci(ci): bump actions/checkout from 4 to 7` and #111 `ci(ci): bump actions/cache from 4 to 6`,
+      with exactly the subject the simulation had, labels `dependencies` and `github_actions`, and
+      `Validate Commit Messages` green on both: **Dependabot's message passes the real check.** Two
+      pins were behind (`actions/checkout@v4`, latest v7, 21 uses; and `actions/cache@v4`, v6), so two
+      pull requests: a major bump of the actions every job runs, each of which runs the whole matrix
+      (both ran green, `ci-gate` included, and the `pull-request` jobs of `pr-paths.yml` and
+      `e2e-sharded.yml` were skipped for the bot as designed). Whether to merge them is a person's call. They were left alone by hand because that is a change of
       its own (see the pins above); now their CI is the evidence, and a red one is the answer. After
       them, a weekly run opens a pull request for each pin that moved.
     - **What a Dependabot pull request meets**, from the workflows as written: its `GITHUB_TOKEN`
@@ -310,9 +315,8 @@ The action is a composite action with two phases:
       a required check); no job `ci-gate` needs has an `if:`, so nothing leaves a required check red
       or pending for it. A pull request is merged through the queue like any other, and nothing
       enqueues it for the bot (auto-merge is off).
-    - **Not verified:** that Dependabot's own message matches the simulated one byte for byte (the
-      first real pull request is the evidence), that it opens exactly two pull requests, and what it
-      does with an update a person has already made by hand (it is expected to close its pull
+    - **Not verified:** the bot's behaviour after the first run (the weekly schedule, and that it
+      respects the limit of two), and what it does with an update a person has already made by hand (it is expected to close its pull
       request). Pins are no longer bumped by hand, except to act on a Dependabot pull request or on
       the Node.js deprecation notice a runner prints for an action.
 - **The recompute removes its worktree (#78)**: "Compute baseline from merge-base (fallback)"
