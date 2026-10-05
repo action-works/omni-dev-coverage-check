@@ -50,7 +50,7 @@ This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-
 - `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
 - `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run and attempt on `schedule` and `workflow_dispatch`, and the leg in both) and checks the action's `omni-dev-cache-hit` output (`check` for the `thin-mode` legs, `check-fresh`, which refuses a hit on every event, for `version-pin`) (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
 - `tests/ci-gate.sh` - What the `ci-gate` job of `integration.yml` runs: fails unless every job it needs finished `success`, from `toJSON(needs)` in `$NEEDS`
-- `tests/merge-queue.test.sh` - Tests `ci-gate.sh`, and reads the workflows to check what the merge queue relies on: `ci-gate` needs every job of `integration.yml` and runs `always()`, `merge_group` is a trigger of the three workflows a required check comes from and of neither path-filtered one, and the required checks' names are still the jobs' names (`test.yml` runs that)
+- `tests/merge-queue.test.sh` - Tests `ci-gate.sh`, and reads the workflows to check what the merge queue relies on: `ci-gate` needs every job of `integration.yml` and runs `always()`, `failure-messages` needs every job but those two (#105), `merge_group` is a trigger of the three workflows a required check comes from and of neither path-filtered one, and the required checks' names are still the jobs' names (`test.yml` runs that)
 - `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
 - `tests/fixtures/omni-dev-probe/` - What the real releases either side of each guard floor (and 0.28.0, which has no `coverage`) answered to the guard's probe, one `<version>/<flag>.txt` each: `exit=<status>`, then the output (`tests/guard-step.test.sh` replays them)
 - `tests/fixtures/omni-dev-loader/` - What the dynamic loader printed when a pre-built omni-dev Linux binary needed a newer glibc than the runner had (Ubuntu 22.04, glibc 2.35), one `<release>-<arch>-glibc-<version>.txt` each: `exit=<status>`, then the output (`tests/print-version-step.test.sh` replays them)
@@ -1104,12 +1104,10 @@ The action is a composite action with two phases:
     reads the logs by name, and a name that moved would fail it with "no job of that name".
     A new floor flag is a few entries in the matrix and one `has_flag` call, not a third
     copy of the job. Each entry's `has-flag` says whether its omni-dev has the flag, which is
-    all the assertion step decides on beside the event. `ci-gate` needs `guard-flag`
-    (`tests/merge-queue.test.sh` fails until it does) and so does `failure-messages`, but
-    nothing pins the second: deleting it from `failure-messages`' `needs` leaves every test
-    green (found in review; the gap is older than #50 and holds for every job in that list),
-    and `failure-messages` could then read a leg's log before the leg finishes. Keep the two
-    lists in step by hand until something checks it.
+    all the assertion step decides on beside the event. `ci-gate` and `failure-messages` both
+    need `guard-flag`, and `tests/merge-queue.test.sh` fails until each does (the second
+    since #105: the review of this change found that deleting it from `failure-messages`'
+    `needs` left every test green, which held for every job in that list).
   - The `--output` guard acts only on a `pull_request`, so the `guard-flag` legs for it (a
     matrix: `0.28.0`, the newest release with no `coverage` subcommand at all, `0.31.0`,
     the newest with `coverage diff` but without the flag, and `0.32.0`, the floor)
@@ -1666,6 +1664,21 @@ The action is a composite action with two phases:
       `tests/merge-queue.test.sh` fails until it does, and for a name in `needs` that is no job.
       Its readers are awk over the layout the file has (a block list under `needs:`, a block under
       `on:`) and refuse a flow-style one rather than read it as empty.
+    - **And in `failure-messages`' `needs` (#105), which holds every job but itself and `ci-gate`.**
+      It reads the finished log of each job it names, and its deprecation step reads EVERY job that
+      finished green, so a job missing from its list can still be running when it is read: the
+      step would assert on a log that is not finished, or fail with "no job of that name", and
+      nothing said which list to fix. Decided so it is not re-derived: the rule is "every job
+      but those two", not "every job it reads a log of by name", because the deprecation step
+      reads all of them (a rule over the names it asserts on would leave the others out).
+      `ci-gate` is excluded because it needs `failure-messages`, so needing it back would be a
+      cycle, which the test also names. The same test checks it as it checks `ci-gate`'s list: a
+      job missing (`failure-messages does not need: X`), a name that is no job, itself, `ci-gate`,
+      a `needs:` that is not a block list (refused, not read as empty), and a job that is not
+      there. It held on the file as it was, so no job was found missing. Mutations checked, each
+      shown to be reported on a copy: the first, a middle and the last need dropped, a bogus name,
+      a job added after it, `ci-gate` and itself added, no `needs:` at all, the job renamed, and a
+      flow-style list.
   - **A `merge_group` run is a `push` run that publishes no baseline.** Every event test in
     `integration.yml` and `action.yml` is `pull_request` or `push` to `main`, so the queue's commit
     gets the whole suite, the coverage and the overall line gate, and no comment, merge-base, patch
