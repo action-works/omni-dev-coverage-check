@@ -946,13 +946,13 @@ jobs:
           exit "$status"
 
   # `version: latest` when the releases API gives no release (#40). A spent rate limit
-  # can last up to an hour, so after its three attempts the step reads the tag from
+  # can last up to an hour, so when the API gives no release the step reads the tag from
   # the github.com releases/latest redirect. That redirect is not a documented
   # interface and is used only when the API is already failing, so nothing else
   # would notice if GitHub changed it, or began throttling a runner's address; this
   # job, which also runs weekly, does. A token that is not one is refused by the API
-  # with 401 whatever the rate limit and spends none of it, so 10's API attempts fail
-  # on demand and the step has to use the redirect. The job asks the API directly,
+  # with 401 whatever the rate limit and spends none of it, so 10's API call fails
+  # on demand (a refusal is not retried, #62) and the step has to use the redirect. The job asks the API directly,
   # with the workflow token, what "latest" is, and the redirect must have given the
   # same release: that shows on a real runner that the redirect is reachable and means
   # the API's "latest". (A second run of the action as the control would not do: with
@@ -1934,9 +1934,10 @@ jobs:
           # say which part is missing; the second holds all three, which is the rule. The scenario's own checks
           # show the outcome (the API refused, the release equals the API's); this is
           # what shows that the redirect answered and not the API, which the outcome
-          # alone does not. The job's log holds three `Attempt n/3` warnings that name
-          # the API's reason too, so every check holds the fallback's own words and
-          # all of them must be in ONE warning: the reason, the redirect, and the way out.
+          # alone does not. A token the API refuses is not retried (#62), so the job's log
+          # holds that one warning and no `Attempt n/3` lines; every check still holds the
+          # fallback's own words, and all of them must be in ONE warning: the reason, the
+          # redirect, and the way out.
           # A reworded warning, or the workflow token reaching the scenario (so that the
           # API answers and no fallback is logged), fails these. The job name is the one
           # `latest-redirect` sets above.

@@ -207,20 +207,47 @@ runs:
             auth=(-H "Authorization: Bearer $GH_TOKEN")
           fi
           RELEASE_TAG=""
+          refused=""
           for attempt in 1 2 3; do
-            response=$(curl -sS \
+            # -w puts the HTTP status on a line after the body (curl still prints 000 for a
+            # connection that failed). There is no --fail: a 403 keeps its JSON body, which
+            # is where GitHub's reason comes from. The status is split off below.
+            answer=$(curl -sS \
               --connect-timeout 10 --max-time 30 \
+              -w '\n%{http_code}' \
               "${auth[@]}" \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               https://api.github.com/repos/rust-works/omni-dev/releases/latest || true)
+            api_status="${answer##*$'\n'}"
+            response="${answer%$'\n'*}"
             RELEASE_TAG=$(printf '%s' "$response" | jq -r '.tag_name // empty' 2>/dev/null || true)
             [ -n "$RELEASE_TAG" ] && break
             api_message=$(printf '%s' "$response" | jq -r '.message // "no tag_name in response"' 2>/dev/null || true)
+            # The API answered and refused: a bad or revoked token (401), a spent rate limit
+            # (403 or 429). Asking again 3s and 6s later cannot change that, and a limit can
+            # outlast any wait these attempts could make, so go to the redirect at once.
+            # A 403 can be a rate limit or a plain refusal, and a secondary limit asks for a
+            # wait of a minute or more: a few seconds helps neither, so all three are final.
+            # What is retried is what a retry can help: no answer, a timeout, a 5xx, a body
+            # that is not JSON, JSON with no tag.
+            case "$api_status" in
+              401 | 403 | 429)
+                refused="$api_status"
+                break
+                ;;
+            esac
             echo "::warning::Attempt ${attempt}/3: could not resolve latest omni-dev version (API: ${api_message:-unknown error})"
             if [ "$attempt" -lt 3 ]; then sleep $((attempt * 3)); fi
           done
           if [ -z "$RELEASE_TAG" ]; then
+            # What the API did, for the messages below: not "after 3 attempts" when it was
+            # asked once.
+            if [ -n "$refused" ]; then
+              api_gave="The GitHub API refused the request (HTTP ${refused}) and was not asked again, since retrying cannot change that (API: ${api_message:-unknown error})"
+            else
+              api_gave="The GitHub API gave no release after 3 attempts (API: ${api_message:-unknown error})"
+            fi
             # The API gave no release, and a spent rate limit can last up to an hour,
             # longer than the attempts above can wait. The releases/latest page is an
             # ordinary web request that draws on no API quota, and it redirects to
@@ -240,11 +267,11 @@ runs:
             tag_url='^https://github\.com/rust-works/omni-dev/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?)$'
             if [[ "$redirect_to" =~ $tag_url ]]; then
               RELEASE_TAG="${BASH_REMATCH[1]}"
-              echo "::warning::The GitHub API gave no release after 3 attempts (API: ${api_message:-unknown error}), so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+              echo "::warning::${api_gave}, so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
             fi
           fi
           if [ -z "$RELEASE_TAG" ]; then
-            echo "::error::Could not determine latest omni-dev version. The GitHub API gave no release after 3 attempts (API: ${api_message:-unknown error}) and the github.com releases/latest redirect gave no release tag (HTTP ${redirect_status:-000}${redirect_to:+ to $redirect_to}). If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+            echo "::error::Could not determine latest omni-dev version. ${api_gave} and the github.com releases/latest redirect gave no release tag (HTTP ${redirect_status:-000}${redirect_to:+ to $redirect_to}). If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
             exit 1
           fi
           VERSION="$RELEASE_TAG"
