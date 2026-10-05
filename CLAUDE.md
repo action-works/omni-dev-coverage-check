@@ -147,6 +147,48 @@ The action is a composite action with two phases:
     has; a full miss spends `depth + 1`. `GITHUB_TOKEN` has 1,000 an hour per
     repository, which is why `integration.yml` passes `baseline-ancestor-depth: 0` (up to
     21 lookups per pull-request run, and none finds anything), and why the depth is a bound.
+  - **The pinned actions, and how they are kept current (#58).** `dawidd6/action-download-artifact`
+    is pinned `@v27` (it was `@v21`): since #5 the action passes `run_id`, and v22 to v27 changed
+    what runs only when `run_id` is NOT given (run selection, #57's index glitch) plus v22's
+    expired-artifact handling, v23's rewrite of the download and dependency bumps. v27's
+    `action.yml` was read: every input this step passes (`name`, `run_id`, `path`,
+    `if_no_artifact_found`) is there under the same name, `github_token` defaults to
+    `github.token`, and it runs on `node24`, as v21 did. What shows the download itself still
+    works is a baseline hit on a real runner: `pr-paths.yml` and `e2e-sharded.yml` download one
+    by run id when the merge-base's baseline exists, and the pull request that made the bump is
+    the first to run it (the run's P1 and E1 logs say `published it for`).
+    - **Pins as of 2026-10-05, from each repository's latest release, so the next reader can see
+      the distance:** `actions/checkout@v4` (v7), `actions/cache@v4` (v6, the one in the action
+      itself), `actions/download-artifact@v8` (v8), `actions/upload-artifact@v7` (v7),
+      `dawidd6/action-download-artifact@v27` (v27), `marocchino/sticky-pull-request-comment@v3`
+      (v3), `codecov/codecov-action@v7` (v7), `Swatinem/rust-cache@v2` (v2),
+      `taiki-e/install-action@v2` and `@cargo-llvm-cov` (v2), `dtolnay/rust-toolchain@stable` (a
+      branch, no release). `actions/checkout` (22 uses) and `actions/cache` are the stale ones;
+      they were left, because a major bump of the tools every job runs is a change of its own that
+      needs the whole matrix, not a rider on this one. `action-works/omni-dev-commit-check@v1` is
+      the sibling action, not a third party.
+    - **Dependabot would read all of it: verified from its source** (`dependabot-core`,
+      `github_actions/file_fetcher.rb`): with `directory: "/"` it fetches the root `action.yml`
+      and `action.yaml` AND `.github/workflows/*.yml`, so the pins inside the composite action are
+      covered, which the issue could not tell from the docs. Branch pins (`@stable`,
+      `@cargo-llvm-cov`) are not versions and are ignored.
+    - **Not enabled, and why (the question is open on #58).** There is no `.github/dependabot.yml`,
+      and one was not added unattended: it makes a bot open pull requests on this repository on a
+      schedule, and two things need a person's call first. (1) Its commit messages must pass the
+      required `Validate Commit Messages`: the default `build(deps): bump ...` uses a type this
+      project does not allow (`feat`, `fix`, `docs`, `refactor`, `chore`, `test`, `ci`), so it
+      needs `commit-message.prefix` (`ci(ci)`, or per directory) and nothing here could run the
+      linter on a bot's message to check it; and the lint checks each commit, so a bad one cannot
+      be fixed afterwards. (2) The first run would find the stale pins above and open up to the
+      limit at once, each running the whole matrix and the merge queue. A config that would do:
+      `github-actions`, `directory: "/"`, `schedule.interval: weekly`,
+      `open-pull-requests-limit: 2` (to pace the first wave), `commit-message.prefix: "ci(ci)"`.
+      What a Dependabot pull request meets, from the workflows as written: its `GITHUB_TOKEN` is
+      read-only, `pr-paths.yml` and `e2e-sharded.yml` skip it (`github.actor != 'dependabot[bot]'`,
+      and neither is required), and `Shell scripts` and `ci-gate` need no write permission, so only
+      the commit message is in doubt. Until it is enabled, a pin is bumped by hand: look at the
+      table above when a release of this action is cut, and when a runner prints the Node.js
+      deprecation notice for an action.
   - The recompute stays the last resort and runs only when nothing is in reach, so the
     `recompute` job of `pr-paths.yml` turns the walk off: its synthetic base has none.
 - **The recompute removes its worktree (#78)**: "Compute baseline from merge-base (fallback)"
@@ -1326,8 +1368,9 @@ The action is a composite action with two phases:
       (`-nomatch\.txt, ^LICENSE$`), which would have made the second pattern ` ^LICENSE$`. 8d is
       8a's patterns as a YAML `|` block, the likeliest way to get it wrong: that its trailing
       newline survives `with:`, the input and the step's `env:` is what the unit test cannot show,
-      since it sets the variable itself (a review could not verify it either), and a runner that
-      trimmed it would turn 8d red. 8a is the control of both (only the space, or the block,
+      since it sets the variable itself. Observed on a runner (the pull request that added it,
+      both legs): 8d was refused, so the block's trailing newline does reach the step; a runner
+      that trimmed it would have turned 8d red. 8a is the control of both (only the space, or the block,
       differs). Each must fail, and no combined report may exist (`out/refused.lcov`,
       `out/refused-block.lcov`: the first step stopped it, a refusal anywhere later would leave
       one), and `failure-messages` asserts from the
