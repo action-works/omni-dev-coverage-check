@@ -385,6 +385,8 @@ jobs:
           baseline-ancestor-depth: 0
       - name: Assert installed version
         run: bash tests/assert-patchcov-version.sh 0.1.1
+      - name: Verify real patchcov reads report fixtures
+        run: bash tests/check-native-patchcov.sh
       - name: Remove disposable cache binary
         if: always()
         run: rm -f "$HOME/.cargo/bin/patchcov"

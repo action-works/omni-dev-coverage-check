@@ -16,8 +16,8 @@ to `action-works/omni-dev-coverage-check@v2`. The repository name stays the same
 - Move `.omni-dev/coverage.yaml` to `.patchcov/config.yaml`, preserving the coverage
   settings, and replace `OMNI_DEV_CONFIG_DIR` with `PATCHCOV_CONFIG_DIR` if set.
 - Replace source markers such as `omni-dev: coverage ignore` and
-  `omni-dev: coverage tolerate` with `patchcov: coverage ignore` and
-  `patchcov: coverage tolerate`. Run `patchcov lint-markers` to check them.
+  `omni-dev: coverage tolerate` with the introducer `patchcov:` followed by
+  `coverage ignore` or `coverage tolerate`. Run `patchcov lint-markers` to check them.
 
 Patchcov ignores the old configuration, environment variable and markers. Without
 migration, exclusions may disappear and measured coverage may change. The action warns

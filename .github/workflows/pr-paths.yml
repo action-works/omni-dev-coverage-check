@@ -601,7 +601,12 @@ jobs:
           # lines until the filter takes the second file out and leaves 80% of 10.
           assert "P5: the comment diff dropped the filtered file: 80% of 10 lines" \
             jq -e '.patch_coverage.percent == 80 and .patch_coverage.total == 10' out/p5/coverage.json
-          assert "P5: the comment names nothing from the filtered file" absent patch-extra.txt out/p5/coverage.md
+          assert "P5: the excluded file is absent from measured patch files" \
+            jq -e '[.patch_coverage.files[].path] | index("patch-extra.txt") == null' out/p5/coverage.json
+          assert "P5: the exclusion notice identifies the filtered file" \
+            jq -e '.excluded_files.touched | index("patch-extra.txt") != null' out/p5/coverage.json
+          assert "P5: the comment explains the exclusion" \
+            grep -qF 'Excluded files touched by this diff' out/p5/coverage.md
           # The gate passed at 70, which it does only over the 80%, so the gated figure is
           # the commented one. jq keeps a literal such as 80.0, so compare as numbers.
           check "P5: the patch-percent output is 80" true "$(jq -n --arg p "$P5_PATCH_PERCENT" '($p | tonumber) == 80')"
