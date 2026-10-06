@@ -127,7 +127,7 @@ jobs:
           - { patchcov: '0.1.1', runner: ubuntu-24.04-arm, arch: ARM64 }
           - { patchcov: 'latest', runner: ubuntu-24.04-arm, arch: ARM64 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -299,7 +299,7 @@ jobs:
     name: Pre-built binary (ARM64 Linux, patchcov without the ARM64 asset)
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Write fixtures
         run: |
@@ -366,7 +366,7 @@ jobs:
       matrix:
         runner: [ubuntu-22.04, ubuntu-24.04]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Write fixture
         run: printf 'SF:%s/README.md\nDA:1,1\nend_of_record\n' "$GITHUB_WORKSPACE" > single.lcov
       - name: Install and run pinned patchcov
@@ -401,7 +401,7 @@ jobs:
         # bad future release.
         patchcov: ['0.1.1', 'latest']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -562,7 +562,7 @@ jobs:
     name: Latest patchcov (API refuses the token)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -678,7 +678,7 @@ jobs:
       matrix:
         pin: ['v0.1.1', '0.1.1']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -769,7 +769,7 @@ jobs:
     steps:
       # Full history: on a pull request 12c runs the merge-base step, which needs
       # origin/main, as in every job here that runs the pull-request path.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -871,7 +871,7 @@ jobs:
     name: Fat mode (fixture crate)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -1250,7 +1250,7 @@ jobs:
     name: Deprecation warning (control)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -1302,7 +1302,7 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Assert the failure messages
         env:
@@ -1538,7 +1538,7 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Fail unless every job succeeded
         env:
