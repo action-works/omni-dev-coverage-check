@@ -379,7 +379,7 @@ runs:
 
     - name: Cache patchcov binary
       id: cache-patchcov
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cargo/bin/patchcov
         key: ${{ inputs.cache-prefix }}patchcov-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve-version.outputs.version }}-${{ inputs.use-prebuilt-binary == 'true' && 'binary' || 'cargo' }}
