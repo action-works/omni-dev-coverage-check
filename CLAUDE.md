@@ -1,95 +1,72 @@
-# CLAUDE.md
+# Maintainer guide
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Current architecture (v2)
 
-## Project Overview
+This composite GitHub Action installs patchcov and uses `patchcov diff` for the PR
+comment, patch gate and thin-mode line gate. Fat mode collects coverage with
+cargo-llvm-cov. Repository/action references remain `omni-dev-coverage-check`.
 
-This is a GitHub Action that runs code-coverage analysis and posts a diff/patch-coverage pull-request comment using the [omni-dev](https://github.com/rust-works/omni-dev) CLI tool. It is the coverage counterpart to [action-works/omni-dev-commit-check](https://github.com/action-works/omni-dev-commit-check) and reuses that action's omni-dev install + cache pattern verbatim.
+- `action.yml`: all composite steps; inputs reach shell through `env:`, never through
+  expressions in `run:` bodies (including comments). Intentional command inputs use
+  `eval`; test arguments and apt package inputs split on whitespace with validation.
+- `scripts/patchcov-asset.sh`: Linux/macOS x64 and ARM64 target mapping with resolved
+  release tags. No Windows asset. Nested archives hold `<asset without .tar.gz>/patchcov`.
+- Installer: default 0.1.1, explicit latest API lookup with authenticated requests and
+  redirect fallback; cache `~/.cargo/bin/patchcov` by version, OS, architecture and method.
+  Source installs need no audio libraries. Dynamic loader errors name missing glibc
+  requirements; pinned 0.1.1 needs glibc 2.35 (Ubuntu 22.04).
+- `scripts/check-legacy-config.sh`: advisory warning for `.omni-dev/coverage.yaml`,
+  `OMNI_DEV_CONFIG_DIR` and old markers in tracked source. Read README's v2 migration.
+- `scripts/combine-shards.sh`: validate and combine caller reports. Preserve report
+  format/path checks; all later steps use one combined report.
+- `scripts/find-baseline.sh`: find merge-base or nearest first-parent ancestor baseline.
+  Trust only successful runs from this repository, with unexpired named artifacts;
+  never a fork's uploaded baseline. Recompute in fat mode when lookup misses.
+- `tests/step-lib.sh`: extract actual step scripts/env/inputs for offline tests.
+- `tests/test-lib.sh` and `tests/assert-lib.sh`: local and workflow assertion helpers.
+- `tests/fixtures/patchcov-loader/`: synthetic loader diagnostic inputs, adapted from
+  old omni-dev failures; they do not claim patchcov 0.1.1 requires that glibc.
+- `tests/assert-patchcov-version.sh`: reject a cache holding another release's binary.
+- `tests/install-cache.sh`: install code hash per matrix leg on PR/push; run/attempt
+  prefixes on scheduled/manual runs so those exercise installation every time.
+- `tests/check-deprecated-flags.sh`: no deprecated patchcov `--format` in shipped code.
+- `.github/workflows/integration.yml`: pinned/latest x64/ARM64 thin-mode, fat-mode,
+  filename filters, version spelling, redirect fallback, 0.1.0 missing-asset control,
+  Ubuntu 22.04/24.04 compatibility and deprecated-flag control. No old flag-floor jobs.
+- `pr-paths.yml` and `e2e-sharded.yml`: real PR comments, baseline publication/download,
+  ancestor fallback, merge-base recompute, filters, gates and sharded coverage.
+- Required check names stay `Shell scripts`, `ci-gate` and
+  `Validate Commit Messages`. `ci-gate` needs every Integration job and uses `always()`;
+  `failure-messages` needs every job except itself and the gate.
 
-## Repository Structure
+## Verification and contribution
 
-- `action.yml` - The composite GitHub Action definition (the core of this project)
-- `README.md` - User documentation with examples and input/output reference
-- `scripts/combine-shards.sh` - Checks and joins per-shard lcov files for the `shard-reports` input
-- `scripts/omni-dev-asset.sh` - Maps a runner's OS and architecture to the omni-dev release asset to download (`tests/omni-dev-asset.test.sh` tests it; `test.yml` runs that)
-- `scripts/find-baseline.sh` - Decides which run's baseline artifact a pull request downloads: the merge-base's, else the nearest first-parent ancestor's (`tests/find-baseline.test.sh` tests it against a stub `curl` and throwaway git repositories; `test.yml` runs that)
-- `tests/baseline-steps.test.sh` - Reads the lookup, download and diff steps out of `action.yml` and checks the wiring (the variables the script requires, the run id handed to the download, the comment's ancestor note) (`test.yml` runs that)
-- `tests/platform-step.test.sh` - Runs the "Determine platform and download URL" and "Fail if binary not available" scripts read out of `action.yml` against a stub `curl`, with the variables the steps' `env:` blocks fill set directly (`test.yml` runs that)
-- `tests/download-step.test.sh` - Runs the "Download pre-built binary" script read out of `action.yml` against a stub `curl` that serves a tarball and a zip with the layout of the real release assets, and a stub `find` that lists in either order, with `HOME` and every `/tmp` in the script pointed at a directory of the case's own: the file left at `~/.cargo/bin/omni-dev` is the right one, by content, and executable, and an archive with no `omni-dev.exe` fails with a message (`test.yml` runs that)
-- `tests/guard-step.test.sh` - Runs the "Check omni-dev supports the flags this run uses" script read out of `action.yml` against a stub `omni-dev` that answers the probe as clap does, and against the real answers in `tests/fixtures/omni-dev-probe/` (`test.yml` runs that)
-- `tests/print-version-step.test.sh` - Runs the "Print omni-dev version" script read out of `action.yml` against a stub `omni-dev` that replays the captured loader output in `tests/fixtures/omni-dev-loader/` and a stub `getconf`: the glibc the binary needs, the one the runner has and the two ways out (`test.yml` runs that)
-- `tests/resolve-version-step.test.sh` - Runs the "Resolve omni-dev version" script read out of `action.yml` against a stub `curl` that replays scripted responses (the API's, then the redirect's) and a stub `sleep`, and, for a runner with no `jq`, on a PATH of links that holds neither `jq` nor anything else the step does not use (`test.yml` runs that)
-- `tests/recompute-worktree.test.sh` - Runs the "Compute baseline from merge-base (fallback)" script read out of `action.yml` with the real `git` in a throwaway repository against a stub `cargo` that can fail, and checks what is on disk afterwards: the `../base` worktree is gone after a recompute and after a failing one, a second recompute in the same workspace succeeds and writes the same baseline, a leftover worktree is cleared, and a plain directory named `base` is kept (`test.yml` runs that)
-- `tests/input-steps.test.sh` - Runs the steps that read a caller's input (the `ignore-filename-regex` check, the test, setup and extra commands, the report, merge-base, recompute, diff and the gates) read out of `action.yml` against stub `cargo`, `git`, `omni-dev` and `sudo`, with hostile values that must stay data (`test.yml` runs that)
-- `tests/check-run-expressions.sh` - Fails when a `run:` body of `action.yml` or of a workflow in `.github/workflows/` holds a `${{ }}` expression (`tests/check-run-expressions.test.sh` tests it; `test.yml` runs both)
-- `tests/combine-shards.test.sh` - Plain-bash tests for that script (`.github/workflows/test.yml` runs them)
-- `tests/llvm-cov-ignore-steps.test.sh` - Runs the five steps that run `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate and the recompute's report), read out of `action.yml`, against a stub `cargo`, and checks the one `--ignore-filename-regex=<value>` each gets, or none when the input is empty; it fails when another step runs `cargo llvm-cov report` (`test.yml` runs that)
-- `tests/test-lib.sh` - The helpers every `tests/*.test.sh` sources: `ok`, `bad`, `eq`, `has`, `lacks`, `pass`, `fail`, the closing `summary` and `work_dir` (the scratch directory) (`tests/test-lib.test.sh` tests it, including how a failed case fails; `test.yml` runs that)
-- `tests/step-lib.sh` - `step_run`, `step_block`, `step_field`, `step_map` and `input_block`: the one reader of `action.yml`'s steps and inputs, for the step tests; it refuses a layout it cannot read (`tests/step-lib.test.sh` tests it; `test.yml` runs that)
-- `.omni-dev/` - Project guidelines for commits and PRs
-- `.github/workflows/commit-check.yml` - Dogfoods the commit-check action on this repo (runs on `merge_group` too: `Validate Commit Messages` is a required check of the merge queue)
-- `.github/workflows/integration.yml` - Runs the action itself (`uses: ./`) in thin mode against fixture lcov (on x86_64 Linux and, from omni-dev 0.46.0, on ARM64 Linux, where `arm64-release-without-asset` is the control for the ARM64 legs), and in fat mode against `tests/fixtures/fat-crate/` (F5 and F6 are the `llvm-cov-ignore-filename-regex` scenarios); the `thin-mode` legs install omni-dev whenever `action.yml` or `scripts/*.sh` change, and on the weekly and manual runs (#66); the `guard-flag` job checks the omni-dev floor a pull request needs for `--output` and the one for `--ignore-filename-regex` (one matrix, a leg either side of each floor); the `ignore-filename-regex` job checks the filter on the thin-mode line gate; the `version-pin` job installs `version: v0.45.0`, and its control `0.45.0`, on a runner with a cache key that cannot hit; the `version-input` job runs an empty `version`, a lone `v` and `V0.45.0` through the action; the `deprecation-control` job logs an omni-dev deprecation warning on purpose, and asks `latest` about a flag that cannot exist, as the guard's probe does; the `latest-redirect` job resolves `version: latest` with a token the API refuses, so the redirect has to answer; the `old-glibc` job runs the pre-built binary on ubuntu-22.04, whose glibc is too old for it, with ubuntu-24.04 as its control (#67); a job asserts the failure messages the scenarios logged and that no other job logged a deprecation warning; the last, `ci-gate`, is the one check of this workflow the merge queue requires (see "Merge queue")
-- `tests/job-log.sh` - Prints the log of one job of the current run, read through the Actions API (the job list and the log are each retried); `job-errors.sh`, `job-deprecations.sh` and `job-warnings.sh` pick their lines from it (`tests/job-errors.test.sh` tests all four against a fake `gh`; `test.yml` runs that)
-- `tests/job-errors.sh` - Prints the `##[error]` messages one job of the current run logged
-- `tests/run-jobs.sh` - Prints the jobs of the current run as one JSON array (`id`, `name`, `status`, `conclusion`), looking again at a failed call, a body that is not JSON, an empty list, a list short of the API's `total_count` and one shorter than `RUN_JOBS_MIN`; the deprecation step reads it (`tests/run-jobs.test.sh` tests it against a fake `gh` and reads `integration.yml` for the wiring; `test.yml` runs that)
-- `tests/job-warnings.sh` - Prints the `##[warning]` lines one job of the current run logged, anchored on the runner's timestamp (the runner's own notices included: the caller picks the one it means; `tests/job-errors.test.sh` tests it, and reads the workflow and `action.yml` to keep the assertion's fragments and the action's warning in step)
-- `tests/job-deprecations.sh` - Prints the `warning: ... deprecated` lines one job of the current run logged
-- `tests/fixtures/fat-crate/` - Dependency-free crate the fat-mode integration job copies to the workspace root (never run in place); `src/ignored.rs` is the file nothing reaches, which F5 excludes and F6 keeps
-- `tests/move-outputs.sh` - Moves one scenario's outputs aside between scenarios (shared by the fat-mode and PR-path jobs)
-- `tests/llvm-tool-shim.sh` - Pass-through for `llvm-cov`/`llvm-profdata` that logs each `llvm-profdata merge`; the fat-mode job installs it to assert the profile is merged once (see "One profile merge"; `tests/llvm-tool-shim.test.sh` tests it, with stub tools; `test.yml` runs that)
-- `.github/workflows/pr-paths.yml` - Runs the action down the paths only a pull request or a push to `main` takes: the sticky comment, baseline publish and hit, the ancestor fallback, the merge-base worktree recompute, `ignore-filename-regex` reaching the comment, the patch gate and the baseline side of the comparison (P10), and `llvm-cov-ignore-filename-regex` reaching the recompute's report
-- `tests/write-pr-fixtures.sh` - Writes the sharded lcov fixtures and the locally committed `patch-fixture.txt` that `pr-paths.yml` runs on (`extra` adds a second patched file for P5, P6 and P10's head report)
-- `tests/read-sticky-comment.sh` - Reads (and optionally deletes) the sticky comment for a header through the API
-- `tests/fixtures/delta-crate/` - Base and head versions of a crate, committed in a job to give the merge-base recompute a base commit; `ignored.rs` is committed unchanged with both, for the filter scenario
-- `.github/workflows/e2e-sharded.yml` - A real sharded run: a shard matrix (`cargo llvm-cov nextest --partition`), the artifact hand-off, and an aggregation job running the action, with the pull-request / `main` loop on top
-- `tests/prepare-shard-crate.sh` - Copies the shard fixture crate to `sharded-crate/`; with `--commit`, also commits it locally (`tests/prepare-shard-crate.test.sh` tests it; `test.yml` runs that)
-- `tests/assert-lib.sh` - Assertion helpers every checking step of `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml` sources (`tests/assert-lib.test.sh` tests them; `test.yml` runs that)
-- `tests/expected-baseline.sh` - What the baseline lookup should find for a commit, read from the Actions API through `gh` (`tests/expected-baseline.test.sh` tests it against a stub `gh`; `test.yml` runs that)
-- `tests/baseline-lib.sh` - Checks of a baseline's `TN:` commit, the comment's ancestor note and the lookup against `expected-baseline.sh`, sourced by `pr-paths.yml` and `e2e-sharded.yml` (`tests/baseline-lib.test.sh` tests it, including against the real diff step; `test.yml` runs that)
-- `tests/check-deprecated-flags.sh` - Fails when `action.yml` or `scripts/*.sh` passes omni-dev a deprecated flag (`tests/check-deprecated-flags.test.sh` tests it; `test.yml` runs both)
-- `tests/assert-omni-dev-version.sh` - Fails unless the `omni-dev` on PATH is exactly the pinned version; the jobs that assert a scenario's outcome, in `integration.yml`, `pr-paths.yml` and `e2e-sharded.yml`, end on it (`tests/assert-omni-dev-version.test.sh` tests it; `test.yml` runs that)
-- `tests/install-cache.sh` - Chooses the `cache-prefix` the `thin-mode` legs pass (a hash of `action.yml` and `scripts/*.sh` on a pull request and a push, the run and attempt on `schedule` and `workflow_dispatch`, and the leg in both) and checks the action's `omni-dev-cache-hit` output (`check` for the `thin-mode` legs, `check-fresh`, which refuses a hit on every event, for `version-pin`) (`tests/install-cache.test.sh` tests it, and reads `action.yml` and `integration.yml` for the wiring; `test.yml` runs that)
-- `tests/ci-gate.sh` - What the `ci-gate` job of `integration.yml` runs: fails unless every job it needs finished `success`, from `toJSON(needs)` in `$NEEDS`
-- `.github/dependabot.yml` - Keeps the pinned actions current: weekly pull requests for `github-actions` at the root (the workflows and `action.yml`), at most two open, with the commit-message prefix `ci(ci)` so a bot's message passes the required commit check (`tests/dependabot-config.test.sh` holds every entry to the project's scopes and types, no `include:` and the subject length; `test.yml` runs that)
-- `tests/merge-queue.test.sh` - Tests `ci-gate.sh`, and reads the workflows to check what the merge queue relies on: `ci-gate` needs every job of `integration.yml` and runs `always()`, `failure-messages` needs every job but those two (#105), `merge_group` is a trigger of the three workflows a required check comes from and of neither path-filtered one, and the required checks' names are still the jobs' names (`test.yml` runs that)
-- `tests/fixtures/shard-crate/` - Dependency-free crate the shard jobs measure (copied to `sharded-crate/`, never run in place)
-- `tests/fixtures/omni-dev-probe/` - What the real releases either side of each guard floor (and 0.28.0, which has no `coverage`) answered to the guard's probe, one `<version>/<flag>.txt` each: `exit=<status>`, then the output (`tests/guard-step.test.sh` replays them)
-- `tests/fixtures/omni-dev-loader/` - What the dynamic loader printed when a pre-built omni-dev Linux binary needed a newer glibc than the runner had (Ubuntu 22.04, glibc 2.35), one `<release>-<arch>-glibc-<version>.txt` each: `exit=<status>`, then the output (`tests/print-version-step.test.sh` replays them)
-- `.github/pull_request_template.md` - PR template
+Run from the explicit worktree root with current Bash:
 
-## How It Works
+```bash
+shellcheck -x scripts/*.sh tests/*.sh
+for test in tests/*.test.sh; do bash "$test"; done
+bash tests/check-deprecated-flags.sh
+bash tests/check-run-expressions.sh action.yml .github/workflows/*.yml
+actionlint
+git diff --check
+```
 
-The action is a composite action with two phases:
+Keep controls for expected failures and assert where execution stopped. Check the
+installed version to catch poisoned caches. Never install two versions into one job's
+cached path. Coverage gates run after the comment so failure does not hide the report.
+Do not run Rust fixtures in place: copy them into each CI job's workspace.
+The baseline recompute worktree must be cleaned on success and failure.
+Use conventional commits with scopes `action`, `docs`, `ci`, a lowercase subject and
+`!`/`BREAKING CHANGE:` for public contract changes. Follow `.omni-dev/commit-guidelines.md`,
+`.omni-dev/pr-guidelines.md` and the PR template; those are contribution settings, not
+legacy coverage configuration.
 
-1. **Install omni-dev** (carried over from omni-dev-commit-check): resolve the
-   version (`latest` → newest release tag, or a pinned value), restore the
-   `~/.cargo/bin/omni-dev` cache (`actions/cache@v4`), and on a miss download a
-   pre-built release binary, falling back to `cargo install omni-dev`.
-2. **Coverage pipeline**:
-   - **Fat mode (default, `run-coverage: true`)**: set up `llvm-tools-preview` +
-     `cargo-llvm-cov`, run `cargo test` under instrumentation (sourcing
-     `cargo llvm-cov show-env --sh` per step so every cargo step shares one set
-     of instrumented dependency artifacts), then emit the per-line `report` lcov
-     (the first report: it merges the raw profiles, once), remove the raw profiles,
-     and emit `codecov.json` and a `--summary-only` summary, which read that
-     merged profile. Every `report` call takes `llvm-cov-ignore-filename-regex`.
-   - **Thin mode (`run-coverage: false`)**: skip cargo-llvm-cov entirely; the
-     caller supplies the per-line lcov via the `report` input — or, for a run
-     sharded across jobs, via `shard-reports`, which `scripts/combine-shards.sh`
-     checks and joins into `report` so every later step still reads one file.
-   - On pull requests: compute the `origin/main`..`HEAD` merge-base, find the
-     `coverage-baseline` artifact for that commit or, failing that, the nearest
-     first-parent ancestor's (`scripts/find-baseline.sh`), download it by run id, and
-     when none is in reach recompute it at the merge-base in a git worktree (fat
-     mode). Render the comment with
-     `omni-dev coverage diff` and post it via
-     `marocchino/sticky-pull-request-comment`.
-   - On pushes to `main`: publish this run's lcov as the `coverage-baseline`
-     artifact.
-   - **Gates run last** so the summary and PR comment still post when a gate
-     fails: `--fail-under-patch` (patch coverage) then the overall line gate —
-     `cargo llvm-cov report --fail-under-lines` in fat mode, `omni-dev coverage
-     diff --fail-under-lines` in thin mode (which has no profile data).
+## Historical implementation notes (v1)
+
+The following notes record decisions and evidence before issue #113. Tool versions,
+installer assets, old flag-floor guards, fixture names and corresponding CI jobs below
+are historical; use the current architecture above and code for v2 behavior.
 
 ## Key Technical Details
 
@@ -1772,16 +1749,3 @@ The action is a composite action with two phases:
   diff invocation after the comment step.
 - **Secrets** (e.g. the codecov token) must be passed as inputs — composite
   actions cannot read `secrets` directly.
-
-## Commit and PR Guidelines
-
-This project uses conventional commits with required scopes. See `.omni-dev/commit-guidelines.md` for details.
-
-**Scopes**: `action`, `docs`, `ci`
-
-**Example commits**:
-```
-feat(action): add fail-under-patch input
-fix(action): handle missing baseline artifact gracefully
-docs(docs): add thin-mode usage example
-```

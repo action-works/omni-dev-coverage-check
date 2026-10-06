@@ -5,9 +5,9 @@
 # Exit status: 0 with the percentage on stdout, 2 for a wrong number of arguments.
 #
 # A file's repeated records (one per shard, in a combined report) are unioned the
-# way `omni-dev coverage diff` does: a line is covered if any record hit it. The
+# way `patchcov diff` does: a line is covered if any record hit it. The
 # pr-paths workflow recomputes a total from the report itself, so what it asserts
-# about omni-dev's figure does not depend on the numbers the fixtures hold.
+# about patchcov's figure does not depend on the numbers the fixtures hold.
 set -euo pipefail
 
 [ "$#" -eq 1 ] || {

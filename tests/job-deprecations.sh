@@ -4,16 +4,16 @@
 # Usage: job-deprecations.sh <job name>
 # Environment, retries and exit status: as job-log.sh, which reads the log.
 #
-# omni-dev keeps a deprecated flag working and prints, each time it is used,
+# patchcov keeps a deprecated flag working and prints, each time it is used,
 #   warning: --format is deprecated; use -o/--output instead
 # on stderr. Nothing else in CI notices that, so a flag the action passes can stay
 # deprecated until a major release removes it and every caller on `version: latest`
 # breaks. check-deprecated-flags.sh finds the flags it has been told about; this
-# finds any flag omni-dev has deprecated, as long as a step ran it.
+# finds any flag patchcov has deprecated, as long as a step ran it.
 #
 # Output: one line per log line that begins, after the runner's timestamp, with
 # `warning:` and holds "deprecat" in any case (deprecated, DEPRECATED, deprecation),
-# so a rewording of omni-dev's message still counts, the timestamp removed. Empty if the
+# so a rewording of patchcov's message still counts, the timestamp removed. Empty if the
 # job logged none. What that rule includes and leaves out, from real logs:
 #   - It is a line a program printed. The runner's echo of a step's script starts
 #     with a colour code, so a script that holds the same words (an `echo` of the
@@ -23,7 +23,7 @@
 #     node's `(node:N) [DEP0040] DeprecationWarning: ...`. Both concern the
 #     actions' runtime, not a flag this action passes, and both appear in every log.
 #   - It does include another tool's `warning: ... deprecated`, such as cargo's or
-#     rustc's, because omni-dev's wording for a deprecation that is not a flag is
+#     rustc's, because patchcov's wording for a deprecation that is not a flag is
 #     not known. A hit says which line to look at.
 #
 # An empty result says something only about the call sites the job ran. The comment

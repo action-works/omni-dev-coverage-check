@@ -1,4 +1,0 @@
-exit=2
-error: invalid value 'x' for '--fail-under-lines <PCT>': invalid float literal
-
-For more information, try '--help'.

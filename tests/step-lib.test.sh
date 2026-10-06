@@ -260,11 +260,11 @@ runs:
   steps:
     - name: Alpha
       shell: bash
-      run: omni-dev --version
+      run: patchcov --version
 EOF
 read_with step_run Alpha
 is_refused "step_run: an inline run: is not a block" "run: is not a literal block"
-has "  and shows the line it saw" "$ERR" "run: omni-dev --version"
+has "  and shows the line it saw" "$ERR" "run: patchcov --version"
 
 for style in '>' '>-' '|2' '|-2' '| # why' '"|"'; do
   yaml style <<EOF

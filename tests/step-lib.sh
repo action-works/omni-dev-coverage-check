@@ -6,7 +6,7 @@
 #   # shellcheck source-path=SCRIPTDIR
 #   # shellcheck source=step-lib.sh
 #   source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
-#   SCRIPT="$(step_run 'Check omni-dev supports the flags this run uses')" || exit 1
+#   SCRIPT="$(step_run 'Print patchcov version')" || exit 1
 #
 #   step_run <step name>    the step's `run:` script, dedented
 #   step_block <step name>  the whole step, from its `- name:` line, as written

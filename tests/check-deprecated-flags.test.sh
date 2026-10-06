@@ -40,7 +40,7 @@ status_is() {
 
 cat >"$WORK/invocation.yml" <<'EOF'
 run: |
-  omni-dev coverage diff --report r.lcov --format markdown > coverage.md
+  patchcov diff --report r.lcov --format markdown > coverage.md
 EOF
 run "$WORK/invocation.yml"
 status_is "invocation line: fails" 1
@@ -48,13 +48,13 @@ has "invocation line: names the file and line" "$OUT" "file=$WORK/invocation.yml
 has "invocation line: names the replacement" "$OUT" "pass -o/--output instead"
 has "invocation line: shows the line" "$OUT" "--report r.lcov --format markdown"
 
-# --- the flag inside an args array, away from the omni-dev call ---------------
+# --- the flag inside an args array, away from the patchcov call ---------------
 
 cat >"$WORK/array.yml" <<'EOF'
-args=(coverage diff
+args=(diff
   --report r.lcov
   --format json)
-omni-dev "${args[@]}"
+patchcov "${args[@]}"
 EOF
 run "$WORK/array.yml"
 status_is "args array: fails" 1
@@ -68,11 +68,11 @@ status_is "args+=: fails" 1
 
 # --- the flag spelled with =, and as the last word of a line ------------------
 
-printf 'omni-dev coverage diff --format=json\n' >"$WORK/equals.yml"
+printf 'patchcov diff --format=json\n' >"$WORK/equals.yml"
 run "$WORK/equals.yml"
 status_is "--format=json: fails" 1
 
-printf 'omni-dev coverage diff --report r.lcov --format\n' >"$WORK/last.yml"
+printf 'patchcov diff --report r.lcov --format\n' >"$WORK/last.yml"
 run "$WORK/last.yml"
 status_is "flag at the end of the line: fails" 1
 
@@ -95,16 +95,16 @@ status_is "look-alikes and the replacement: pass" 0
 has "pass: says what was scanned" "$OUT" "$WORK/lookalikes.yml"
 
 cat >"$WORK/comments.yml" <<'EOF'
-# --format was replaced by -o/--output in omni-dev 0.32.0
+# --format was replaced by -o/--output in patchcov 0.32.0
 run: |
   # a shell comment about --format
       # an indented one: --format
-  omni-dev coverage diff -o json
+  patchcov diff -o json
 EOF
 run "$WORK/comments.yml"
 status_is "full-line comments: pass" 0
 
-printf '%s\n' 'omni-dev coverage diff -o json # not --format' >"$WORK/trailing.yml"
+printf '%s\n' 'patchcov diff -o json # not --format' >"$WORK/trailing.yml"
 run "$WORK/trailing.yml"
 status_is "a trailing comment still counts (only full-line comments are skipped)" 1
 
@@ -142,7 +142,7 @@ variant() {
 }
 
 variant extra "DEPRECATED+=('--no-cache|--cache')"
-printf 'omni-dev coverage diff --no-cache\n' >"$WORK/extra-hit.yml"
+printf 'patchcov diff --no-cache\n' >"$WORK/extra-hit.yml"
 runs "$WORK/extra.sh" "$WORK/extra-hit.yml"
 status_is "a flag added to the list is caught" 1
 has "a flag added to the list: names what to use instead" "$OUT" "pass --cache instead"

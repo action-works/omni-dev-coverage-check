@@ -2,38 +2,22 @@ name: Integration
 
 # Runs the action itself (`uses: ./`) on a real runner on every change: in thin
 # mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
-# `ignore-filename-regex`, the `--output` and `--ignore-filename-regex` floors a
-# pull request needs, and the `version` input's empty, `v` and `V` spellings),
-# and in fat mode against a
-# fixture crate (the instrumented test run, the three report outputs and the one
-# profile merge they share, the fat-mode line gate,
-# `setup-commands`/`extra-test-commands`, `llvm-cov-ignore-filename-regex`). Each
-# scenario's outcome is asserted
-# at the end of its job; the scenarios are `continue-on-error` so one regression
-# does not hide the rest. What the six scenarios that exist for their message
-# said is asserted by `failure-messages`, which reads the finished jobs' logs through
-# the API. On a pull request it also asserts that none of the jobs that ran the
-# pull-request steps logged an omni-dev deprecation warning, and a control job
-# that logs one on purpose shows that reading can find it. To show that the pre-built
-# binary is chosen by architecture, the ARM64 legs of `thin-mode` run on an ARM64 Linux
-# runner against a release that has the ARM64 asset, and `arm64-release-without-asset`
-# against one that does not. One job resolves `version: latest` with a token the API
-# refuses, so that the fallback to the releases/latest redirect has to answer, and
-# compares it with the API's answer. One pins `version: v0.45.0`, to show that the
-# whole install takes a release tag as written.
+# filename filtering, version spelling, latest redirect resolution and Ubuntu
+# 22.04/24.04 binary compatibility. The missing-assets control pins 0.1.0; normal
+# legs pin 0.1.1 or request latest. A real deprecated-flag control confirms the
+# warning reader can see a warning. Required check names remain unchanged.
 #
 # Rules that keep these tests honest:
-#   - One omni-dev version per job. `actions/cache` saves in a post step, after
-#     every scenario has run, and saves whatever is at ~/.cargo/bin/omni-dev
+#   - One patchcov version per job. `actions/cache` saves in a post step, after
+#     every scenario has run, and saves whatever is at ~/.cargo/bin/patchcov
 #     then; a second version installed over it poisons the first version's key.
 #     A job that asserts its scenarios' outcomes ends on
-#     tests/assert-omni-dev-version.sh, which fails unless the binary on PATH is
+#     tests/assert-patchcov-version.sh, which fails unless the binary on PATH is
 #     exactly the version the job pinned. `arm64-release-without-asset` installs
 #     nothing and `deprecation-control` has one install and asserts no outcome, so
-#     neither calls it, and `old-glibc`'s failing leg installs a binary that cannot
-#     start, so only its control does.
+#     neither calls it. Compatibility legs assert the pinned version on both images.
 #   - A job that exists to run the install does not run on a cached binary. A hit on
-#     `actions/cache` restores ~/.cargo/bin/omni-dev and skips the platform and download
+#     `actions/cache` restores ~/.cargo/bin/patchcov and skips the platform and download
 #     steps, and the key holds the version, not the action's code, so such a job would
 #     pass on a binary an earlier run installed, whatever a change did to the install.
 #     `thin-mode` (every leg) puts a prefix in front of the key (tests/install-cache.sh):
@@ -42,7 +26,7 @@ name: Integration
 #     attempt on the weekly run and a manual one, so those install every time. Both carry
 #     the leg: a pinned leg and `latest` can resolve to the same key, and the one that
 #     finishes first would save the entry the other restores, which then installs nothing. Its
-#     checking step reads the action's `omni-dev-cache-hit` output, logs which it was,
+#     checking step reads the action's `patchcov-cache-hit` output, logs which it was,
 #     and fails when a run that cannot have an entry hit one. `version-pin` forces the
 #     install on every event with a key of its own, and fails on a hit whatever the event
 #     (`check-fresh`, #84). The other jobs exist for something
@@ -91,7 +75,7 @@ on:
   # `paths:` filter, which this workflow does not use either.
   merge_group:
   schedule:
-    - cron: '17 6 * * 1' # weekly: notice a bad omni-dev release without waiting for a PR
+    - cron: '17 6 * * 1' # weekly: notice a bad patchcov release without waiting for a PR
   workflow_dispatch:
 
 permissions:
@@ -102,73 +86,67 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The newest release WITHOUT `coverage diff --fail-under-lines`, which the
-  # action's guard step detects. It stays put when the floor in the thin-mode
-  # matrix is raised. Shared by the job that runs it and the job that checks what
-  # the guard said about it.
-  OLD_OMNI_DEV: '0.44.0'
+  # Patchcov 0.1.0 has no release binaries; this is the missing-asset control.
+  OLD_PATCHCOV: '0.1.0'
 
 jobs:
   # The thin-mode scenarios on x86_64 and on ARM64 Linux. The ARM64 legs are the install
-  # that succeeds on ARM64 (#20): a release that carries `omni-dev-linux-arm64.tar.gz`,
+  # that succeeds on ARM64 (#20): a release that carries `patchcov-v0.1.1-aarch64-unknown-linux-gnu.tar.gz`,
   # downloaded, extracted and run on a real ARM64 runner. `arm64-release-without-asset`
   # below is the other half: the same runner on a release without the asset, which must
   # fail (its inputs differ from these in more than the version: it turns the line gate
-  # off, which 0.44.0 lacks). They are legs of this job so that a scenario added here
+  # off). They are legs of this job so that a scenario added here
   # reaches ARM64 too. The x86_64 legs keep the names they always had; the ARM64 ones add
   # `, ARM64`, which is what `failure-messages` looks them up by.
   #
   # Every leg runs the install when the install code changes, and on the weekly and manual
-  # runs, instead of trusting `actions/cache` (#66): a hit restores ~/.cargo/bin/omni-dev and
+  # runs, instead of trusting `actions/cache` (#66): a hit restores ~/.cargo/bin/patchcov and
   # skips "Download pre-built binary", and the default key holds the version, not the
   # action's code. So the asset's name, the archive layout and the binary are held to a
   # real release when it matters, and not only on the first run for a version. The first
   # step chooses the `cache-prefix` (see tests/install-cache.sh) and the last reads
-  # `omni-dev-cache-hit` to say which happened. On a pull request and a push a hit is the
+  # `patchcov-cache-hit` to say which happened. On a pull request and a push a hit is the
   # unchanged-code case and is logged; on the weekly and manual runs it fails.
   #
   # What that costs: the four scenarios of a leg each miss on the first run for a prefix,
-  # because the entry is saved in the post step, so omni-dev is installed four times and
+  # because the entry is saved in the post step, so patchcov is installed four times and
   # three of the four saves log `Unable to reserve cache`. The weekly and manual runs each
   # write an entry per leg that nothing restores (9-18 MB, evicted when unused).
   thin-mode:
-    name: Thin mode (omni-dev ${{ matrix.omni-dev }}${{ matrix.arch == 'ARM64' && ', ARM64' || '' }})
+    name: Thin mode (patchcov ${{ matrix.patchcov }}${{ matrix.arch == 'ARM64' && ', ARM64' || '' }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # 0.45.0 is the first release with `coverage diff --fail-under-lines`: the
-          # floor the README documents. `latest` catches a bad future release.
-          - { omni-dev: '0.45.0', runner: ubuntu-latest, arch: X64 }
-          - { omni-dev: 'latest', runner: ubuntu-latest, arch: X64 }
-          # 0.46.0 is the first release that publishes omni-dev-linux-arm64.tar.gz
-          # (rust-works/omni-dev#2148), so it is the floor for the ARM64 pre-built
-          # install and stays put. `ubuntu-24.04-arm`: omni-dev's Linux binaries need
-          # the glibc of Ubuntu 24.04 (2.39), which an older ARM runner image lacks.
-          - { omni-dev: '0.46.0', runner: ubuntu-24.04-arm, arch: ARM64 }
-          - { omni-dev: 'latest', runner: ubuntu-24.04-arm, arch: ARM64 }
+          # Pinned release and latest both exercise the thin-mode line gate.
+          # `latest` catches a bad future release.
+          - { patchcov: '0.1.1', runner: ubuntu-latest, arch: X64 }
+          - { patchcov: 'latest', runner: ubuntu-latest, arch: X64 }
+          # ARM64 assets are available in 0.1.1, with a glibc 2.35 floor.
+          - { patchcov: '0.1.1', runner: ubuntu-24.04-arm, arch: ARM64 }
+          - { patchcov: 'latest', runner: ubuntu-24.04-arm, arch: ARM64 }
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # The key of the omni-dev cache is the version, not the action's code, so this job
+      # The key of the patchcov cache is the version, not the action's code, so this job
       # chooses a prefix that makes it install when the code changes (tests/install-cache.sh
       # says how, by event). The script is called as an assignment: inside an `echo` its
       # failure would be lost under `bash -e`. `hashFiles` is an expression, so the hash
       # arrives through `env`, with the leg: a pinned leg and `latest` can resolve to the
-      # same key (ARM64 0.46.0 and latest do), and the one that finishes first would save
+      # same key (ARM64 0.1.1 and latest do), and the one that finishes first would save
       # the entry the other restores, so the other would not run the install.
-      - name: Choose the omni-dev cache prefix
+      - name: Choose the patchcov cache prefix
         id: install-cache
         env:
           INSTALL_CODE_HASH: ${{ hashFiles('action.yml', 'scripts/*.sh') }}
-          INSTALL_CACHE_LEG: ${{ matrix.omni-dev }}
+          INSTALL_CACHE_LEG: ${{ matrix.patchcov }}
         run: |
           prefix="$(bash tests/install-cache.sh prefix)"
           echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-          echo "omni-dev cache prefix: $prefix"
+          echo "patchcov cache prefix: $prefix"
 
       # Real llvm-cov shape: no newline after the final end_of_record. Each shard
       # alone covers 2 of 4 lines (50%); their union covers 3 of 4 (75%), so a gate
@@ -185,7 +163,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ matrix.omni-dev }}
+          version: ${{ matrix.patchcov }}
           cache-prefix: ${{ steps.install-cache.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
@@ -202,7 +180,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ matrix.omni-dev }}
+          version: ${{ matrix.patchcov }}
           cache-prefix: ${{ steps.install-cache.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
@@ -219,7 +197,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ matrix.omni-dev }}
+          version: ${{ matrix.patchcov }}
           cache-prefix: ${{ steps.install-cache.outputs.prefix }}
           run-coverage: false
           report: single.lcov
@@ -235,7 +213,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ matrix.omni-dev }}
+          version: ${{ matrix.patchcov }}
           cache-prefix: ${{ steps.install-cache.outputs.prefix }}
           run-coverage: false
           shard-reports: shards/missing-*.lcov
@@ -254,7 +232,7 @@ jobs:
           S3: ${{ steps.s3.outcome }}
           S4: ${{ steps.s4.outcome }}
           VERSION: ${{ steps.s1.outputs.version }}
-          CACHE_HIT: ${{ steps.s1.outputs.omni-dev-cache-hit }}
+          CACHE_HIT: ${{ steps.s1.outputs.patchcov-cache-hit }}
           ARCH: ${{ runner.arch }}
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
@@ -314,102 +292,11 @@ jobs:
 
           # The binary on PATH is the version that was resolved. A cache entry
           # holding another version's binary fails here.
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
-  thin-mode-old-omni-dev:
-    name: Thin mode (omni-dev without --fail-under-lines)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Write fixtures
-        run: |
-          mkdir shards out
-          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
-          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
-
-      # Sharded on purpose: the guard runs before "Combine shard reports", so a
-      # missing combined report shows the guard stopped the action, not clap's
-      # unknown-argument error at gate time (which comes after the combine).
-      - name: '5a. Gate with an omni-dev that predates the flag'
-        id: gate
-        uses: ./
-        continue-on-error: true
-        with:
-          version: ${{ env.OLD_OMNI_DEV }}
-          run-coverage: false
-          shard-reports: shards/shard-*.lcov
-          report: out/gate.lcov
-          fail-under-lines: 70
-          comment: false
-          upload-artifacts: false
-          publish-baseline: false
-          baseline-workflow: integration.yml
-          baseline-ancestor-depth: 0
-
-      # The escape hatch the guard's own message recommends.
-      - name: '5b. Same omni-dev, line gate disabled'
-        id: nogate
-        uses: ./
-        continue-on-error: true
-        with:
-          version: ${{ env.OLD_OMNI_DEV }}
-          run-coverage: false
-          shard-reports: shards/shard-*.lcov
-          report: out/nogate.lcov
-          fail-under-lines: ''
-          comment: false
-          upload-artifacts: false
-          publish-baseline: false
-          baseline-workflow: integration.yml
-          baseline-ancestor-depth: 0
-
-      - name: Assert every outcome
-        env:
-          GATE: ${{ steps.gate.outcome }}
-          NOGATE: ${{ steps.nogate.outcome }}
-        run: |
-          status=0
-          source tests/assert-lib.sh
-
-          check "5a. gate with an omni-dev that predates the flag" failure "$GATE"
-          check "5b. same omni-dev, line gate disabled" success "$NOGATE"
-
-          if [ -e out/gate.lcov ]; then
-            echo "::error::5a got past the guard: the shards were combined"
-            status=1
-          fi
-          if [ ! -s out/nogate.lcov ]; then
-            echo "::error::5b did not combine the shards"
-            status=1
-          fi
-
-          # 5b is the one scenario here that gets past the guard, so on a pull
-          # request it renders the diffs. See the thin-mode job for why the files.
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            if [ ! -s coverage.md ] || ! jq -e 'type == "object"' coverage.json > /dev/null 2>&1; then
-              echo "::error::the pull-request diffs did not both run (coverage.md, coverage.json), so this job's log says nothing about deprecated flags"
-              status=1
-            fi
-          fi
-
-          bash tests/assert-omni-dev-version.sh "$OLD_OMNI_DEV" || status=1
-          exit "$status"
-
-  # An ARM64 Linux runner on an omni-dev release with no ARM64 asset (#19). The
-  # action used to map every Linux runner to the x86_64 build, so this run would
-  # have downloaded a binary it cannot execute and failed later, at the version
-  # check, and never said why. It must now stop at the install step and name the
-  # asset it looked for. The control is 5b: the same action inputs on an x86_64
-  # runner, which must succeed. The install that succeeds on ARM64 is the ARM64 legs of
-  # `thin-mode` above (#20): this job is the other half of the pair, the same runner on a
-  # release without the asset. It cannot be a one-input control of them: the line gate is
-  # off here, as in 5b, because 0.44.0 lacks the flag the thin-mode scenarios use.
   arm64-release-without-asset:
-    name: Pre-built binary (ARM64 Linux, omni-dev without the ARM64 asset)
+    name: Pre-built binary (ARM64 Linux, patchcov without the ARM64 asset)
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -420,15 +307,13 @@ jobs:
           printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
           printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
 
-      # 5b's action inputs, so the runner's architecture is what differs. The shards
-      # are combined after the install, so a missing combined report shows where it
-      # stopped.
-      - name: '6. Pre-built omni-dev that has no ARM64 asset'
+      # Shards combine after installation: their absence proves installation stopped.
+      - name: '6. Pre-built patchcov that has no ARM64 asset'
         id: install
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ env.OLD_OMNI_DEV }}
+          version: ${{ env.OLD_PATCHCOV }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/arm64.lcov
@@ -452,9 +337,9 @@ jobs:
           fi
 
           if [ "$INSTALL" = failure ]; then
-            echo "ok   - 6. pre-built omni-dev that has no ARM64 asset"
+            echo "ok   - 6. pre-built patchcov that has no ARM64 asset"
           else
-            echo "::error::6. pre-built omni-dev that has no ARM64 asset: expected failure, got $INSTALL"
+            echo "::error::6. pre-built patchcov that has no ARM64 asset: expected failure, got $INSTALL"
             status=1
           fi
 
@@ -466,306 +351,62 @@ jobs:
 
           # No binary was installed, least of all the x86_64 one that the old
           # mapping would have put here.
-          if [ -e "$HOME/.cargo/bin/omni-dev" ]; then
-            echo "::error::6 left an omni-dev behind at $HOME/.cargo/bin/omni-dev"
+          if [ -e "$HOME/.cargo/bin/patchcov" ]; then
+            echo "::error::6 left a patchcov behind at $HOME/.cargo/bin/patchcov"
             status=1
           fi
           exit "$status"
 
-  # A pre-built binary on a runner whose glibc is too old (#67). omni-dev's Linux binaries
-  # need glibc 2.38 or newer (the x86_64 0.45.0 one: 2.38 as a hard requirement and 2.39 as
-  # an optional one, which its loader reports as `weak`), and ubuntu-22.04 has 2.35. The
-  # binary is found, downloaded and installed, and then cannot start, so the step that
-  # prints the version has to say why: the glibc it needs, the one the runner has and the
-  # two ways out. ubuntu-24.04 is the control: the same inputs on a runner whose glibc is
-  # enough, which must succeed. The leg and its control differ in nothing but the runner
-  # (the matrix cannot read `env`, so the version is a literal and `failure-messages`
-  # repeats it, as it repeats the leg's name).
-  #
-  # What the leg shows that the unit test cannot: that the loader says, on a real old image,
-  # what tests/fixtures/omni-dev-loader/ says it does, and that the step that prints the
-  # version is where the action stops. It must run the install, not restore a binary: a cache
-  # hit skips the download step, and the download step is where a binary is first put in place
-  # (it ended by running the binary, so on a miss the loader's bare message stopped the action
-  # there, and the first version of this job passed only because it hit a cache that another
-  # job had saved). So each leg's `cache-prefix` holds the run and the attempt, as
-  # `version-pin`'s does, and the last step removes the binary so the post step saves an entry
-  # nothing would restore. If GitHub retires the ubuntu-22.04 image the leg ends at the
-  # runner, not at the assertion.
-  old-glibc:
-    name: Old glibc (${{ matrix.runner }})
+  # Patchcov 0.1.1 supports the older glibc 2.35 image as well as Ubuntu 24.04.
+  linux-compatibility:
+    name: Linux compatibility (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ubuntu-22.04
-            expect: failure
-          - runner: ubuntu-24.04
-            expect: success
+        runner: [ubuntu-22.04, ubuntu-24.04]
     steps:
-      # The full history, as `guard-flag` has it: on a pull request the control gets past the
-      # install and the guard to "Determine merge-base", which needs `origin/main`. The leg that
-      # fails stops long before that.
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Write fixtures
-        run: |
-          mkdir shards out
-          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
-          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
-
-      # Sharded on purpose, as in 6 and 7: the shards are combined after the install, so a
-      # missing combined report shows where the action stopped.
-      - name: '13. Pre-built omni-dev on a runner with this glibc'
-        id: install
+      - name: Write fixture
+        run: printf 'SF:%s/README.md\nDA:1,1\nend_of_record\n' "$GITHUB_WORKSPACE" > single.lcov
+      - name: Install and run pinned patchcov
         uses: ./
-        continue-on-error: true
         with:
-          version: '0.45.0'
-          cache-prefix: old-glibc-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}-
+          version: '0.1.1'
+          cache-prefix: compatibility-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}-
           run-coverage: false
-          shard-reports: shards/shard-*.lcov
-          report: out/glibc.lcov
-          fail-under-lines: ''
+          report: single.lcov
+          base-ref: HEAD
+          fail-under-lines: '100'
           comment: false
-          upload-artifacts: false
           publish-baseline: false
+          upload-artifacts: false
           baseline-workflow: integration.yml
           baseline-ancestor-depth: 0
-
-      - name: Assert the outcome
-        env:
-          INSTALL: ${{ steps.install.outcome }}
-          EXPECT: ${{ matrix.expect }}
-          LEG: ${{ matrix.runner }}
-          ARCH: ${{ runner.arch }}
-        run: |
-          status=0
-          # The scenario is only about glibc if this runner's is below what the binary needs
-          # (2.38) on the failing leg and above it on the control.
-          if [ "$ARCH" != X64 ] || [ "$(uname -m)" != x86_64 ]; then
-            echo "::error::13 did not run on x86_64 Linux (runner.arch $ARCH, uname -m $(uname -m))"
-            status=1
-          fi
-          glibc="$(getconf GNU_LIBC_VERSION)"
-          glibc="${glibc#glibc }"
-          echo "$LEG has glibc $glibc"
-          if [ "$(printf '%s\n' "$glibc" 2.38 | sort -V | head -n 1)" = "$glibc" ] && [ "$glibc" != 2.38 ]; then
-            old=yes
-          else
-            old=no
-          fi
-          if [ "$EXPECT" = failure ] && [ "$old" != yes ]; then
-            echo "::error::13: $LEG has glibc $glibc, which is not older than the 2.38 this leg is about"
-            status=1
-          fi
-          if [ "$EXPECT" = success ] && [ "$old" != no ]; then
-            echo "::error::13: the control, $LEG, has glibc $glibc, which is older than the 2.38 it needs"
-            status=1
-          fi
-
-          if [ "$INSTALL" = "$EXPECT" ]; then
-            echo "ok   - 13. pre-built omni-dev on $LEG (glibc $glibc): $INSTALL"
-          else
-            echo "::error::13. pre-built omni-dev on $LEG (glibc $glibc): expected $EXPECT, got $INSTALL"
-            status=1
-          fi
-
-          # The binary was installed on both legs: it was found and downloaded (or restored),
-          # and what differs is whether it can start.
-          if [ ! -e "$HOME/.cargo/bin/omni-dev" ]; then
-            echo "::error::13: no omni-dev was installed at $HOME/.cargo/bin/omni-dev, so this is not the case of a binary that cannot start"
-            status=1
-          fi
-
-          if [ "$EXPECT" = failure ]; then
-            # Stopped at the version step, before the shards were combined.
-            if [ -e out/glibc.lcov ]; then
-              echo "::error::13 got past the version step: the shards were combined"
-              status=1
-            fi
-          else
-            if [ ! -s out/glibc.lcov ]; then
-              echo "::error::13: the control did not get past the install: no combined report"
-              status=1
-            fi
-            # Only a binary that starts has a version to check.
-            bash tests/assert-omni-dev-version.sh 0.45.0 || status=1
-          fi
-          # The key cannot hit (the prefix holds the run), so what the post step would save
-          # is never restored, and an entry of about 18 MiB per leg per run would push out the
-          # entries the other jobs reuse. After the checks above, which need the binary.
-          exit "$status"
-
-      # Its own step, not the end of the one above: a failed assertion must not skip it, and a
-      # step that fails stops the job before the post step, which then saves nothing either.
-      - name: Remove the binary so the cache saves nothing
+      - name: Assert installed version
+        run: bash tests/assert-patchcov-version.sh 0.1.1
+      - name: Verify real patchcov reads report fixtures
+        run: bash tests/check-native-patchcov.sh
+      - name: Remove disposable cache binary
         if: always()
-        run: rm -f "$HOME/.cargo/bin/omni-dev"
+        run: rm -f "$HOME/.cargo/bin/patchcov"
 
-  # The guards for the flags a run passes to `omni-dev coverage diff`, one leg per release on
-  # each side of a floor (#50: this was one job per flag, each with the same fixtures, the same
-  # expectation by event and the same file checks; a new floor flag is now a few matrix legs).
-  # The legs keep the job names they always had (`Output flag (omni-dev 0.31.0)`, `Ignore
-  # filename regex flag (omni-dev 0.32.0)`), which `failure-messages` reads the logs by.
-  #
-  # The pull-request half of each guard: the flag is passed wherever a diff runs, and with the
-  # line gate off that is the comment diff and the patch gate, which run only on a
-  # `pull_request` event, so the guard fires only there. The job runs on EVERY event and what it
-  # expects depends on the event: an omni-dev without the flag must be stopped on a pull request
-  # and left alone everywhere else (a fat-mode push calls no `omni-dev coverage` at all, so an
-  # old pin works there today). The other-event expectations first run on the push after a merge,
-  # as `pr-paths.yml` says of the baseline hit. In each pair the leg that has the flag is the
-  # control of the legs that lack it: it differs from them in nothing but `version`, and it pins
-  # the floor exactly.
-  #
-  # Thin mode with the line gate off, so nothing but that flag's need is in play, and no cargo
-  # build. `--output` (0.32.0): 0.31.0 has `coverage diff` without it (clap says the argument is
-  # unexpected), and 0.28.0 has no `coverage diff` to ask (clap says the subcommand is
-  # unrecognized, and `coverage` arrived in 0.29.0): both must reach the same message.
-  # `--ignore-filename-regex` (0.33.0, set through the input): 0.32.0 is the newest release
-  # without it and has `--output`, so on a pull request this flag is the guard's only complaint.
-  guard-flag:
-    name: ${{ matrix.title }} (omni-dev ${{ matrix.omni-dev }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # `--output`: the newest release with no `coverage` subcommand at all, so the guard's
-          # probe fails on the subcommand rather than the flag.
-          - title: 'Output flag'
-            scenario: '7'
-            flag: '--output'
-            filter: ''
-            omni-dev: '0.28.0'
-            has-flag: false
-          # The newest release with `coverage diff` but without `--output`.
-          - title: 'Output flag'
-            scenario: '7'
-            flag: '--output'
-            filter: ''
-            omni-dev: '0.31.0'
-            has-flag: false
-          # The first release with it: the floor the README documents, and the control.
-          - title: 'Output flag'
-            scenario: '7'
-            flag: '--output'
-            filter: ''
-            omni-dev: '0.32.0'
-            has-flag: true
-          # `--ignore-filename-regex`: the newest release without it.
-          - title: 'Ignore filename regex flag'
-            scenario: '9'
-            flag: '--ignore-filename-regex'
-            filter: 'LICENSE'
-            omni-dev: '0.32.0'
-            has-flag: false
-          # The first release with it: the floor the README documents, and the control.
-          - title: 'Ignore filename regex flag'
-            scenario: '9'
-            flag: '--ignore-filename-regex'
-            filter: 'LICENSE'
-            omni-dev: '0.33.0'
-            has-flag: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Write fixtures
-        run: |
-          mkdir shards out
-          printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-1.lcov
-          printf 'SF:%s/README.md\nDA:1,0\nDA:2,1\nDA:3,1\nDA:4,0\nend_of_record' "$GITHUB_WORKSPACE" > shards/shard-2.lcov
-
-      # Sharded on purpose: the guard runs before "Combine shard reports", so a missing combined
-      # report shows the guard stopped the action. clap's error from the comment step comes after
-      # the combine, and its redirect into `coverage.md` would leave an empty file.
-      - name: '${{ matrix.scenario }}. The guard for ${{ matrix.flag }}, with this omni-dev'
-        id: guard
-        uses: ./
-        continue-on-error: true
-        with:
-          version: ${{ matrix.omni-dev }}
-          run-coverage: false
-          shard-reports: shards/shard-*.lcov
-          report: out/guard.lcov
-          fail-under-lines: ''
-          ignore-filename-regex: ${{ matrix.filter }}
-          comment: false
-          upload-artifacts: false
-          publish-baseline: false
-          baseline-workflow: integration.yml
-          baseline-ancestor-depth: 0
-
-      - name: Assert the outcome
-        env:
-          GUARD: ${{ steps.guard.outcome }}
-          SCENARIO: ${{ matrix.scenario }}
-          FLAG: ${{ matrix.flag }}
-          HAS_FLAG: ${{ matrix.has-flag }}
-          # The pin, not the action's `version` output: a failed composite step
-          # may expose no outputs, and this leg is expected to fail.
-          VERSION: ${{ matrix.omni-dev }}
-        run: |
-          status=0
-          source tests/assert-lib.sh
-
-          expect=success
-          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$HAS_FLAG" = false ]; then
-            expect=failure
-          fi
-          check "$SCENARIO. the guard for $FLAG, omni-dev with it: $HAS_FLAG, on $GITHUB_EVENT_NAME" "$expect" "$GUARD"
-
-          if [ "$expect" = failure ]; then
-            # Stopped at the guard: before the shards were combined, and before the
-            # comment step could create its output.
-            assert "$SCENARIO: stopped at the guard: no report written" test ! -e out/guard.lcov
-            assert "$SCENARIO: stopped at the guard: no comment written" test ! -e coverage.md
-          else
-            assert "$SCENARIO: got past the guard: the shards were combined" test -s out/guard.lcov
-            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-              # Both call sites the step reaches ran, on this omni-dev: markdown and json.
-              assert "$SCENARIO: the comment was rendered" test -s coverage.md
-              assert "$SCENARIO: the percentages were rendered" jq -e 'type == "object"' coverage.json
-            else
-              assert "$SCENARIO: no diff rendered outside a pull request" test ! -e coverage.md
-            fi
-          fi
-
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
-          exit "$status"
-
-  # `ignore-filename-regex` reaching the diff (#3). The thin-mode line gate is the one
-  # `coverage diff` the action runs on every event, so it is where the filter shows on a
-  # push too. The report is README.md fully covered and LICENSE not at all: 50% (4 of 8
-  # lines), and 100% once LICENSE is filtered out. 8a and 8b differ only in the filter, so
-  # a gate of 70 passes with it and fails without it. 8a's value holds two patterns, the
-  # first matching nothing and starting with `-`, and an anchor: it filters LICENSE only if
-  # the value is split at the comma, matched against the repo-relative path, and reaches
-  # omni-dev as `--ignore-filename-regex=<value>` (a separate argument starting with `-`
-  # is read by clap as a flag). The comment diff and the patch gate take the same filter;
-  # pr-paths.yml shows that (P5, P6) where the patch is known.
   ignore-filename-regex:
-    name: Ignore filename regex (omni-dev ${{ matrix.omni-dev }})
+    name: Ignore filename regex (patchcov ${{ matrix.patchcov }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 0.45.0 is the floor of the thin-mode line gate this uses; `latest` catches a
+        # Pinned release and latest exercise filtering; latest catches a
         # bad future release.
-        omni-dev: ['0.45.0', 'latest']
+        patchcov: ['0.1.1', 'latest']
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # Sharded, so that a combined report shows where 8b stopped: the combine comes
-      # after the guard and before the gate.
+      # after installation and before the gate.
       - name: Write fixtures
         run: |
           mkdir shards out
@@ -777,7 +418,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ matrix.omni-dev }}
+          version: ${{ matrix.patchcov }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/filtered.lcov
@@ -795,7 +436,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ matrix.omni-dev }}
+          version: ${{ matrix.patchcov }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/unfiltered.lcov
@@ -816,7 +457,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ matrix.omni-dev }}
+          version: ${{ matrix.patchcov }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/refused.lcov
@@ -838,7 +479,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: ${{ matrix.omni-dev }}
+          version: ${{ matrix.patchcov }}
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/refused-block.lcov
@@ -896,7 +537,7 @@ jobs:
 
           # The binary on PATH is the version that was resolved. A cache entry
           # holding another version's binary fails here.
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
   # `version: latest` when the releases API gives no release (#40). A spent rate limit
@@ -914,11 +555,11 @@ jobs:
   # redirect, not the API, answered 10 is shown by the API refusing its token just
   # before, and by `failure-messages`, which reads the warning the step logs when the
   # redirect answered (#61); the unit tests pin that the input reaches the step.
-  # One install in this job, so no second omni-dev version can poison the cache. A
+  # One install in this job, so no second patchcov version can poison the cache. A
   # release published between the API query and the run fails the job on the two
   # differing; a re-run settles it.
   latest-redirect:
-    name: Latest omni-dev (API refuses the token)
+    name: Latest patchcov (API refuses the token)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -935,7 +576,7 @@ jobs:
           status=$(curl -sS -o /dev/null -w '%{http_code}' \
             --connect-timeout 10 --max-time 30 \
             -H 'Authorization: Bearer not-a-token' \
-            https://api.github.com/repos/rust-works/omni-dev/releases/latest || true)
+            https://api.github.com/repos/rust-works/patchcov/releases/latest || true)
           echo "status=${status:-000}" >> "$GITHUB_OUTPUT"
 
       - name: 'What the API says the latest release is'
@@ -943,7 +584,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag=$(gh api repos/rust-works/omni-dev/releases/latest --jq '.tag_name // empty' || true)
+          tag=$(gh api repos/rust-works/patchcov/releases/latest --jq '.tag_name // empty' || true)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: '10. Latest, with a token the API refuses'
@@ -997,19 +638,19 @@ jobs:
 
           # The binary on PATH is the version that was resolved. A cache entry
           # holding another version's binary fails here.
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
-  # A `version` written as a release tag, `v0.45.0`, through the whole install (#52).
+  # A `version` written as a release tag, `v0.1.1`, through the whole install (#52).
   # `tests/resolve-version-step.test.sh` runs the strip on its own; this runs what comes
   # after it on a runner: the platform step's download URL, the install, and the
   # `version` and `release-tag` outputs a caller reads. A step that read `inputs.version`
-  # instead of the resolved value would build `vv0.45.0`, which 404s (#38), and the unit
+  # instead of the resolved value would build `vv0.1.1`, which 404s (#38), and the unit
   # test would stay green.
   #
   # Only a run that reaches the download can see that, and the platform and download
   # steps are skipped on a cache hit. Left on the default key, which is the one the
-  # ignore-filename-regex job's 0.45.0 leg saves and a `v0.45.0` pin resolves to, this job would hit
+  # ignore-filename-regex job's 0.1.1 leg saves and a `v0.1.1` pin resolves to, this job would hit
   # the cache after the first run on `main` and check only the outputs. So each leg
   # builds its key from the run, the attempt and its own pin (`cache-prefix`): it cannot
   # exist, and the install runs every time. The assertion step checks that it did, and
@@ -1020,14 +661,14 @@ jobs:
   #
   # A leg per spelling, each its own job, so that the binary on PATH can only have come
   # from that leg's install: in one job, a second install would put it there even if the
-  # first had failed at the 404. `0.45.0` is the control for `v0.45.0` (only `version`
+  # first had failed at the 404. `0.1.1` is the control for `v0.1.1` (only `version`
   # and the text of the prefix that carries it differ) and must give the same outputs.
   # The matrix cannot read `env`, so the pins are literals; the outputs expected below
   # are literals too, because both spellings must come out the same.
   #
   # Thin mode with the line gate off, so nothing but the install is in play, and no cargo
-  # build. The `use-prebuilt-binary: false` path compiles omni-dev and has no leg: cargo
-  # refuses `v0.45.0` outright (#38). It reads the resolved `version`, which the unit test
+  # build. The `use-prebuilt-binary: false` path compiles patchcov and has no leg: cargo
+  # refuses `v0.1.1` outright (#38). It reads the resolved `version`, which the unit test
   # pins has no `v`; nothing pins that it reads that and not `inputs.version`.
   version-pin:
     name: Pinned version (${{ matrix.pin }})
@@ -1035,7 +676,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pin: ['v0.45.0', '0.45.0']
+        pin: ['v0.1.1', '0.1.1']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1065,21 +706,21 @@ jobs:
           INSTALL: ${{ steps.pin.outcome }}
           VERSION: ${{ steps.pin.outputs.version }}
           RELEASE_TAG: ${{ steps.pin.outputs.release-tag }}
-          CACHE_HIT: ${{ steps.pin.outputs.omni-dev-cache-hit }}
+          CACHE_HIT: ${{ steps.pin.outputs.patchcov-cache-hit }}
           PIN: ${{ matrix.pin }}
         run: |
           status=0
           source tests/assert-lib.sh
 
           check "11 ($PIN): the install succeeded" success "$INSTALL"
-          check "11 ($PIN): the version output has no leading v" 0.45.0 "$VERSION"
-          check "11 ($PIN): the release-tag output is the v-prefixed tag" v0.45.0 "$RELEASE_TAG"
+          check "11 ($PIN): the version output has no leading v" 0.1.1 "$VERSION"
+          check "11 ($PIN): the release-tag output is the v-prefixed tag" v0.1.1 "$RELEASE_TAG"
 
           # The install ran in this job. The key is unique to the run, the attempt and the pin
           # on every event, so nothing could have saved an entry for it: a hit means the prefix
           # never reached the action, and the platform and download steps were skipped. Without
           # this a cache hit would pass every check above. The action says whether it hit
-          # (`omni-dev-cache-hit`); `check-fresh` fails on `true`, and on no value, which is how
+          # (`patchcov-cache-hit`); `check-fresh` fails on `true`, and on no value, which is how
           # a step that failed arrives.
           bash tests/install-cache.sh check-fresh "$CACHE_HIT" || status=1
 
@@ -1097,29 +738,29 @@ jobs:
           # The binary on PATH is the version that was resolved. The action's output, not
           # the pin: a pin written with a v is not a bare release number, and passing the
           # pin without its v would repeat the action's own strip instead of testing it.
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
       # Last, so the assertions above see the binary. The cache key is unique to this
       # run, so what the cache's post step would save is never restored: an entry of about
-      # 18 MiB per leg per run (0.45.0's is 17.66 MiB), against a repository cache of
+      # 18 MiB per leg per run (0.1.1's is 17.66 MiB), against a repository cache of
       # about 200 MB in all, which would push out the entries the other jobs reuse. With
       # no file at the cached path it saves nothing and logs a warning about the missing
       # path.
       - name: Leave nothing for the cache to save
-        run: rm -f "$HOME/.cargo/bin/omni-dev"
+        run: rm -f "$HOME/.cargo/bin/patchcov"
 
   # The `version` input when it names no release, or names one with a capital V (#51).
   # tests/resolve-version-step.test.sh runs the step's script on each value; this runs
   # them through the action on a runner, which is what shows that a workflow's empty
   # `version` reaches the script as an empty string and is not swapped for the input's
-  # `latest` default (a swap would make 12a install omni-dev and succeed, and fail here).
+  # `latest` default (a swap would make 12a install patchcov and succeed, and fail here).
   #
   # Thin mode with the line gate off, so nothing but the install is in play. 12a and 12b
   # must stop at the resolve step, before the shards are combined: a missing combined
   # report shows where. 12c differs from them in `version` alone, so it is their control,
   # and it is the capital V's decision (accepted) run on a runner: the outputs are the
-  # lowercase-v spelling's and the binary is that release's. It installs 0.45.0, the
+  # lowercase-v spelling's and the binary is that release's. It installs 0.1.1, the
   # release the thin-mode job's first leg installs, so the two write the same cache key
   # by design; each is its own job, so neither poisons the other.
   version-input:
@@ -1175,7 +816,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          version: V0.45.0
+          version: V0.1.1
           run-coverage: false
           shard-reports: shards/shard-*.lcov
           report: out/capital-v.lcov
@@ -1209,8 +850,8 @@ jobs:
 
           check "12c. a capital V is accepted" success "$CAPITAL_V"
           assert "12c: got past the install: the shards were combined" test -s out/capital-v.lcov
-          check "12c: the version output has no V" 0.45.0 "$VERSION"
-          check "12c: the release-tag output has a lowercase v" v0.45.0 "$RELEASE_TAG"
+          check "12c: the version output has no V" 0.1.1 "$VERSION"
+          check "12c: the release-tag output has a lowercase v" v0.1.1 "$RELEASE_TAG"
 
           # On a pull request 12c also ran the comment and percentages diffs, and the
           # failure-messages job reads this job's log for a deprecation warning from
@@ -1223,7 +864,7 @@ jobs:
             assert "12c: no diff rendered outside a pull request" test ! -e coverage.md
           fi
 
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
   fat-mode:
@@ -1593,16 +1234,16 @@ jobs:
 
           # The binary on PATH is the version that was resolved. A cache entry
           # holding another version's binary fails here.
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
   # The control for the deprecation check in `failure-messages` (#23). No other job
-  # should log an omni-dev deprecation warning, and a reader that cannot see one
-  # reports the same empty result. This job logs one on purpose: it calls omni-dev
+  # should log an patchcov deprecation warning, and a reader that cannot see one
+  # reports the same empty result. This job logs one on purpose: it calls patchcov
   # directly with the flag the action no longer passes, and the action is here only
-  # to install omni-dev (it passes `-o`). It differs from a scenario in that call and
+  # to install patchcov (it passes `-o`). It differs from a scenario in that call and
   # nothing else.
-  # `latest`, so that if omni-dev rewords the warning or removes the flag, this is
+  # `latest`, so that if patchcov rewords the warning or removes the flag, this is
   # where it shows, and the message there says what to do. `|| rc=$?` because a
   # removed flag is an error, and what to say about it is the reader's, below.
   deprecation-control:
@@ -1616,7 +1257,7 @@ jobs:
       - name: Write fixtures
         run: printf 'SF:%s/README.md\nDA:1,1\nDA:2,0\nend_of_record' "$GITHUB_WORKSPACE" > single.lcov
 
-      - name: 'D1. Install omni-dev through the action'
+      - name: 'D1. Install patchcov through the action'
         uses: ./
         with:
           version: latest
@@ -1629,41 +1270,12 @@ jobs:
           baseline-workflow: integration.yml
           baseline-ancestor-depth: 0
 
-      - name: 'D2. Pass the deprecated flag to omni-dev directly'
+      - name: 'D2. Pass the deprecated flag to patchcov directly'
         run: |
           rc=0
-          omni-dev coverage diff --report single.lcov --base-ref HEAD --format json > /dev/null || rc=$?
-          echo "omni-dev exited $rc"
+          patchcov diff --report single.lcov --base-ref HEAD --format json > /dev/null || rc=$?
+          echo "patchcov exited $rc"
 
-      # The control for the guard's probe (#36), here because it needs the same thing as
-      # D2: omni-dev on `latest`. The guard in action.yml counts a flag as present unless
-      # clap says `unexpected argument '<flag>' found`, so a clap that rewords it makes the
-      # guard pass on every omni-dev that lacks a flag, and no scenario would show it: the
-      # ones that expect the guard to stop run pinned releases, whose wording cannot change.
-      # A flag that cannot exist must still get that message, asked as the probe asks
-      # (NO_COLOR=1, a dummy value, `--help`).
-      - name: "D3. Ask omni-dev about a flag that cannot exist, as the guard's probe does"
-        run: |
-          said="$(NO_COLOR=1 omni-dev coverage diff --no-such-flag x --help 2>&1 || true)"
-          printf '%s\n' "$said"
-          if ! grep -Fq "error: unexpected argument '--no-such-flag' found" <<<"$said"; then
-            echo "::error::$(omni-dev --version) no longer says \"error: unexpected argument '<flag>' found\" for an unknown flag, so the guard in action.yml (has_flag) would count every missing flag as present. Update its match, and tests/fixtures/omni-dev-probe/."
-            exit 1
-          fi
-
-  # Seven of the scenarios above exist mainly for their message, which is what a
-  # user reads: a shard pattern that matches nothing must name the pattern, a
-  # guard that finds no `--fail-under-lines`, `--output` or `--ignore-filename-regex`
-  # must say how to fix it, a release with no asset for the runner's
-  # architecture must name the asset, a `version` that names no release must
-  # name the input, and the redirect fallback of `version: latest` (a warning, not an
-  # error, so read with job-warnings.sh) must say that the redirect answered and
-  # why. A step cannot read its own job's log and a
-  # composite action's failing step exposes no output, so the outcome and file
-  # checks above pin the step order, not the text. This job reads the finished
-  # jobs' logs instead. It reads them for a second thing: on a pull request, the
-  # jobs that ran the diffs must not have logged an omni-dev deprecation warning,
-  # and the control job must have.
   failure-messages:
     name: Failure messages
     # Skipped when a scenario job is red: the run is red already, and a scenario
@@ -1675,10 +1287,8 @@ jobs:
     # tests/merge-queue.test.sh fails for one that is (#105), and for a name that is no job.
     needs:
       - thin-mode
-      - thin-mode-old-omni-dev
       - arm64-release-without-asset
-      - old-glibc
-      - guard-flag
+      - linux-compatibility
       - ignore-filename-regex
       - latest-redirect
       - version-pin
@@ -1727,38 +1337,23 @@ jobs:
           # the thin-mode matrix runs it; keep the legs in step with that matrix (each is
           # the job's name with the version, then `, ARM64` on an ARM64 runner). The
           # pattern is the one in scenario 4's `shard-reports`.
-          for leg in '0.45.0' 'latest' '0.46.0, ARM64' 'latest, ARM64'; do
-            if errors="$(bash tests/job-errors.sh "Thin mode (omni-dev $leg)")"; then
-              expect "4 (omni-dev $leg): the pattern that matched nothing is named" "$errors" \
+          for leg in '0.1.1' 'latest' '0.1.1, ARM64' 'latest, ARM64'; do
+            if errors="$(bash tests/job-errors.sh "Thin mode (patchcov $leg)")"; then
+              expect "4 (patchcov $leg): the pattern that matched nothing is named" "$errors" \
                 "shard-reports pattern 'shards/missing-*.lcov' matched no files"
             else
               status=1
             fi
           done
 
-          # 5a: the guard names the omni-dev it found and both ways out. The job
-          # name is the one `thin-mode-old-omni-dev` sets above. Every check holds
-          # the guard's own first words, so each is about its message and no other.
-          guard="has no 'coverage diff --fail-under-lines'"
-          if errors="$(bash tests/job-errors.sh 'Thin mode (omni-dev without --fail-under-lines)')"; then
-            expect "5a: the guard names the omni-dev it found" "$errors" \
-              "omni-dev $OLD_OMNI_DEV" "$guard"
-            expect "5a: the guard says to set 'version' to a release with the flag" "$errors" \
-              "$guard" "Set 'version' to a release that includes it"
-            expect "5a: the guard says to set 'fail-under-lines' to an empty string" "$errors" \
-              "$guard" "set 'fail-under-lines' to an empty string"
-          else
-            status=1
-          fi
-
           # 6: a release with no asset for the runner's architecture names the release
           # and the asset it looked for, and gives both ways out. The job name is the
           # one `arm64-release-without-asset` sets above. Every check holds the asset's
           # own name, so a message about another file cannot satisfy it.
-          asset="omni-dev-linux-arm64.tar.gz"
-          if errors="$(bash tests/job-errors.sh 'Pre-built binary (ARM64 Linux, omni-dev without the ARM64 asset)')"; then
+          asset="patchcov-v$OLD_PATCHCOV-aarch64-unknown-linux-gnu.tar.gz"
+          if errors="$(bash tests/job-errors.sh 'Pre-built binary (ARM64 Linux, patchcov without the ARM64 asset)')"; then
             expect "6: the release and the missing asset are named" "$errors" \
-              "omni-dev v$OLD_OMNI_DEV has no pre-built $asset" "Linux ARM64"
+              "patchcov v$OLD_PATCHCOV has no pre-built $asset" "Linux ARM64"
             expect "6: the message says to set 'version' to a release that has the asset" "$errors" \
               "$asset" "Set 'version' to a release that has it"
             expect "6: the message says to build from source" "$errors" \
@@ -1767,72 +1362,6 @@ jobs:
             status=1
           fi
 
-          # 13: a pre-built binary on a runner whose glibc is too old names the release and
-          # the platform, the glibc its loader says it needs (the newest non-weak one: 2.38
-          # for the 0.45.0 x86_64 binary) and the one the runner has (ubuntu-22.04: 2.35), and
-          # gives both ways out. The job name is the one `old-glibc` sets; its control leg on
-          # ubuntu-24.04 succeeds and has no message to read. Every check holds the glibc the
-          # message asks for, so a message about another version cannot satisfy it.
-          if errors="$(bash tests/job-errors.sh 'Old glibc (ubuntu-22.04)')"; then
-            expect "13: the release and the platform are named" "$errors" \
-              "omni-dev 0.45.0 cannot run on this runner (Linux X64)"
-            expect "13: the glibc it needs and the one the runner has" "$errors" \
-              "it needs glibc 2.38 or newer, and the runner has glibc 2.35."
-            expect "13: the first way out is a newer runner image" "$errors" \
-              "it needs glibc 2.38 or newer" \
-              "Use a runner image with glibc 2.38 or newer (ubuntu-24.04, or ubuntu-24.04-arm)"
-            expect "13: the second way out is to build from source" "$errors" \
-              "it needs glibc 2.38 or newer" \
-              "set 'use-prebuilt-binary: false' to build omni-dev from source."
-          else
-            status=1
-          fi
-
-          # 7: on a pull request the `--output` guard names the omni-dev it found, the
-          # floor and the way out. Only a pull request runs it, so on any other event
-          # the legs without the flag succeed and have no message to read. Both legs
-          # without it must reach the same message: 0.31.0 has `coverage diff` without
-          # the flag, and 0.28.0 has no `coverage diff` at all, so its probe fails on
-          # the subcommand before any flag is looked at. The job names are the ones
-          # `guard-flag` builds above from its `title` and `omni-dev`; keep the versions in
-          # step with its matrix. The version is a fragment of its own because
-          # `omni-dev --version` can carry a commit and date after it.
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            guard="has no 'coverage diff --output'"
-            for version in 0.28.0 0.31.0; do
-              if errors="$(bash tests/job-errors.sh "Output flag (omni-dev $version)")"; then
-                expect "7 (omni-dev $version): the guard names the omni-dev it found" "$errors" \
-                  "omni-dev $version" "$guard"
-                expect "7 (omni-dev $version): the guard names the 0.32.0 floor" "$errors" \
-                  "$guard" "It needs omni-dev 0.32.0 or later"
-                expect "7 (omni-dev $version): the guard says to set 'version' to the floor or 'latest'" "$errors" \
-                  "$guard" "set 'version' to 0.32.0 or later, or to 'latest'"
-              else
-                status=1
-              fi
-            done
-          fi
-
-          # 9: on a pull request the `--ignore-filename-regex` guard names the omni-dev it
-          # found, the floor and both ways out. Only a pull request runs it in the job
-          # below (the line gate is off), so on any other event the leg without the flag
-          # succeeds and has no message to read. The job name is the one `guard-flag` builds
-          # above from its `title` and `omni-dev`; keep the version in step with its matrix.
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            guard="has no 'coverage diff --ignore-filename-regex'"
-            if errors="$(bash tests/job-errors.sh 'Ignore filename regex flag (omni-dev 0.32.0)')"; then
-              expect "9: the guard names the omni-dev it found" "$errors" \
-                "omni-dev 0.32.0" "$guard"
-              expect "9: the guard names the 0.33.0 floor" "$errors" \
-                "$guard" "It needs omni-dev 0.33.0 or later"
-              expect "9: the guard says to set 'version' to the floor or 'latest'" "$errors" \
-                "$guard" "set 'version' to 0.33.0 or later, or to 'latest'"
-              expect "9: the guard says to set 'ignore-filename-regex' to an empty string" "$errors" \
-                "$guard" "set 'ignore-filename-regex' to an empty string"
-            else
-              status=1
-            fi
-          fi
           # 10: with a token the API refuses, the resolve step logs one warning that
           # says the redirect answered in its place (#61). The first and third checks
           # say which part is missing; the second holds all three, which is the rule. The scenario's own checks
@@ -1845,8 +1374,8 @@ jobs:
           # A reworded warning, or the workflow token reaching the scenario (so that the
           # API answers and no fallback is logged), fails these. The job name is the one
           # `latest-redirect` sets above.
-          fallback="so latest omni-dev was resolved from the github.com releases/latest redirect instead: v"
-          if warnings="$(bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)')"; then
+          fallback="so latest patchcov was resolved from the github.com releases/latest redirect instead: v"
+          if warnings="$(bash tests/job-warnings.sh 'Latest patchcov (API refuses the token)')"; then
             expect "10: the fallback's warning names the API's reason" "$warnings" \
               "$fallback" "(API: Bad credentials)"
             expect "10: ONE warning holds the reason, the redirect answering and the way out" "$warnings" \
@@ -1863,18 +1392,18 @@ jobs:
           # refusal's own first words.
           refusal="The 'ignore-filename-regex' input holds a space or tab beside a comma"
           block_refusal="The 'ignore-filename-regex' input holds a line break"
-          for leg in '0.45.0' 'latest'; do
-            if errors="$(bash tests/job-errors.sh "Ignore filename regex (omni-dev $leg)")"; then
-              expect "8c (omni-dev $leg): the refusal names the input and what it holds" "$errors" \
+          for leg in '0.1.1' 'latest'; do
+            if errors="$(bash tests/job-errors.sh "Ignore filename regex (patchcov $leg)")"; then
+              expect "8c (patchcov $leg): the refusal names the input and what it holds" "$errors" \
                 "$refusal" "(got '-nomatch\\.txt, ^LICENSE\$')"
-              expect "8c (omni-dev $leg): the refusal says the files would stay with no warning" "$errors" \
+              expect "8c (patchcov $leg): the refusal says the files would stay with no warning" "$errors" \
                 "$refusal" "the files would stay in the comment and the gates, with no warning"
-              expect "8c (omni-dev $leg): the refusal says how to fix it" "$errors" \
+              expect "8c (patchcov $leg): the refusal says how to fix it" "$errors" \
                 "$refusal" "Write [ ] for a space that is meant"
               # 8d: the block's trailing newline arrived, and is shown as a ?.
-              expect "8d (omni-dev $leg): the YAML block's line break is named, and shown as a ?" "$errors" \
+              expect "8d (patchcov $leg): the YAML block's line break is named, and shown as a ?" "$errors" \
                 "$block_refusal" "(got '-nomatch\\.txt,^LICENSE\$?', where a ? stands for a line break"
-              expect "8d (omni-dev $leg): the refusal says what a YAML block does" "$errors" \
+              expect "8d (patchcov $leg): the refusal says what a YAML block does" "$errors" \
                 "$block_refusal" "a YAML | block keeps its line breaks"
             else
               status=1
@@ -1892,9 +1421,9 @@ jobs:
             expect "12b: a version that is only a v is refused, and the message quotes it" "$errors" \
               "$refused" "(got 'v')"
             expect "12a: the message offers a release number" "$errors" \
-              "$refused" "(got '')" "a release number such as 0.45.0"
+              "$refused" "(got '')" "a release number such as 0.1.1"
             expect "12b: the message offers a release number" "$errors" \
-              "$refused" "(got 'v')" "a release number such as 0.45.0"
+              "$refused" "(got 'v')" "a release number such as 0.1.1"
             expect "12a: the message offers 'latest'" "$errors" \
               "$refused" "(got '')" "or to 'latest'"
             expect "12b: the message offers 'latest'" "$errors" \
@@ -1904,7 +1433,7 @@ jobs:
           fi
           exit "$status"
 
-      # What omni-dev says about a flag the action passes, read from the same logs.
+      # What patchcov says about a flag the action passes, read from the same logs.
       # The control runs on every event; the absence checks on a pull request only,
       # because the diffs they are about run on a pull request alone. The jobs that
       # run them show with a file check, in their own assertion steps, that they did.
@@ -1918,7 +1447,7 @@ jobs:
           status=0
 
           # The control passes the deprecated flag on purpose, so its log holds the
-          # warning. Finding none means the reader cannot see a warning, or omni-dev
+          # warning. Finding none means the reader cannot see a warning, or patchcov
           # no longer prints this one, and then every check below would pass for
           # nothing. The warning is matched on the flag and what to use instead, not
           # on its wording, so a reworded message that still names both passes.
@@ -1928,7 +1457,7 @@ jobs:
             if grep -qF -- '-o/--output' <<<"$matching"; then
               echo "ok   - control: the warning for the flag it passes on purpose is found"
             else
-              echo "::error::control: no deprecation warning names '--format' and '-o/--output' in '$control'. If omni-dev reworded it, update tests/job-deprecations.sh; if it removed the flag, retire this control."
+              echo "::error::control: no deprecation warning names '--format' and '-o/--output' in '$control'. If patchcov reworded it, update tests/job-deprecations.sh; if it removed the flag, retire this control."
               echo "the job logged:"
               if [ -n "$lines" ]; then
                 while IFS= read -r line; do echo "  $line"; done <<<"$lines"
@@ -1944,7 +1473,7 @@ jobs:
           # Every other job of the run that finished green, found through the API, so
           # a new job or matrix leg is read without being added to a list. This job
           # is still running, so it is not among them, and the control is read above.
-          # A job that stops at a guard (guard-flag's Output flag 0.31.0, the ARM64 job) logs none,
+          # A job that stops at the install (the missing-asset control) logs none,
           # which is the right answer for it. The jobs that run the diffs show with a
           # file check, in their own assertion steps, that they did.
           #
@@ -1971,7 +1500,7 @@ jobs:
                   if [ -z "$lines" ]; then
                     echo "ok   - $job: no deprecation warning"
                   else
-                    echo "::error::$job logged a deprecation warning. If omni-dev printed it, action.yml passes a flag omni-dev has deprecated: stop passing it and add it to tests/check-deprecated-flags.sh. If another tool did, see what it deprecated."
+                    echo "::error::$job logged a deprecation warning. If patchcov printed it, action.yml passes a flag patchcov has deprecated: stop passing it and add it to tests/check-deprecated-flags.sh. If another tool did, see what it deprecated."
                     while IFS= read -r line; do echo "  $line"; done <<<"$lines"
                     status=1
                   fi
@@ -1997,10 +1526,8 @@ jobs:
     name: ci-gate
     needs:
       - thin-mode
-      - thin-mode-old-omni-dev
       - arm64-release-without-asset
-      - old-glibc
-      - guard-flag
+      - linux-compatibility
       - ignore-filename-regex
       - latest-redirect
       - version-pin

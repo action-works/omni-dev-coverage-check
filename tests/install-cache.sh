@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# What makes the jobs that exist to run the omni-dev install run it (#66).
+# What makes the jobs that exist to run the patchcov install run it (#66).
 #
 # Usage: install-cache.sh prefix
-#        install-cache.sh check <omni-dev-cache-hit>
-#        install-cache.sh check-fresh <omni-dev-cache-hit>
+#        install-cache.sh check <patchcov-cache-hit>
+#        install-cache.sh check-fresh <patchcov-cache-hit>
 #
-# `actions/cache` restores ~/.cargo/bin/omni-dev on a hit and the platform and download
+# `actions/cache` restores ~/.cargo/bin/patchcov on a hit and the platform and download
 # steps are then skipped. The key holds the version and not the action's code, so a job
 # that exists to run the install would pass on a cached binary after its first run for a
 # version, whatever a pull request changed in the install. The jobs that exist for the
 # install put a prefix in front of the key (`cache-prefix`), and check what the action
-# says it did (the `omni-dev-cache-hit` output). Both are decided here, so the prefix and
+# says it did (the `patchcov-cache-hit` output). Both are decided here, so the prefix and
 # the check cannot disagree about which events must install.
 #
 # prefix   Prints the `cache-prefix` for $GITHUB_EVENT_NAME, and nothing else.
@@ -22,15 +22,15 @@
 #          are the ones that test the world rather than a change, so they install every
 #          time, and a re-run (a new attempt) installs again.
 #          <leg> is $INSTALL_CACHE_LEG (optional, for a job with a matrix), and both prefixes
-#          carry it. The legs of a job can resolve to the same key: a pinned 0.46.0 and
-#          `latest` when latest is 0.46.0, on the same runner. Sharing it would let whichever
+#          carry it. The legs of a job can resolve to the same key: a pinned 0.1.1 and
+#          `latest` when latest is 0.1.1, on the same runner. Sharing it would let whichever
 #          leg finishes first save the entry the other restores, so the other would not run
 #          the install at all (seen on this change's own pull request: the ARM64 `latest`
 #          leg's last two scenarios hit the pinned leg's entry), and on a run-id event
 #          `check` would fail a leg that did nothing wrong. Letters, digits, dots,
 #          underscores and hyphens, so it is safe in a key.
 #
-# check    Reads the `omni-dev-cache-hit` output of the first scenario of a job (a failed
+# check    Reads the `patchcov-cache-hit` output of the first scenario of a job (a failed
 #          scenario exposes no outputs, and the entry is saved in a post step, so the first
 #          one sees the cache as the job found it). Exit status:
 #            0  `false`: the install ran in this job.
@@ -103,23 +103,23 @@ prefix() {
   echo "install-${INSTALL_CODE_HASH:0:16}-${leg:+$leg-}"
 }
 
-# check <omni-dev-cache-hit> [fresh]: `fresh` says the job's prefix is unique to the run on every
+# check <patchcov-cache-hit> [fresh]: `fresh` says the job's prefix is unique to the run on every
 # event, so a hit is wrong whatever the event is.
 check() {
   local hit="${1:-}" fresh="${2:-}" mode=check
   [ -z "$fresh" ] || mode=check-fresh
   if [ -z "$hit" ]; then
     # Matching an empty value against everything would pass whatever the action did.
-    err "$mode needs the action's omni-dev-cache-hit output; got none. Did the scenario fail, so that it exposed no outputs?"
+    err "$mode needs the action's patchcov-cache-hit output; got none. Did the scenario fail, so that it exposed no outputs?"
     return 2
   fi
   case "$hit" in
     false)
-      echo "ok   - omni-dev was installed in this job: no cache entry for this prefix, so the download and the extraction ran"
+      echo "ok   - patchcov was installed in this job: no cache entry for this prefix, so the download and the extraction ran"
       ;;
     true)
       if [ "$fresh" = fresh ]; then
-        err "omni-dev was restored from the cache in a job whose cache-prefix is unique to the run on every event, so nothing could have saved it; the prefix did not reach the action and the install did not run"
+        err "patchcov was restored from the cache in a job whose cache-prefix is unique to the run on every event, so nothing could have saved it; the prefix did not reach the action and the install did not run"
         return 1
       fi
       if [ -z "${GITHUB_EVENT_NAME:-}" ]; then
@@ -127,13 +127,13 @@ check() {
         return 1
       fi
       if installs_every_time; then
-        err "omni-dev was restored from the cache on a $GITHUB_EVENT_NAME run, whose cache-prefix is unique to the run, so nothing could have saved it; the prefix did not reach the action and the install did not run"
+        err "patchcov was restored from the cache on a $GITHUB_EVENT_NAME run, whose cache-prefix is unique to the run, so nothing could have saved it; the prefix did not reach the action and the install did not run"
         return 1
       fi
-      echo "ok   - omni-dev came from the cache, not from an install: an earlier run saved this entry for the same action.yml and scripts/*.sh, so the download and the extraction did not run in this job. A change to either installs again"
+      echo "ok   - patchcov came from the cache, not from an install: an earlier run saved this entry for the same action.yml and scripts/*.sh, so the download and the extraction did not run in this job. A change to either installs again"
       ;;
     *)
-      err "omni-dev-cache-hit is '$hit', expected true or false"
+      err "patchcov-cache-hit is '$hit', expected true or false"
       return 1
       ;;
   esac
@@ -145,15 +145,15 @@ case "${1:-}" in
     prefix
     ;;
   check)
-    [ "$#" -le 2 ] || { echo "usage: install-cache.sh check <omni-dev-cache-hit>" >&2; exit 2; }
+    [ "$#" -le 2 ] || { echo "usage: install-cache.sh check <patchcov-cache-hit>" >&2; exit 2; }
     check "${2:-}"
     ;;
   check-fresh)
-    [ "$#" -le 2 ] || { echo "usage: install-cache.sh check-fresh <omni-dev-cache-hit>" >&2; exit 2; }
+    [ "$#" -le 2 ] || { echo "usage: install-cache.sh check-fresh <patchcov-cache-hit>" >&2; exit 2; }
     check "${2:-}" fresh
     ;;
   *)
-    echo "usage: install-cache.sh prefix | check <omni-dev-cache-hit> | check-fresh <omni-dev-cache-hit>" >&2
+    echo "usage: install-cache.sh prefix | check <patchcov-cache-hit> | check-fresh <patchcov-cache-hit>" >&2
     exit 2
     ;;
 esac
