@@ -136,23 +136,23 @@ eq "diff: it reads the baseline's commit" '${{ steps.baseline-lookup.outputs.sha
 eq "diff: and its distance" '${{ steps.baseline-lookup.outputs.distance }}' "$(map_value "$DIFF_ENV" BASELINE_DISTANCE)"
 eq "diff: and whether the file is the merge-base's own recompute" '${{ steps.recompute.outputs.recomputed }}' "$(map_value "$DIFF_ENV" BASELINE_RECOMPUTED)"
 
-# A stub omni-dev: the two renderings the step asks for, and a log of what it was asked.
+# A stub patchcov: the two renderings the step asks for, and a log of what it was asked.
 BIN="$WORK/bin"
 mkdir "$BIN"
-cat >"$BIN/omni-dev" <<'EOF'
+cat >"$BIN/patchcov" <<'EOF'
 #!/usr/bin/env bash
-echo "$*" >>"$OMNI_DEV_LOG"
+echo "$*" >>"$PATCHCOV_LOG"
 case "$*" in
   *"-o markdown"*) printf '# Coverage\nTotal: **71.4%%**\n' ;;
   *"-o json"*) echo '{"patch_coverage":{"percent":80},"project_delta":{"total_after":71.4}}' ;;
-  *) echo "stub omni-dev: unexpected arguments: $*" >&2; exit 99 ;;
+  *) echo "stub patchcov: unexpected arguments: $*" >&2; exit 99 ;;
 esac
 EOF
-chmod +x "$BIN/omni-dev"
+chmod +x "$BIN/patchcov"
 
 # run_diff <distance> <baseline present: yes|no> [recomputed: true]: runs the diff step in an empty directory as the
 # runner would, with the variables its env: block fills set to the inputs' defaults. Sets STATUS,
-# COMMENT (coverage.md), OUT (its $GITHUB_OUTPUT) and CALLS (what the stub omni-dev was asked).
+# COMMENT (coverage.md), OUT (its $GITHUB_OUTPUT) and CALLS (what the stub patchcov was asked).
 run_diff() {
   local distance="$1" present="$2" recomputed="${3:-}" script dir
   script="$DIFF_SCRIPT"
@@ -166,7 +166,7 @@ run_diff() {
   : >"$dir/output"
   : >"$dir/calls"
   (
-    cd "$dir" && PATH="$BIN:$PATH" GITHUB_OUTPUT="$dir/output" OMNI_DEV_LOG="$dir/calls" \
+    cd "$dir" && PATH="$BIN:$PATH" GITHUB_OUTPUT="$dir/output" PATCHCOV_LOG="$dir/calls" \
       ARTIFACT_URL=https://example/artifact RUN_URL=https://example/run BASE_SHA=0000000000000000000000000000000000000001 \
       HEAD_SHA=0000000000000000000000000000000000000002 COMMIT_URL=https://example/commit \
       REPORT=coverage-head.lcov COLLAPSE_RANGES=true ALL_FILES=false STRIP_PREFIX='' REPORT_FORMAT='' \
@@ -183,9 +183,9 @@ run_diff() {
 
 run_diff 0 yes
 eq "diff: the step runs" 0 "$STATUS"
-eq "diff: the merge-base's own baseline: the comment is exactly what omni-dev rendered" \
+eq "diff: the merge-base's own baseline: the comment is exactly what patchcov rendered" \
   $'# Coverage\nTotal: **71.4%**' "$COMMENT"
-has "diff: the baseline is passed to omni-dev" "$CALLS" "--baseline-report baseline/coverage-head.lcov"
+has "diff: the baseline is passed to patchcov" "$CALLS" "--baseline-report baseline/coverage-head.lcov"
 has "diff: the outputs are still written" "$OUT" "comment-path=coverage.md"
 has "diff: and the percentages" "$OUT" "patch-percent=80"
 
@@ -199,7 +199,7 @@ has "diff: an ancestor's baseline: the note names its commit, linked" "$COMMENT"
 has "diff: it says how far back, singular" "$COMMENT" ", 1 commit before the merge-base, which has none."
 lacks "diff: not '1 commits'" "$COMMENT" "1 commits"
 has "diff: it says the deltas include those commits' changes" "$COMMENT" "The deltas also include whatever those commits changed."
-has "diff: the comment omni-dev rendered is still there, before the note" "$COMMENT" $'# Coverage\nTotal: **71.4%**\n\n_Baseline:'
+has "diff: the comment patchcov rendered is still there, before the note" "$COMMENT" $'# Coverage\nTotal: **71.4%**\n\n_Baseline:'
 has "diff: the note does not stop the percentages" "$OUT" "line-percent=71.4"
 
 run_diff 3 yes
@@ -209,14 +209,14 @@ has "diff: three commits, plural" "$COMMENT" ", 3 commits before the merge-base"
 # the two): the comment compares nothing, so it must not claim a baseline.
 run_diff 3 no
 eq "diff: no baseline file, so no note, whatever the lookup said" $'# Coverage\nTotal: **71.4%**' "$COMMENT"
-lacks "diff: and no baseline is passed to omni-dev" "$CALLS" "--baseline-report"
+lacks "diff: and no baseline is passed to patchcov" "$CALLS" "--baseline-report"
 
 # The lookup found an ancestor's, but the download left no file under this report's name and the
 # recompute built one at the merge-base: the baseline is the merge-base's own, whatever the
 # distance says.
 run_diff 3 yes true
 eq "diff: a recomputed baseline: no note, whatever the lookup's distance" $'# Coverage\nTotal: **71.4%**' "$COMMENT"
-has "diff: and it is still passed to omni-dev" "$CALLS" "--baseline-report baseline/coverage-head.lcov"
+has "diff: and it is still passed to patchcov" "$CALLS" "--baseline-report baseline/coverage-head.lcov"
 run_diff 3 yes ''
 has "diff's control, not recomputed: the same distance gets its note" "$COMMENT" "3 commits before the merge-base"
 

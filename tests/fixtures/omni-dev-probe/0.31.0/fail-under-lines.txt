@@ -1,8 +1,0 @@
-exit=2
-error: unexpected argument '--fail-under-lines' found
-
-  tip: a similar argument exists: '--fail-under-patch'
-
-Usage: omni-dev coverage diff --report <PATH> --fail-under-patch <PCT>
-
-For more information, try '--help'.

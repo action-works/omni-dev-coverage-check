@@ -22,8 +22,14 @@ jobs:
       - name: Test combine-shards.sh
         run: bash tests/combine-shards.test.sh
 
-      - name: Test omni-dev-asset.sh
-        run: bash tests/omni-dev-asset.test.sh
+      - name: Test patchcov install contract
+        run: bash tests/patchcov-install.test.sh
+
+      - name: Test legacy configuration warnings
+        run: bash tests/check-legacy-config.test.sh
+
+      - name: Test patchcov-asset.sh
+        run: bash tests/patchcov-asset.test.sh
 
       - name: Test the platform step of action.yml
         run: bash tests/platform-step.test.sh
@@ -31,10 +37,7 @@ jobs:
       - name: Test the download step of action.yml
         run: bash tests/download-step.test.sh
 
-      - name: Test the guard step of action.yml
-        run: bash tests/guard-step.test.sh
-
-      - name: Test the omni-dev version step of action.yml
+      - name: Test the patchcov version step of action.yml
         run: bash tests/print-version-step.test.sh
 
       - name: Test the resolve-version step of action.yml
@@ -76,8 +79,8 @@ jobs:
       - name: Test check-deprecated-flags.sh
         run: bash tests/check-deprecated-flags.test.sh
 
-      - name: Test assert-omni-dev-version.sh
-        run: bash tests/assert-omni-dev-version.test.sh
+      - name: Test assert-patchcov-version.sh
+        run: bash tests/assert-patchcov-version.test.sh
 
       - name: Test install-cache.sh
         run: bash tests/install-cache.test.sh
@@ -107,9 +110,9 @@ jobs:
         run: bash tests/dependabot-config.test.sh
 
       # Not a lint of the scripts, but it needs no setup and belongs on every pull
-      # request: it fails when action.yml (or a script it ships) passes omni-dev a
-      # flag omni-dev has deprecated, before a major release removes it.
-      - name: Check the action passes no deprecated omni-dev flag
+      # request: it fails when action.yml (or a script it ships) passes patchcov a
+      # flag patchcov has deprecated, before a major release removes it.
+      - name: Check the action passes no deprecated patchcov flag
         run: bash tests/check-deprecated-flags.sh
 
       # The runner replaces every expression in a `run:` body with its value before the

@@ -131,7 +131,7 @@ jobs:
           # its merge-base.
           check "every record names the commit it was published for" 4 "$(grep -cx "TN:$GITHUB_SHA" "$published")"
 
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
   pull-request:
@@ -165,7 +165,7 @@ jobs:
         run: bash tests/write-pr-fixtures.sh head
 
       # A commit that no run was ever for: the merge-base's child, with the merge-base's own
-      # tree, so a diff from it is the merge-base's and omni-dev reads it as any base. It is
+      # tree, so a diff from it is the merge-base's and patchcov reads it as any base. It is
       # made with commit-tree, so it is on no branch and nothing else can see it. P7 and P8
       # take it as `base-ref`.
       - name: Make a commit that no baseline was published for
@@ -402,7 +402,7 @@ jobs:
       # gate measures files the comment does not show. A second file joins the patch with
       # every added line uncovered: the patch is 8 of 20 lines (40%), and 8 of 10 (80%)
       # once that file is filtered out, so a gate of 70 tells the two apart. Emptying the
-      # patch instead would prove nothing: omni-dev lets a patch with no measured line
+      # patch instead would prove nothing: patchcov lets a patch with no measured line
       # through the gate, which is vacuous. The file and its report come after P1 to P4
       # have run, so they do not see it, and P5 and P6 leave no comment to read back.
       - name: Add a second file to the patch
@@ -728,7 +728,7 @@ jobs:
             assert "P1: the comment says there is no baseline" grep -q 'No baseline available' out/p1/coverage.md
           fi
 
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
       # What only the Actions API knows. The token is the job's own, without
@@ -998,5 +998,5 @@ jobs:
           assert "R3: the filtered head coverage ($after3) is higher than R1's ($after)" \
             awk -v a="$after" -v b="$after3" 'BEGIN { exit !(a != "" && b != "" && b > a) }'
 
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"

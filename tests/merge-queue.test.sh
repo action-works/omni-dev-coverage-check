@@ -353,28 +353,28 @@ mutate "a job added after ci-gate that it does not need" integration.yml \
   '{ print } END { print ""; print "  brand-new-job:"; print "    needs:"; print "      - thin-mode"; print "    runs-on: ubuntu-latest"; print "    steps: []" }' \
   "ci-gate does not need: brand-new-job"
 # failure-messages' own list (#105), scoped to its block as ci-gate's edits are to ci-gate's.
-mutate "failure-messages: a need dropped (guard-flag)" integration.yml \
-  "$IN_JOB"' cur == "failure-messages" && /^      - guard-flag$/ { next } { print }' "failure-messages does not need: guard-flag"
+mutate "failure-messages: a need dropped (linux-compatibility)" integration.yml \
+  "$IN_JOB"' cur == "failure-messages" && /^      - linux-compatibility$/ { next } { print }' "failure-messages does not need: linux-compatibility"
 mutate "failure-messages: the first need dropped (thin-mode)" integration.yml \
   "$IN_JOB"' cur == "failure-messages" && /^      - thin-mode$/ { next } { print }' "failure-messages does not need: thin-mode"
 mutate "failure-messages: the last need dropped (deprecation-control)" integration.yml \
   "$IN_JOB"' cur == "failure-messages" && /^      - deprecation-control$/ { next } { print }' "failure-messages does not need: deprecation-control"
 mutate "failure-messages: a need that is not a job" integration.yml \
-  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - not-a-job" }' \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - linux-compatibility$/ { print "      - not-a-job" }' \
   "failure-messages needs a job that does not exist: not-a-job"
 # A bogus name that is a substring of a real job is still a name that is no job (a `grep -F` without
 # `-x` would find `thin` inside `thin-mode`).
 mutate "failure-messages: a need that is only a substring of a job" integration.yml \
-  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - thin" }' \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - linux-compatibility$/ { print "      - thin" }' \
   "failure-messages needs a job that does not exist: thin"
 mutate "failure-messages: a job added after it that it does not need" integration.yml \
   '{ print } END { print ""; print "  brand-new-job:"; print "    needs:"; print "      - thin-mode"; print "    runs-on: ubuntu-latest"; print "    steps: []" }' \
   "failure-messages does not need: brand-new-job"
 mutate "failure-messages: it needs ci-gate, a cycle" integration.yml \
-  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - ci-gate" }' \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - linux-compatibility$/ { print "      - ci-gate" }' \
   "failure-messages needs ci-gate, which needs it: a cycle"
 mutate "failure-messages: it needs itself" integration.yml \
-  "$IN_JOB"' { print } cur == "failure-messages" && /^      - guard-flag$/ { print "      - failure-messages" }' \
+  "$IN_JOB"' { print } cur == "failure-messages" && /^      - linux-compatibility$/ { print "      - failure-messages" }' \
   "failure-messages needs itself"
 mutate "failure-messages: no needs at all" integration.yml \
   "$IN_JOB"' cur == "failure-messages" && /^    needs:[ \t]*$/ { skip = 1; next } skip && /^      - / { next } { skip = 0; print }' \

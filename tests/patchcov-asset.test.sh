@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for scripts/omni-dev-asset.sh. Plain bash, no framework:
-#   tests/omni-dev-asset.test.sh
+# Tests for scripts/patchcov-asset.sh. Plain bash, no framework:
+#   tests/patchcov-asset.test.sh
 # Exits non-zero if any case fails.
 #
 # Every (OS, arch) pair the runner contexts can hold is pinned, not just the ones
@@ -9,7 +9,7 @@
 
 set -uo pipefail
 
-SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/omni-dev-asset.sh"
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/patchcov-asset.sh"
 
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
@@ -18,7 +18,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-lib.sh"
 # asset <os> <arch> <expected asset>: the script prints exactly that and exits 0.
 asset() {
   local os=$1 arch=$2 want=$3 out status
-  out="$(bash "$SCRIPT" "$os" "$arch" 2>/dev/null)"
+  out="$(bash "$SCRIPT" "$os" "$arch" v0.1.1 2>/dev/null)"
   status=$?
   if [ "$status" -eq 0 ] && [ "$out" = "$want" ]; then
     ok "$os $arch -> $want"
@@ -30,7 +30,7 @@ asset() {
 # none <os> <arch>: no asset exists, so nothing is printed and the status is 1.
 none() {
   local os=$1 arch=$2 out status
-  out="$(bash "$SCRIPT" "$os" "$arch" 2>/dev/null)"
+  out="$(bash "$SCRIPT" "$os" "$arch" v0.1.1 2>/dev/null)"
   status=$?
   if [ "$status" -eq 1 ] && [ -z "$out" ]; then
     ok "$os $arch -> no asset"
@@ -53,29 +53,22 @@ usage() {
 
 # --- the pairs with an asset ------------------------------------------------
 
-asset Linux X64 omni-dev-linux.tar.gz
-asset Linux ARM64 omni-dev-linux-arm64.tar.gz
-asset macOS ARM64 omni-dev-macos-arm64.tar.gz
-asset Windows X64 omni-dev-windows.zip
-# Unchanged from before: Windows on ARM runs the x86_64 asset under emulation.
-asset Windows ARM64 omni-dev-windows.zip
-
-# --- the pairs without one --------------------------------------------------
-
-# Linux used to take the x86_64 build whatever the architecture. These are the
-# self-hosted architectures it would have been wrong for.
-none Linux X86
-none Linux ARM
-none macOS X64
-none macOS X86
-none Windows X86
-none Windows ARM
+asset Linux X64 patchcov-v0.1.1-x86_64-unknown-linux-gnu.tar.gz
+asset Linux ARM64 patchcov-v0.1.1-aarch64-unknown-linux-gnu.tar.gz
+asset macOS X64 patchcov-v0.1.1-x86_64-apple-darwin.tar.gz
+asset macOS ARM64 patchcov-v0.1.1-aarch64-apple-darwin.tar.gz
+for os in Linux macOS Windows; do
+  none "$os" X86
+  none "$os" ARM
+done
+none Windows X64
+none Windows ARM64
 none FreeBSD X64
 
 # --- the regression, stated directly ----------------------------------------
 
-arm="$(bash "$SCRIPT" Linux ARM64 2>/dev/null)"
-x64="$(bash "$SCRIPT" Linux X64 2>/dev/null)"
+arm="$(bash "$SCRIPT" Linux ARM64 v0.1.1 2>/dev/null)"
+x64="$(bash "$SCRIPT" Linux X64 v0.1.1 2>/dev/null)"
 if [ -n "$arm" ] && [ "$arm" != "$x64" ]; then
   ok "Linux ARM64 does not get the x86_64 build"
 else
@@ -86,6 +79,6 @@ fi
 
 usage
 usage Linux
-usage Linux ARM64 extra
+usage Linux ARM64 v0.1.1 extra
 
 summary

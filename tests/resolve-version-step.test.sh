@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the "Resolve omni-dev version" step of action.yml. Plain bash, no
+# Tests for the "Resolve patchcov version" step of action.yml. Plain bash, no
 # framework:
 #   tests/resolve-version-step.test.sh
 # Exits non-zero if any case fails.
@@ -14,7 +14,7 @@
 # leading v (#38) or V, and that one with nothing left after it, or empty, fails with a
 # message instead (#51). A spent limit can outlast those attempts, so when all three fail the
 # step reads the tag from the github.com releases/latest redirect instead (#40). This
-# pins that too: the one request it makes, that only a release tag of omni-dev's own is
+# pins that too: the one request it makes, that only a release tag of patchcov's own is
 # taken from it, and the one error that names both failures when neither answers. The
 # step's script is read out of action.yml itself, so renaming the step or moving its
 # `run:` fails here, by name, rather than leaving a test of a copy. The script reads the
@@ -46,7 +46,7 @@ if ! command -v jq >/dev/null; then
   exit 1
 fi
 
-STEP_NAME='Resolve omni-dev version'
+STEP_NAME='Resolve patchcov version'
 BLOCK="$(step_block "$STEP_NAME")" || exit 1
 RESOLVE="$(step_run "$STEP_NAME")" || exit 1
 TOKEN_INPUT="$(input_block github-token)" || exit 1
@@ -152,44 +152,44 @@ call_args() {
 
 # --- a pinned version never asks GitHub --------------------------------------
 
-run_resolve 0.45.0 "$TOKEN" '{"tag_name":"v9.9.9"}'
+run_resolve 0.1.1 "$TOKEN" '{"tag_name":"v9.9.9"}'
 eq "pinned: the step succeeds" 0 "$STATUS"
 eq "pinned: no API call is made" 0 "$CALLS"
 eq "pinned: it never waits" "" "$SLEEPS"
-eq "pinned: the version is the one given" "version=0.45.0
-release-tag=v0.45.0" "$OUT"
+eq "pinned: the version is the one given" "version=0.1.1
+release-tag=v0.1.1" "$OUT"
 
 # --- a pinned version may be spelled as the release tag is (#38) -------------
 
-# Release tags carry a leading v. Left in place it gave `release-tag=vv0.45.0`, a
+# Release tags carry a leading v. Left in place it gave `release-tag=vv0.1.1`, a
 # download URL that 404s, a cache key of its own, and a `cargo install --version`
 # that cargo refuses as not a valid SemVer requirement. So the step drops one
 # leading v from the value however it was obtained, and both spellings of a
 # release must resolve to the same outputs.
-run_resolve v0.45.0 "$TOKEN" '{"tag_name":"v9.9.9"}'
+run_resolve v0.1.1 "$TOKEN" '{"tag_name":"v9.9.9"}'
 eq "pinned v: the step succeeds" 0 "$STATUS"
 eq "pinned v: no API call is made" 0 "$CALLS"
 eq "pinned v: it never waits" "" "$SLEEPS"
-eq "pinned v: the version has no v and the tag has one" "version=0.45.0
-release-tag=v0.45.0" "$OUT"
+eq "pinned v: the version has no v and the tag has one" "version=0.1.1
+release-tag=v0.1.1" "$OUT"
 
-run_resolve 0.45.0 "$TOKEN"
+run_resolve 0.1.1 "$TOKEN"
 bare_out="$OUT"
-run_resolve v0.45.0 "$TOKEN"
-eq "pinned: v0.45.0 and 0.45.0 write identical outputs" "$bare_out" "$OUT"
+run_resolve v0.1.1 "$TOKEN"
+eq "pinned: v0.1.1 and 0.1.1 write identical outputs" "$bare_out" "$OUT"
 
 # Only a leading v goes: a v inside the value is part of it.
-run_resolve 0.46.0-dev "$TOKEN"
-eq "pinned: a v that is not the first character stays" "version=0.46.0-dev
-release-tag=v0.46.0-dev" "$OUT"
-run_resolve v0.46.0-dev "$TOKEN"
-eq "pinned v: only the leading v is dropped" "version=0.46.0-dev
-release-tag=v0.46.0-dev" "$OUT"
+run_resolve 0.1.1-dev "$TOKEN"
+eq "pinned: a v that is not the first character stays" "version=0.1.1-dev
+release-tag=v0.1.1-dev" "$OUT"
+run_resolve v0.1.1-dev "$TOKEN"
+eq "pinned v: only the leading v is dropped" "version=0.1.1-dev
+release-tag=v0.1.1-dev" "$OUT"
 # One v, not every leading v: a doubled one is a typo, so it stays visibly wrong
 # (a version that starts with v) instead of being quietly accepted.
-run_resolve vv0.45.0 "$TOKEN"
-eq "pinned v: one leading v is dropped, not all of them" "version=v0.45.0
-release-tag=vv0.45.0" "$OUT"
+run_resolve vv0.1.1 "$TOKEN"
+eq "pinned v: one leading v is dropped, not all of them" "version=v0.1.1
+release-tag=vv0.1.1" "$OUT"
 
 # --- a capital V is accepted too (#51) ---------------------------------------
 
@@ -197,32 +197,32 @@ release-tag=vv0.45.0" "$OUT"
 # like the lowercase one and the outputs stay canonical: the version has no v and
 # the tag has a lowercase one, as release tags are written. The same cache entry
 # and the same download follow.
-run_resolve V0.45.0 "$TOKEN" '{"tag_name":"v9.9.9"}'
+run_resolve V0.1.1 "$TOKEN" '{"tag_name":"v9.9.9"}'
 eq "pinned V: the step succeeds" 0 "$STATUS"
 eq "pinned V: no API call is made" 0 "$CALLS"
 eq "pinned V: it never waits" "" "$SLEEPS"
-eq "pinned V: the version has no V and the tag has a lowercase v" "version=0.45.0
-release-tag=v0.45.0" "$OUT"
-run_resolve V0.45.0 "$TOKEN"
-eq "pinned V: V0.45.0 and 0.45.0 write identical outputs" "$bare_out" "$OUT"
+eq "pinned V: the version has no V and the tag has a lowercase v" "version=0.1.1
+release-tag=v0.1.1" "$OUT"
+run_resolve V0.1.1 "$TOKEN"
+eq "pinned V: V0.1.1 and 0.1.1 write identical outputs" "$bare_out" "$OUT"
 # One character, as for the lowercase v: a mixed pair is a typo and stays visibly wrong.
-run_resolve vV0.45.0 "$TOKEN"
-eq "pinned V: only one leading character is dropped" "version=V0.45.0
-release-tag=vV0.45.0" "$OUT"
-run_resolve Vv0.45.0 "$TOKEN"
-eq "pinned V: one leading character is dropped, whichever case, not both" "version=v0.45.0
-release-tag=vv0.45.0" "$OUT"
+run_resolve vV0.1.1 "$TOKEN"
+eq "pinned V: only one leading character is dropped" "version=V0.1.1
+release-tag=vV0.1.1" "$OUT"
+run_resolve Vv0.1.1 "$TOKEN"
+eq "pinned V: one leading character is dropped, whichever case, not both" "version=v0.1.1
+release-tag=vv0.1.1" "$OUT"
 # A V that is not the first character is part of the value.
-run_resolve 0.46.0-V "$TOKEN"
-eq "pinned V: a V that is not the first character stays" "version=0.46.0-V
-release-tag=v0.46.0-V" "$OUT"
+run_resolve 0.1.1-V "$TOKEN"
+eq "pinned V: a V that is not the first character stays" "version=0.1.1-V
+release-tag=v0.1.1-V" "$OUT"
 
 # --- a value that names no release fails at the step (#51) -------------------
 
 # Nothing is left of `v` or `V` once the leading character goes, and an empty
 # value never had one. Left to pass, the step succeeded with an empty `version`
 # output (a cache key ending `--binary`) and `release-tag=v`, and the failure came
-# later, in the platform step, which blamed the release ("omni-dev v has no
+# later, in the platform step, which blamed the release ("patchcov v has no
 # pre-built ...") rather than the input. So the step stops with one message that
 # names the input and both ways out, before it writes either output. The empty
 # string is how the script sees `version: ''`; whether a workflow's empty value
@@ -239,7 +239,7 @@ expect_no_release() { # <name> <version as the script sees it> <value the messag
   eq "$1: it logs one error and nothing else" 1 "$(grep -c . <<<"$LOG" || true)"
   has "$1: the error names the input" "$LOG" "::error::The 'version' input"
   has "$1: the error quotes what it was given" "$LOG" "(got '$3')"
-  has "$1: the error offers a release number" "$LOG" "a release number such as 0.45.0"
+  has "$1: the error offers a release number" "$LOG" "a release number such as 0.1.1"
   has "$1: the error offers latest" "$LOG" "or to 'latest'"
   lacks "$1: the token is not printed" "$LOG" "SENTINEL"
 }
@@ -260,7 +260,7 @@ has "latest resolving to a lone v: it logs the refusal" "$LOG" "::error::The 've
 
 # The value goes into the step's outputs, a cache key, the download URL and
 # `cargo install --version`. A newline wrote extra lines into the outputs (so an input
-# could set `release-tag`), and `/..` walked the download URL out of omni-dev's release
+# could set `release-tag`), and `/..` walked the download URL out of patchcov's release
 # path, where curl resolves the dot segments. Each refused value must fail the step with
 # one message, write NOTHING (a refusal that still wrote `version=` would pass an exit
 # status check), and make no request. The message shows the value with what is not
@@ -278,45 +278,45 @@ expect_bad_char() { # <name> <version as the script sees it> <value the message 
   has "$1: the error names the input and the problem" "$LOG" \
     "::error::The 'version' input holds a character that a release number is not written with"
   has "$1: the error quotes what it was given, printable" "$LOG" "(got '$3')"
-  has "$1: the error offers a release number" "$LOG" "a release number such as 0.45.0"
+  has "$1: the error offers a release number" "$LOG" "a release number such as 0.1.1"
   has "$1: the error offers latest" "$LOG" "or to 'latest'"
   lacks "$1: the token is not printed" "$LOG" "SENTINEL"
 }
-expect_bad_char "a newline then an injected release-tag" $'0.45.0\nrelease-tag=vEVIL' '0.45.0?release-tag=vEVIL'
-expect_bad_char "a newline then an output the action never sets" $'0.45.0\nsomething=else' '0.45.0?something=else'
-expect_bad_char "a newline then a workflow command" $'0.45.0\n::error::forged' '0.45.0?::error::forged'
-expect_bad_char "a trailing newline" $'0.45.0\n' '0.45.0?'
-expect_bad_char "a carriage return" $'0.45.0\r' '0.45.0?'
-expect_bad_char "a tab" $'0.45.0\t1' '0.45.0?1'
-expect_bad_char "a path that leaves omni-dev's releases (three ..)" '0.45.0/../../../evil/repo/releases/download/v9' \
-  '0.45.0/../../../evil/repo/releases/download/v9'
+expect_bad_char "a newline then an injected release-tag" $'0.1.1\nrelease-tag=vEVIL' '0.1.1?release-tag=vEVIL'
+expect_bad_char "a newline then an output the action never sets" $'0.1.1\nsomething=else' '0.1.1?something=else'
+expect_bad_char "a newline then a workflow command" $'0.1.1\n::error::forged' '0.1.1?::error::forged'
+expect_bad_char "a trailing newline" $'0.1.1\n' '0.1.1?'
+expect_bad_char "a carriage return" $'0.1.1\r' '0.1.1?'
+expect_bad_char "a tab" $'0.1.1\t1' '0.1.1?1'
+expect_bad_char "a path that leaves patchcov's releases (three ..)" '0.1.1/../../../evil/repo/releases/download/v9' \
+  '0.1.1/../../../evil/repo/releases/download/v9'
 expect_bad_char "a path that leaves the repository" '0/../../../other/repo/releases/download/v1' \
   '0/../../../other/repo/releases/download/v1'
 expect_bad_char "a slash alone" 'a/b' 'a/b'
 expect_bad_char "a slash after the strip" 'v/x' 'v/x'
 expect_bad_char "an escaped dot segment" '%2e%2e' '%2e%2e'
-expect_bad_char "an escaped slash" '0.45.0%2f..' '0.45.0%2f..'
-expect_bad_char "a query" '0.45.0?x' '0.45.0?x'
-expect_bad_char "a fragment" '0.45.0#x' '0.45.0#x'
-expect_bad_char "a double quote" '0.45.0"' '0.45.0"'
-expect_bad_char "a single quote" "0.45.0'" "0.45.0'"
+expect_bad_char "an escaped slash" '0.1.1%2f..' '0.1.1%2f..'
+expect_bad_char "a query" '0.1.1?x' '0.1.1?x'
+expect_bad_char "a fragment" '0.1.1#x' '0.1.1#x'
+expect_bad_char "a double quote" '0.1.1"' '0.1.1"'
+expect_bad_char "a single quote" "0.1.1'" "0.1.1'"
 # The next two are literal text for the step to refuse, never meant to expand.
 # shellcheck disable=SC2016
-expect_bad_char "a backtick" '0.45.0`id`' '0.45.0`id`'
+expect_bad_char "a backtick" '0.1.1`id`' '0.1.1`id`'
 # shellcheck disable=SC2016
-expect_bad_char "a command substitution" '0.45.0$(id)' '0.45.0$(id)'
-expect_bad_char "a semicolon" '0.45.0;id' '0.45.0;id'
-expect_bad_char "a pipe" '0.45.0|id' '0.45.0|id'
-expect_bad_char "an ampersand" '0.45.0&id' '0.45.0&id'
-expect_bad_char "a backslash" '0.45.0\n' '0.45.0\n'
+expect_bad_char "a command substitution" '0.1.1$(id)' '0.1.1$(id)'
+expect_bad_char "a semicolon" '0.1.1;id' '0.1.1;id'
+expect_bad_char "a pipe" '0.1.1|id' '0.1.1|id'
+expect_bad_char "an ampersand" '0.1.1&id' '0.1.1&id'
+expect_bad_char "a backslash" '0.1.1\n' '0.1.1\n'
 expect_bad_char "a comma in a range" '>=0.45,<0.47' '>=0.45,<0.47'
-expect_bad_char "a comma between releases" '0.45.0,0.46.0' '0.45.0,0.46.0'
+expect_bad_char "a comma between releases" '0.1.1,0.1.1' '0.1.1,0.1.1'
 long="$(printf 'x/%.0s' {1..40})"
 expect_bad_char "a long value is cut short" "$long" "${long:0:60}..."
 
 # A non-ASCII letter is refused too. What the message shows for it depends on the locale
 # (printable in a UTF-8 one), so only the refusal is pinned.
-run_resolve '0.45.0é' "$TOKEN"
+run_resolve '0.1.1é' "$TOKEN"
 eq "a non-ASCII letter: the step fails" 1 "$STATUS"
 eq "a non-ASCII letter: it writes no output" "" "$OUT"
 
@@ -332,16 +332,16 @@ release-tag=v$3" "$OUT"
   eq "$1: no API call is made" 0 "$CALLS"
   eq "$1: it logs nothing" "" "$LOG"
 }
-accepts "a release" 0.45.0 0.45.0
-accepts "a release tag" v0.45.0 0.45.0
-accepts "a capital V" V0.45.0 0.45.0
-accepts "a pre-release" 0.46.0-rc.1 0.46.0-rc.1
-accepts "a dev pre-release" 0.46.0-dev 0.46.0-dev
-accepts "build metadata" '0.46.0+build.5' '0.46.0+build.5'
+accepts "a release" 0.1.1 0.1.1
+accepts "a release tag" v0.1.1 0.1.1
+accepts "a capital V" V0.1.1 0.1.1
+accepts "a pre-release" 0.1.1-rc.1 0.1.1-rc.1
+accepts "a dev pre-release" 0.1.1-dev 0.1.1-dev
+accepts "build metadata" '0.1.1+build.5' '0.1.1+build.5'
 accepts "a caret requirement" '^0.45' '^0.45'
 accepts "a tilde requirement" '~0.45.1' '~0.45.1'
 accepts "a comparison" '>=0.45' '>=0.45'
-accepts "an exact requirement" '=0.45.0' '=0.45.0'
+accepts "an exact requirement" '=0.1.1' '=0.1.1'
 accepts "a wildcard" '0.45.*' '0.45.*'
 accepts "a comparison with a space" '>= 0.45' '>= 0.45'
 
@@ -354,7 +354,7 @@ accepts "a comparison with a space" '>= 0.45' '>= 0.45'
 accepted_codes=0 wrong_codes=""
 for code in $(seq 1 127); do
   printf -v char '%b' "\x$(printf '%02x' "$code")"
-  run_resolve "0.45.0$char" "$TOKEN"
+  run_resolve "0.1.1$char" "$TOKEN"
   want=1
   if { [ "$code" -ge 48 ] && [ "$code" -le 57 ]; } || { [ "$code" -ge 65 ] && [ "$code" -le 90 ]; } ||
     { [ "$code" -ge 97 ] && [ "$code" -le 122 ]; }; then
@@ -374,18 +374,18 @@ eq "every character 0x01-0x7f: 72 are accepted (62 letters and digits, space * +
 
 # The check sits after the `latest` branch, as the strip does, so a tag the API gave is
 # held to it too. GitHub publishes no such tag; this pins where the check sits.
-run_resolve latest "$TOKEN" '{"tag_name":"v0.46.0/../../x"}'
+run_resolve latest "$TOKEN" '{"tag_name":"v0.1.1/../../x"}'
 eq "latest resolving to a tag with slashes: the step fails" 1 "$STATUS"
 eq "latest resolving to a tag with slashes: it writes no output" "" "$OUT"
 has "latest resolving to a tag with slashes: it logs the refusal" "$LOG" \
   "::error::The 'version' input holds a character that a release number is not written with"
-run_resolve latest "$TOKEN" '{"tag_name":"v0.46.0\nrelease-tag=vEVIL"}'
+run_resolve latest "$TOKEN" '{"tag_name":"v0.1.1\nrelease-tag=vEVIL"}'
 eq "latest resolving to a tag with a newline: the step fails" 1 "$STATUS"
 eq "latest resolving to a tag with a newline: it writes no output" "" "$OUT"
-run_resolve latest "$TOKEN" '{"tag_name":"v0.46.0-rc.1"}'
+run_resolve latest "$TOKEN" '{"tag_name":"v0.1.1-rc.1"}'
 eq "latest resolving to a pre-release tag: the step succeeds" 0 "$STATUS"
-eq "latest resolving to a pre-release tag: the outputs are its own" "version=0.46.0-rc.1
-release-tag=v0.46.0-rc.1" "$OUT"
+eq "latest resolving to a pre-release tag: the outputs are its own" "version=0.1.1-rc.1
+release-tag=v0.1.1-rc.1" "$OUT"
 
 # --- latest, the first answer is good ----------------------------------------
 
@@ -395,8 +395,8 @@ eq "latest: one call is enough" 1 "$CALLS"
 eq "latest: it never waits" "" "$SLEEPS"
 eq "latest: the v is dropped from the version and kept in the tag" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
-arg_present "latest: it asks the releases API for omni-dev's latest" \
-  "https://api.github.com/repos/rust-works/omni-dev/releases/latest"
+arg_present "latest: it asks the releases API for patchcov's latest" \
+  "https://api.github.com/repos/rust-works/patchcov/releases/latest"
 arg_present "latest: it authenticates with the token" "Authorization: Bearer $TOKEN"
 arg_present "latest: it asks for the GitHub JSON media type" "Accept: application/vnd.github+json"
 arg_present "latest: it pins the API version" "X-GitHub-Api-Version: 2022-11-28"
@@ -428,14 +428,14 @@ eq "no token: no empty argument stands in for one" 0 "$(grep -c '^$' <<<"$CURLS"
 # A fourth response, a redirect to another release, is scripted and must stay unread:
 # the redirect only changes a run that would have failed.
 run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" '{"tag_name":"v0.46.1"}' \
-  "302 https://github.com/rust-works/omni-dev/releases/tag/v9.9.9"
+  "302 https://github.com/rust-works/patchcov/releases/tag/v9.9.9"
 eq "recovers: the step succeeds on the third attempt" 0 "$STATUS"
 eq "recovers: it made three calls, so the redirect was not asked" 3 "$CALLS"
 eq "recovers: it backed off 3s then 6s" "3 6" "$SLEEPS"
 eq "recovers: it resolved the version" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
 has "recovers: attempt 1 is warned about, with GitHub's reason" "$LOG" \
-  "::warning::Attempt 1/3: could not resolve latest omni-dev version (API: Server Error)"
+  "::warning::Attempt 1/3: could not resolve latest patchcov version (API: Server Error)"
 has "recovers: attempt 2 is warned about" "$LOG" "::warning::Attempt 2/3:"
 lacks "recovers: attempt 3 worked, so it is not warned about" "$LOG" "Attempt 3/3"
 lacks "recovers: no error is raised" "$LOG" "::error::"
@@ -443,7 +443,7 @@ lacks "recovers: the token is not printed" "$LOG" "SENTINEL"
 
 # --- latest, the API never answers: the redirect -----------------------------
 
-TAG_URL=https://github.com/rust-works/omni-dev/releases/tag
+TAG_URL=https://github.com/rust-works/patchcov/releases/tag
 
 run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "302 $TAG_URL/v0.46.1"
 eq "redirect: the step succeeds" 0 "$STATUS"
@@ -463,14 +463,14 @@ lacks "redirect: the token is not printed" "$LOG" "SENTINEL"
 # The whole text of the warning and of the error, with jq: #63 made their tails depend on whether
 # the API was asked, and a caller whose API answers must read what it always did.
 has "redirect: the whole warning, as it was before the API could be skipped (#63)" "$LOG" \
-  "::warning::The GitHub API gave no release after 3 attempts (API: Server Error), so latest omni-dev was resolved from the github.com releases/latest redirect instead: v0.46.1. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+  "::warning::The GitHub API gave no release after 3 attempts (API: Server Error), so latest patchcov was resolved from the github.com releases/latest redirect instead: v0.46.1. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
 run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" '!7'
 has "redirect fails: the whole error, as it was before the API could be skipped (#63)" "$LOG" \
-  "::error::Could not determine latest omni-dev version. The GitHub API gave no release after 3 attempts (API: Server Error) and the github.com releases/latest redirect gave no release tag (HTTP 000). If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+  "::error::Could not determine latest patchcov version. The GitHub API gave no release after 3 attempts (API: Server Error) and the github.com releases/latest redirect gave no release tag (HTTP 000). If this is a rate limit, check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
 
 call="$(call_args 4)"
 call_present "redirect: it asks the releases/latest page" "$call" \
-  "https://github.com/rust-works/omni-dev/releases/latest"
+  "https://github.com/rust-works/patchcov/releases/latest"
 call_after "redirect: it asks curl for the status and the Location" "$call" -w '%{http_code} %{redirect_url}'
 call_after "redirect: it keeps the page itself" "$call" -o /dev/null
 call_after "redirect: it bounds the connection, so a hang ends in the error" "$call" --connect-timeout 10
@@ -524,15 +524,15 @@ expect_failure "redirect fails: the page is served, not redirected" '200 ' "HTTP
 expect_failure "redirect fails: github.com throttles it" '429 ' "HTTP 429"
 expect_failure "redirect fails: a server error" '502 ' "HTTP 502"
 expect_failure "redirect fails: no answer at all" '' "HTTP 000"
-expect_location "redirect fails: a login page" "https://github.com/login?return_to=%2Frust-works%2Fomni-dev%2Freleases%2Flatest"
-expect_location "redirect fails: the latest page itself" "https://github.com/rust-works/omni-dev/releases/latest"
-expect_location "redirect fails: the tags page" "https://github.com/rust-works/omni-dev/releases/tag/"
-expect_location "redirect fails: another repository" "https://github.com/someone-else/omni-dev/releases/tag/v0.46.1"
-expect_location "redirect fails: another host" "https://example.com/rust-works/omni-dev/releases/tag/v0.46.1"
-expect_location "redirect fails: not https" "http://github.com/rust-works/omni-dev/releases/tag/v0.46.1"
-expect_location "redirect fails: github.com as a suffix of another host" "https://github.com.example.com/rust-works/omni-dev/releases/tag/v0.46.1"
+expect_location "redirect fails: a login page" "https://github.com/login?return_to=%2Frust-works%2Fpatchcov%2Freleases%2Flatest"
+expect_location "redirect fails: the latest page itself" "https://github.com/rust-works/patchcov/releases/latest"
+expect_location "redirect fails: the tags page" "https://github.com/rust-works/patchcov/releases/tag/"
+expect_location "redirect fails: another repository" "https://github.com/someone-else/patchcov/releases/tag/v0.46.1"
+expect_location "redirect fails: another host" "https://example.com/rust-works/patchcov/releases/tag/v0.46.1"
+expect_location "redirect fails: not https" "http://github.com/rust-works/patchcov/releases/tag/v0.46.1"
+expect_location "redirect fails: github.com as a suffix of another host" "https://github.com.example.com/rust-works/patchcov/releases/tag/v0.46.1"
 # The dot in the host is a dot, not any character.
-expect_location "redirect fails: a host that differs from github.com by one character" "https://githubxcom/rust-works/omni-dev/releases/tag/v0.46.1"
+expect_location "redirect fails: a host that differs from github.com by one character" "https://githubxcom/rust-works/patchcov/releases/tag/v0.46.1"
 expect_location "redirect fails: a tag that is not a version" "$TAG_URL/nightly"
 expect_location "redirect fails: a tag with a major only" "$TAG_URL/v1"
 expect_location "redirect fails: a tag with no patch" "$TAG_URL/v1.2"
@@ -576,14 +576,14 @@ release-tag=v0.46.1" "$OUT"
   has "$name: the warning says it was refused, with the status and that it was not asked again" "$LOG" \
     "::warning::The GitHub API refused the request (HTTP $code) and was not asked again, since retrying cannot change that (API: $reason"
   has "$name: and that the redirect answered, with the release" "$LOG" \
-    ", so latest omni-dev was resolved from the github.com releases/latest redirect instead: v0.46.1."
+    ", so latest patchcov was resolved from the github.com releases/latest redirect instead: v0.46.1."
   has "$name: and offers the ways out" "$LOG" "or set 'version' to a release to skip the lookup."
   lacks "$name: it does not claim attempts that did not happen" "$LOG" "Attempt"
   lacks "$name: nor three of them" "$LOG" "3 attempts"
   lacks "$name: no error is raised" "$LOG" "::error::"
   lacks "$name: the token is not printed" "$LOG" "SENTINEL"
   call_present "$name: the second call is the redirect" "$(call_args 2)" \
-    "https://github.com/rust-works/omni-dev/releases/latest"
+    "https://github.com/rust-works/patchcov/releases/latest"
 }
 refusal_case "401, a bad token" 401 '{"message":"Bad credentials"}' "Bad credentials)"
 refusal_case "403, a spent rate limit" 403 "$RATE_LIMITED" "API rate limit exceeded for 10.0.0.1."
@@ -629,8 +629,8 @@ for code in 404 500 502 503 504; do
   run_resolve latest "$TOKEN" "@$code@{\"message\":\"Nope\"}" "@$code@{\"message\":\"Nope\"}" "@$code@{\"message\":\"Nope\"}" "302 $TAG_URL/v0.46.1"
   eq "HTTP $code: it is asked three times, then the redirect" 4 "$CALLS"
   eq "HTTP $code: it waits 3s then 6s" "3 6" "$SLEEPS"
-  has "HTTP $code: all three attempts are warned about" "$LOG" "::warning::Attempt 3/3: could not resolve latest omni-dev version (API: Nope)"
-  has "HTTP $code: the fallback says after 3 attempts" "$LOG" "::warning::The GitHub API gave no release after 3 attempts (API: Nope), so latest omni-dev was resolved"
+  has "HTTP $code: all three attempts are warned about" "$LOG" "::warning::Attempt 3/3: could not resolve latest patchcov version (API: Nope)"
+  has "HTTP $code: the fallback says after 3 attempts" "$LOG" "::warning::The GitHub API gave no release after 3 attempts (API: Nope), so latest patchcov was resolved"
   lacks "HTTP $code: it does not say it was refused" "$LOG" "was not asked again"
 done
 
@@ -639,7 +639,7 @@ run_resolve latest "$TOKEN" "$SERVER_ERROR" '@401@{"message":"Bad credentials"}'
 eq "a 502 then a 401: the step succeeds" 0 "$STATUS"
 eq "a 502 then a 401: two API calls, then the redirect" 3 "$CALLS"
 eq "a 502 then a 401: it waited once, after the first" "3" "$SLEEPS"
-has "a 502 then a 401: the first attempt is warned about" "$LOG" "::warning::Attempt 1/3: could not resolve latest omni-dev version (API: Server Error)"
+has "a 502 then a 401: the first attempt is warned about" "$LOG" "::warning::Attempt 1/3: could not resolve latest patchcov version (API: Server Error)"
 lacks "a 502 then a 401: the refused attempt is not one of three" "$LOG" "Attempt 2/3"
 has "a 502 then a 401: the refusal is named" "$LOG" "::warning::The GitHub API refused the request (HTTP 401) and was not asked again"
 
@@ -652,7 +652,7 @@ for code in 401 403 429; do
   eq "HTTP $code, redirect fails: it never waits" "" "$SLEEPS"
   eq "HTTP $code, redirect fails: it wrote no version" "" "$OUT"
   has "HTTP $code, redirect fails: the error says the API refused" "$LOG" \
-    "::error::Could not determine latest omni-dev version. The GitHub API refused the request (HTTP $code) and was not asked again, since retrying cannot change that (API: Refused)"
+    "::error::Could not determine latest patchcov version. The GitHub API refused the request (HTTP $code) and was not asked again, since retrying cannot change that (API: Refused)"
   has "HTTP $code, redirect fails: and what the redirect gave" "$LOG" \
     "and the github.com releases/latest redirect gave no release tag (HTTP 429)."
   has "HTTP $code, redirect fails: and both ways out" "$LOG" "or set 'version' to a release to skip the lookup."
@@ -664,7 +664,7 @@ done
 # The one error names both failures and both ways out.
 run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SERVER_ERROR" "$SERVER_ERROR" "429 "
 has "both fail: the error says the API gave no release, after how many attempts" "$LOG" \
-  "::error::Could not determine latest omni-dev version. The GitHub API gave no release after 3 attempts"
+  "::error::Could not determine latest patchcov version. The GitHub API gave no release after 3 attempts"
 has "both fail: the error carries the API's reason" "$LOG" \
   "(API: Server Error)"
 has "both fail: the error says what the redirect gave" "$LOG" \
@@ -685,11 +685,11 @@ expect_retry() { # <name> <first response> <message fragment the warning must ca
   eq "$1: it waited 3s" "3" "$SLEEPS"
   eq "$1: it resolved the version" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
-  has "$1: the warning says what it saw" "$LOG" "::warning::Attempt 1/3: could not resolve latest omni-dev version (API: $3)"
+  has "$1: the warning says what it saw" "$LOG" "::warning::Attempt 1/3: could not resolve latest patchcov version (API: $3)"
 
   run_resolve latest "$TOKEN" "$2" "$2" "$2" "429 "
   eq "$1: failing every time still ends in the error, not curl's or jq's" 1 "$STATUS"
-  has "$1: it reaches the error message" "$LOG" "::error::Could not determine latest omni-dev version"
+  has "$1: it reaches the error message" "$LOG" "::error::Could not determine latest patchcov version"
 }
 expect_retry "curl fails" '!7' "unknown error"
 expect_retry "curl times out" '!28' "unknown error"
@@ -724,13 +724,13 @@ eq "no jq: it resolves the tag in the Location" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
 eq "no jq: the API is not asked: one request, the redirect" 1 "$CALLS"
 call_present "no jq: that request is for the releases/latest page" "$(call_args 1)" \
-  "https://github.com/rust-works/omni-dev/releases/latest"
+  "https://github.com/rust-works/patchcov/releases/latest"
 lacks "no jq: nothing was sent to api.github.com" "$CURLS" "api.github.com"
 eq "no jq: it never waits" "" "$SLEEPS"
 eq "no jq: one warning, and no attempt is warned about" 1 "$(grep -c '^::warning::' <<<"$LOG")"
 lacks "no jq: ... which is not an attempt" "$LOG" "Attempt"
 has "no jq: the warning names jq, and says the API was not asked" "$LOG" \
-  "::warning::The GitHub API was not asked (jq, which reads its answer, was not found on PATH), so latest omni-dev was resolved from the github.com releases/latest redirect instead: v0.46.1."
+  "::warning::The GitHub API was not asked (jq, which reads its answer, was not found on PATH), so latest patchcov was resolved from the github.com releases/latest redirect instead: v0.46.1."
 has "no jq: and says how to get the API back, or to pin" "$LOG" \
   "Install jq so the API can be asked, or set 'version' to a release to skip the lookup."
 lacks "no jq: it does not send the caller after the token, which was never used" "$LOG" "github-token"
@@ -761,7 +761,7 @@ expect_nojq_failure() { # <name> <redirect response> <what the error says the re
   eq "no jq, $1: it never waits" "" "$SLEEPS"
   eq "no jq, $1: it wrote no version" "" "$OUT"
   has "no jq, $1: the error says the API was not asked because jq is missing, and what the redirect gave" "$LOG" \
-    "::error::Could not determine latest omni-dev version. The GitHub API was not asked (jq, which reads its answer, was not found on PATH) and the github.com releases/latest redirect gave no release tag ($3)."
+    "::error::Could not determine latest patchcov version. The GitHub API was not asked (jq, which reads its answer, was not found on PATH) and the github.com releases/latest redirect gave no release tag ($3)."
   has "no jq, $1: it gives both ways out" "$LOG" "Install jq so the API can be asked, or set 'version' to a release to skip the lookup."
   lacks "no jq, $1: it does not tell the caller to check a rate limit or the token" "$LOG" "rate limit"
   lacks "no jq, $1: it does not say the redirect answered" "$LOG" "was resolved from"
@@ -770,17 +770,17 @@ expect_nojq_failure() { # <name> <redirect response> <what the error says the re
 expect_nojq_failure "curl cannot connect" '!7' "HTTP 000"
 expect_nojq_failure "the page is served, not redirected" '200 ' "HTTP 200"
 expect_nojq_failure "github.com throttles it" '429 ' "HTTP 429"
-expect_nojq_failure "a login page" "302 https://github.com/login?return_to=%2Frust-works%2Fomni-dev%2Freleases%2Flatest" "HTTP 302 to https://github.com/login?return_to=%2Frust-works%2Fomni-dev%2Freleases%2Flatest"
-expect_nojq_failure "another repository" "302 https://github.com/someone-else/omni-dev/releases/tag/v0.46.1" "HTTP 302 to https://github.com/someone-else/omni-dev/releases/tag/v0.46.1"
+expect_nojq_failure "a login page" "302 https://github.com/login?return_to=%2Frust-works%2Fpatchcov%2Freleases%2Flatest" "HTTP 302 to https://github.com/login?return_to=%2Frust-works%2Fpatchcov%2Freleases%2Flatest"
+expect_nojq_failure "another repository" "302 https://github.com/someone-else/patchcov/releases/tag/v0.46.1" "HTTP 302 to https://github.com/someone-else/patchcov/releases/tag/v0.46.1"
 expect_nojq_failure "a tag that is not a version" "302 $TAG_URL/nightly" "HTTP 302 to $TAG_URL/nightly"
 expect_nojq_failure "build metadata in the tag" "302 $TAG_URL/v1.2.3+meta" "HTTP 302 to $TAG_URL/v1.2.3+meta"
 
 # A pinned version needs neither the API nor jq, so a runner without it is as it always was.
-RESOLVE_PATH="$NOJQ_BIN" run_resolve 0.45.0 "$TOKEN"
+RESOLVE_PATH="$NOJQ_BIN" run_resolve 0.1.1 "$TOKEN"
 eq "no jq, pinned: the step succeeds" 0 "$STATUS"
 eq "no jq, pinned: no request" 0 "$CALLS"
-eq "no jq, pinned: the version is the one given" "version=0.45.0
-release-tag=v0.45.0" "$OUT"
+eq "no jq, pinned: the version is the one given" "version=0.1.1
+release-tag=v0.1.1" "$OUT"
 lacks "no jq, pinned: nothing said about jq" "$LOG" "jq"
 
 # jq is found the way `command -v` finds it, on PATH: the same step with the links' directory and
@@ -809,7 +809,7 @@ RELEASE_TAG=v9.9.9 refused=401 run_resolve latest "$TOKEN" "$SERVER_ERROR" "$SER
 eq "a stale RELEASE_TAG in the environment, with jq: the redirect's tag is the one resolved" "version=0.46.1
 release-tag=v0.46.1" "$OUT"
 has "a stale refused in the environment, with jq: the API's failure is the retried one" "$LOG" \
-  "::warning::The GitHub API gave no release after 3 attempts (API: Server Error), so latest omni-dev"
+  "::warning::The GitHub API gave no release after 3 attempts (API: Server Error), so latest patchcov"
 lacks "a stale refused in the environment, with jq: no refusal is named" "$LOG" "refused the request"
 
 # --- the wiring around the script --------------------------------------------
@@ -831,7 +831,7 @@ has "input: github-token is optional, so a workflow needs no configuration" \
 # should not have to read the script to learn it works. The capital is accepted
 # too (#51), and the input says that, not only "a leading v".
 has "input: version says a leading v or V is accepted" "$VERSION_INPUT" \
-  "with or without a leading v or V (e.g., 0.45.0 or v0.45.0)"
+  "with or without a leading v or V (e.g., 0.1.1 or v0.1.1)"
 
 # The runner evaluates every expression in a `run:` script before bash sees it,
 # whether it sits in a message or a comment and whether or not a backslash precedes

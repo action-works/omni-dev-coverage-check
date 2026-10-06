@@ -1,0 +1,3 @@
+exit=1
+patchcov: /lib/aarch64-linux-gnu/libc.so.6: version `GLIBC_2.39' not found (required by patchcov)
+patchcov: /lib/aarch64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by patchcov)

@@ -13,7 +13,7 @@
 #     byte, as ONE argument: a value that starts with `-`, holds spaces, `\`, `$`, quotes, a
 #     backtick, glob characters or a newline is not split, expanded or read as a flag, and a
 #     comma stays in it (cargo-llvm-cov takes one regex; `ignore-filename-regex`'s comma list is
-#     omni-dev's);
+#     patchcov's);
 #   - nothing else of the call changes, and no other cargo call gets the flag (the recompute's
 #     `--no-report` build, `show-env`).
 # A static check reads every step's code (its whole block, comments left out, so an inline
@@ -257,7 +257,7 @@ for name in "${STEP_NAMES[@]}"; do
   eq "$name: runs in fat mode only" 1 \
     "$(grep -cE "^      if: .*inputs\.run-coverage == 'true'" <<<"$block")"
 done
-# Five wirings and nowhere else: not omni-dev's diffs (their filter is `ignore-filename-regex`,
+# Five wirings and nowhere else: not patchcov's diffs (their filter is `ignore-filename-regex`,
 # a different syntax and a different path), and not a step that would then read it in thin mode.
 eq "the input is read in those five steps and no other" 5 \
   "$(grep -cF 'inputs.llvm-cov-ignore-filename-regex' "$ACTION")"
@@ -267,7 +267,7 @@ input="$(input_block llvm-cov-ignore-filename-regex)" || exit 1
 has "the input defaults to empty, which disables it" "$input" "default: ''"
 has "the input is optional" "$input" 'required: false'
 has "the input says it is fat mode only" "$input" 'Fat mode only'
-has "the input says it is not omni-dev's filter" "$input" 'ONE regex'
+has "the input says it is not patchcov's filter" "$input" 'ONE regex'
 has "the other filter's input points at this one" "$(input_block ignore-filename-regex)" \
   '`llvm-cov-ignore-filename-regex`'
 

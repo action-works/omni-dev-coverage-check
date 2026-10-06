@@ -1,6 +1,0 @@
-exit=2
-error: unexpected argument '--output' found
-
-Usage: omni-dev coverage diff [OPTIONS] --report <PATH>
-
-For more information, try '--help'.

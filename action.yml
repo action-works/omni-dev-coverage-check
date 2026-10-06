@@ -1,5 +1,5 @@
-name: 'Omni-Dev Coverage Check'
-description: 'Run code-coverage analysis and post a diff/patch-coverage PR comment using omni-dev'
+name: 'Patchcov Coverage Check'
+description: 'Run code-coverage analysis and post a diff/patch-coverage PR comment using patchcov'
 author: 'rust-works'
 
 branding:
@@ -8,12 +8,12 @@ branding:
 
 inputs:
   # ---------------------------------------------------------------------------
-  # omni-dev install + cache (mirrors action-works/omni-dev-commit-check)
+  # patchcov install + cache
   # ---------------------------------------------------------------------------
   version:
-    description: 'omni-dev version to install: a release number with or without a leading v or V (e.g., 0.45.0 or v0.45.0), or latest. An empty value, only a v or V, or a value with a character a release number is not written with (a newline, a /, a quote) fails the step'
+    description: 'patchcov version to install: a release number with or without a leading v or V (e.g., 0.1.1 or v0.1.1), or latest. An empty value, only a v or V, or a value with a character a release number is not written with (a newline, a /, a quote) fails the step'
     required: false
-    default: 'latest'
+    default: '0.1.1'
   github-token:
     description: 'Token used to authenticate GitHub API calls when resolving `version: latest`. Authenticated requests use the 1000/hr rate limit instead of the 60/hr unauthenticated, shared-runner-IP limit that intermittently fails resolution. Defaults to the workflow token'
     required: false
@@ -23,7 +23,7 @@ inputs:
     required: false
     default: 'true'
   cache-prefix:
-    description: 'Prefix to prepend to the cache key for the omni-dev binary'
+    description: 'Prefix to prepend to the cache key for the patchcov binary'
     required: false
     default: ''
 
@@ -55,7 +55,7 @@ inputs:
     required: false
     default: ''
   fail-under-lines:
-    description: 'Overall line-coverage gate. Fat mode uses `cargo llvm-cov report --fail-under-lines`; thin mode uses `omni-dev coverage diff --fail-under-lines`, which reads the lcov itself, so its figure can differ slightly from llvm-cov''s and needs an omni-dev release that has the flag. Empty disables the gate'
+    description: 'Overall line-coverage gate. Fat mode uses `cargo llvm-cov report --fail-under-lines`; thin mode uses `patchcov diff --fail-under-lines`, which reads the lcov itself, so its figure can differ slightly from llvm-cov''s. Empty disables the gate'
     required: false
     default: '30'
   llvm-cov-ignore-filename-regex:
@@ -64,14 +64,14 @@ inputs:
     default: ''
 
   # ---------------------------------------------------------------------------
-  # Diff / patch-coverage comment (omni-dev coverage diff)
+  # Diff / patch-coverage comment (patchcov diff)
   # ---------------------------------------------------------------------------
   base-ref:
     description: 'Base revision to diff against. Empty computes `git merge-base origin/main HEAD`'
     required: false
     default: ''
   fail-under-patch:
-    description: 'Patch-coverage gate via `omni-dev coverage diff --fail-under-patch`. Empty disables the gate. Enforced after the comment is posted'
+    description: 'Patch-coverage gate via `patchcov diff --fail-under-patch`. Empty disables the gate. Enforced after the comment is posted'
     required: false
     default: ''
   collapse-ranges:
@@ -87,7 +87,7 @@ inputs:
     required: false
     default: ''
   ignore-filename-regex:
-    description: 'Exclude files whose repo-relative path matches any of these regexes from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Separate patterns with bare commas on ONE line: a newline, or a space or tab at either end or beside a comma, would become part of a pattern and match no path, so the step refuses such a value (a YAML `|` block keeps its line breaks, `|-` only drops the last: write a plain or quoted one-line value; write `[ ]` for a space that is meant). A pattern cannot contain a comma. Matched after strip-prefix and unanchored, like cargo llvm-cov --ignore-filename-regex except that it sees the repo-relative path, not the absolute one, and takes Rust regex syntax, not LLVM''s. It does not reach what cargo-llvm-cov computes in fat mode (the summary, the `fail-under-lines` gate): `llvm-cov-ignore-filename-regex` does. Needs omni-dev 0.33.0 or later. Empty disables'
+    description: 'Exclude files whose repo-relative path matches any of these regexes from BOTH the head and baseline reports before the diff, so the comment, the patch gate and the thin-mode line gate all measure the same files. Separate patterns with bare commas on ONE line: a newline, or a space or tab at either end or beside a comma, would become part of a pattern and match no path, so the step refuses such a value (a YAML `|` block keeps its line breaks, `|-` only drops the last: write a plain or quoted one-line value; write `[ ]` for a space that is meant). A pattern cannot contain a comma. Matched after strip-prefix and unanchored, like cargo llvm-cov --ignore-filename-regex except that it sees the repo-relative path, not the absolute one, and takes Rust regex syntax, not LLVM''s. It does not reach what cargo-llvm-cov computes in fat mode (the summary, the `fail-under-lines` gate): `llvm-cov-ignore-filename-regex` does. Empty disables'
     required: false
     default: ''
   report-format:
@@ -157,14 +157,14 @@ inputs:
 
 outputs:
   version:
-    description: 'Resolved omni-dev version that was installed (no leading v)'
+    description: 'Resolved patchcov version that was installed (no leading v)'
     value: ${{ steps.resolve-version.outputs.version }}
   release-tag:
-    description: 'Resolved omni-dev release tag (v-prefixed)'
+    description: 'Resolved patchcov release tag (v-prefixed)'
     value: ${{ steps.resolve-version.outputs.release-tag }}
-  omni-dev-cache-hit:
-    description: '`true` when the omni-dev binary was restored from the cache, so the install steps did not run; `false` when it was installed'
-    value: ${{ steps.cache-omni-dev.outputs.cache-hit == 'true' }}
+  patchcov-cache-hit:
+    description: '`true` when the patchcov binary was restored from the cache, so the install steps did not run; `false` when it was installed'
+    value: ${{ steps.cache-patchcov.outputs.cache-hit == 'true' }}
   patch-percent:
     description: 'Patch (diff) coverage percentage for this PR'
     value: ${{ steps.diff.outputs.patch-percent }}
@@ -189,9 +189,9 @@ runs:
       # Refused here, first, so a mistake in a
       # workflow file fails in seconds and not after the install. A space inside a pattern
       # (`src/my dir/`) is a character and stays; `[ ]` writes one beside a comma.
-      # Runs where the value is used: the guard's own third need, a diff on a pull request, or
-      # the thin-mode line gate. A fat-mode push runs no `omni-dev coverage diff`, so a value
-      # set there is not looked at, as the guard does not ask omni-dev about it either.
+      # Runs where the value is used: a diff on a pull request, or
+      # the thin-mode line gate. A fat-mode push runs no `patchcov diff`, so a value
+      # set there is not looked at, it is not used there.
       if: inputs.ignore-filename-regex != '' && (github.event_name == 'pull_request' || (inputs.run-coverage != 'true' && inputs.fail-under-lines != ''))
       shell: bash
       env:
@@ -220,9 +220,15 @@ runs:
         fi
 
     # -------------------------------------------------------------------------
-    # Install + cache omni-dev (carried over from omni-dev-commit-check)
+    # Install + cache patchcov
     # -------------------------------------------------------------------------
-    - name: Resolve omni-dev version
+    - name: Warn about legacy coverage settings
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/scripts/check-legacy-config.sh"
+
+    - name: Resolve patchcov version
       id: resolve-version
       shell: bash
       env:
@@ -262,7 +268,7 @@ runs:
               "${auth[@]}" \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
-              https://api.github.com/repos/rust-works/omni-dev/releases/latest || true)
+              https://api.github.com/repos/rust-works/patchcov/releases/latest || true)
             api_status="${answer##*$'\n'}"
             response="${answer%$'\n'*}"
             RELEASE_TAG=$(printf '%s' "$response" | jq -r '.tag_name // empty' 2>/dev/null || true)
@@ -281,7 +287,7 @@ runs:
                 break
                 ;;
             esac
-            echo "::warning::Attempt ${attempt}/3: could not resolve latest omni-dev version (API: ${api_message:-unknown error})"
+            echo "::warning::Attempt ${attempt}/3: could not resolve latest patchcov version (API: ${api_message:-unknown error})"
             if [ "$attempt" -lt 3 ]; then sleep $((attempt * 3)); fi
           done
           if [ -z "$RELEASE_TAG" ]; then
@@ -315,24 +321,24 @@ runs:
             redirect=$(curl -sS \
               --connect-timeout 10 --max-time 30 \
               -o /dev/null -w '%{http_code} %{redirect_url}' \
-              https://github.com/rust-works/omni-dev/releases/latest || true)
+              https://github.com/rust-works/patchcov/releases/latest || true)
             read -r redirect_status redirect_to <<<"$redirect"
-            tag_url='^https://github\.com/rust-works/omni-dev/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?)$'
+            tag_url='^https://github\.com/rust-works/patchcov/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?)$'
             if [[ "$redirect_to" =~ $tag_url ]]; then
               RELEASE_TAG="${BASH_REMATCH[1]}"
-              echo "::warning::${api_gave}, so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}. ${fix}"
+              echo "::warning::${api_gave}, so latest patchcov was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}. ${fix}"
             fi
           fi
           if [ -z "$RELEASE_TAG" ]; then
-            echo "::error::Could not determine latest omni-dev version. ${api_gave} and the github.com releases/latest redirect gave no release tag (HTTP ${redirect_status:-000}${redirect_to:+ to $redirect_to}). ${error_fix}"
+            echo "::error::Could not determine latest patchcov version. ${api_gave} and the github.com releases/latest redirect gave no release tag (HTTP ${redirect_status:-000}${redirect_to:+ to $redirect_to}). ${error_fix}"
             exit 1
           fi
           VERSION="$RELEASE_TAG"
-          echo "Resolved latest omni-dev release: $RELEASE_TAG"
+          echo "Resolved latest patchcov release: $RELEASE_TAG"
         fi
         # Release tags carry a leading v, so a caller may pin one as written. Drop it
         # from whatever came in, not only from the tag above: left in, release-tag
-        # becomes vv0.45.0, the download 404s and `cargo install --version` refuses it.
+        # becomes vv0.1.1, the download 404s and `cargo install --version` refuses it.
         # A capital V is dropped too: it has one reading, and release-tag stays lowercase.
         given="$VERSION"
         VERSION="${VERSION#[vV]}"
@@ -341,7 +347,7 @@ runs:
         # cache key ending --binary), the download 404s and the platform step blames
         # the release rather than this input.
         if [ -z "$VERSION" ]; then
-          echo "::error::The 'version' input names no release (got '$given'). Set it to a release number such as 0.45.0 or v0.45.0, or to 'latest'."
+          echo "::error::The 'version' input names no release (got '$given'). Set it to a release number such as 0.1.1 or v0.1.1, or to 'latest'."
           exit 1
         fi
         # The value goes into the step's outputs, a cache key, the download URL and
@@ -364,19 +370,19 @@ runs:
             # message would start another workflow command on the next line.
             shown="${given//[^[:print:]]/?}"
             [ "${#shown}" -le 60 ] || shown="${shown:0:60}..."
-            echo "::error::The 'version' input holds a character that a release number is not written with (got '$shown'). It may hold letters, digits and . + - * ^ ~ < > = and spaces. Set it to a release number such as 0.45.0 or v0.45.0, or to 'latest'."
+            echo "::error::The 'version' input holds a character that a release number is not written with (got '$shown'). It may hold letters, digits and . + - * ^ ~ < > = and spaces. Set it to a release number such as 0.1.1 or v0.1.1, or to 'latest'."
             exit 1
             ;;
         esac
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
         echo "release-tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-    - name: Cache omni-dev binary
-      id: cache-omni-dev
+    - name: Cache patchcov binary
+      id: cache-patchcov
       uses: actions/cache@v4
       with:
-        path: ~/.cargo/bin/omni-dev
-        key: ${{ inputs.cache-prefix }}omni-dev-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve-version.outputs.version }}-${{ inputs.use-prebuilt-binary == 'true' && 'binary' || 'cargo' }}
+        path: ~/.cargo/bin/patchcov
+        key: ${{ inputs.cache-prefix }}patchcov-${{ runner.os }}-${{ runner.arch }}-${{ steps.resolve-version.outputs.version }}-${{ inputs.use-prebuilt-binary == 'true' && 'binary' || 'cargo' }}
 
     - name: Add cargo bin to PATH
       shell: bash
@@ -384,7 +390,7 @@ runs:
 
     - name: Determine platform and download URL
       id: platform
-      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true'
+      if: steps.cache-patchcov.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true'
       shell: bash
       env:
         RELEASE_TAG: ${{ steps.resolve-version.outputs.release-tag }}
@@ -402,11 +408,11 @@ runs:
         }
 
         # The asset is chosen from the OS and the architecture (see the script).
-        if ! BINARY_NAME=$(bash "$ACTION_PATH/scripts/omni-dev-asset.sh" "$OS" "$ARCH"); then
-          unavailable "No pre-built omni-dev binary is published for $OS $ARCH. Set 'use-prebuilt-binary: false' to build from source."
+        if ! BINARY_NAME=$(bash "$ACTION_PATH/scripts/patchcov-asset.sh" "$OS" "$ARCH" "$RELEASE_TAG"); then
+          unavailable "No pre-built patchcov binary is published for $OS $ARCH. Set 'use-prebuilt-binary: false' to build from source."
         fi
 
-        DOWNLOAD_URL="https://github.com/rust-works/omni-dev/releases/download/${RELEASE_TAG}/${BINARY_NAME}"
+        DOWNLOAD_URL="https://github.com/rust-works/patchcov/releases/download/${RELEASE_TAG}/${BINARY_NAME}"
 
         # Verify the binary exists. Only a 404 says it does not: any other status
         # (a refused connection prints 000, a server error 5xx) says the lookup failed.
@@ -417,10 +423,10 @@ runs:
         case "$HTTP_STATUS" in
           200 | 302) ;;
           404)
-            unavailable "omni-dev $RELEASE_TAG has no pre-built $BINARY_NAME for $OS $ARCH. Set 'version' to a release that has it, or set 'use-prebuilt-binary: false' to build from source."
+            unavailable "patchcov $RELEASE_TAG has no pre-built $BINARY_NAME for $OS $ARCH. Set 'version' to a release that has it, or set 'use-prebuilt-binary: false' to build from source."
             ;;
           *)
-            unavailable "Could not check whether omni-dev $RELEASE_TAG has a pre-built $BINARY_NAME (HTTP $HTTP_STATUS from $DOWNLOAD_URL). Re-run the job, or set 'use-prebuilt-binary: false' to build from source."
+            unavailable "Could not check whether patchcov $RELEASE_TAG has a pre-built $BINARY_NAME (HTTP $HTTP_STATUS from $DOWNLOAD_URL). Re-run the job, or set 'use-prebuilt-binary: false' to build from source."
             ;;
         esac
 
@@ -429,7 +435,7 @@ runs:
         echo "binary-name=$BINARY_NAME" >> $GITHUB_OUTPUT
 
     - name: Download pre-built binary
-      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'true'
+      if: steps.cache-patchcov.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'true'
       shell: bash
       env:
         DOWNLOAD_URL: ${{ steps.platform.outputs.download-url }}
@@ -437,38 +443,30 @@ runs:
       run: |
         mkdir -p ~/.cargo/bin
 
-        echo "Downloading omni-dev from $DOWNLOAD_URL"
+        echo "Downloading patchcov from $DOWNLOAD_URL"
         curl -sL "$DOWNLOAD_URL" -o "/tmp/$BINARY_NAME"
 
-        # Extract based on file type
-        if [[ "$BINARY_NAME" == *.zip ]]; then
-          unzip -q "/tmp/$BINARY_NAME" -d /tmp/omni-dev-extract
-          # Name the file (#82): the zip holds omni-dev-mcp.exe beside omni-dev.exe, and
-          # a glob that matched both took whichever `find` listed first. The result keeps
-          # the name `omni-dev`, which is the path the cache step saves and restores.
-          found="$(find /tmp/omni-dev-extract -name omni-dev.exe -type f)"
-          exe="${found%%$'\n'*}"
-          if [ -z "$exe" ]; then
-            held="$(cd /tmp/omni-dev-extract && find . -type f | LC_ALL=C sort | tr '\n' ' ')"
-            held="${held% }"
-            echo "::error::$BINARY_NAME has no omni-dev.exe in it, so there is no omni-dev to install. It holds: ${held:-nothing}"
-            exit 1
-          fi
-          mv "$exe" ~/.cargo/bin/omni-dev
-        else
-          tar -xzf "/tmp/$BINARY_NAME" -C /tmp
-          mv /tmp/omni-dev ~/.cargo/bin/omni-dev
+        # Releases hold patchcov inside a tag/target directory. Use an isolated
+        # directory so a previous download cannot supply a missing binary.
+        extract="$(mktemp -d /tmp/patchcov-extract.XXXXXX)"
+        trap 'rm -rf "$extract"' EXIT
+        tar -xzf "/tmp/$BINARY_NAME" -C "$extract"
+        binary="$extract/${BINARY_NAME%.tar.gz}/patchcov"
+        if [ ! -f "$binary" ]; then
+          echo "::error::$BINARY_NAME has no ${BINARY_NAME%.tar.gz}/patchcov in it, so there is no patchcov to install."
+          exit 1
         fi
+        mv "$binary" ~/.cargo/bin/patchcov
 
-        chmod +x ~/.cargo/bin/omni-dev
-        echo "Successfully installed omni-dev from pre-built binary"
-        # The binary is not run here: "Print omni-dev version" is the one step that runs it
+        chmod +x ~/.cargo/bin/patchcov
+        echo "Successfully installed patchcov from pre-built binary"
+        # The binary is not run here: "Print patchcov version" is the one step that runs it
         # after every way of installing, and the one that says why a binary cannot start
         # (#67). Run here, a binary the runner's glibc is too old for would stop this step
         # first, with the loader's bare message, and that step would never run.
 
     - name: Fail if binary not available
-      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'false'
+      if: steps.cache-patchcov.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary == 'true' && steps.platform.outputs.binary-available == 'false'
       shell: bash
       env:
         REASON: ${{ steps.platform.outputs.reason }}
@@ -476,28 +474,23 @@ runs:
         echo "::error::${REASON:-Pre-built binary not available for this platform/version. Set 'use-prebuilt-binary: false' to build from source.}"
         exit 1
 
-    - name: Install system dependencies for source build
-      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true' && runner.os == 'Linux'
-      shell: bash
-      run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-
     - name: Setup Rust toolchain (source install)
-      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true'
+      if: steps.cache-patchcov.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true'
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Install omni-dev from source
-      if: steps.cache-omni-dev.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true'
+    - name: Install patchcov from source
+      if: steps.cache-patchcov.outputs.cache-hit != 'true' && inputs.use-prebuilt-binary != 'true'
       shell: bash
       env:
         VERSION: ${{ steps.resolve-version.outputs.version }}
       run: |
-        echo "Installing omni-dev $VERSION via cargo install..."
-        env -u VERSION cargo install omni-dev --version "$VERSION"
+        echo "Installing patchcov $VERSION via cargo install..."
+        env -u VERSION cargo install patchcov --version "$VERSION"
 
-    - name: Print omni-dev version
+    - name: Print patchcov version
       shell: bash
       env:
-        OMNI_DEV_VERSION: ${{ steps.resolve-version.outputs.version }}
+        PATCHCOV_VERSION: ${{ steps.resolve-version.outputs.version }}
         OS: ${{ runner.os }}
         ARCH: ${{ runner.arch }}
       run: |
@@ -508,7 +501,7 @@ runs:
         # one the runner has and the two ways out. Anything else that stops it is shown as
         # before and keeps its exit status.
         status=0
-        output="$(omni-dev --version 2>&1)" || status=$?
+        output="$(patchcov --version 2>&1)" || status=$?
         printf '%s\n' "$output"
         [ "$status" -ne 0 ] || exit 0
         # The loader names each missing version as `...: version `GLIBC_2.38' not found`. A
@@ -536,86 +529,7 @@ runs:
           if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -le 39 ]; }; then
             images=" (ubuntu-24.04, or ubuntu-24.04-arm)"
           fi
-          echo "::error::omni-dev $OMNI_DEV_VERSION cannot run on this runner ($OS $ARCH): it needs glibc $needed or newer, and the runner has $runner_has. Use a runner image with glibc $needed or newer$images, or set 'use-prebuilt-binary: false' to build omni-dev from source."
-        fi
-        exit "$status"
-
-    - name: Check omni-dev supports the flags this run uses
-      # A pinned `version` (or `latest` resolving to a release that predates a
-      # flag) would otherwise get clap's bare "unexpected argument" from a later
-      # step. Fail with the fix instead, and before any coverage run. It runs only
-      # when a flag is needed: a push in fat mode calls no `omni-dev coverage` at
-      # all, so an old pin keeps working there.
-      #   --output                every pull request (the comment and the patch gate): 0.32.0
-      #   --fail-under-lines      thin mode with the line gate on
-      #   --ignore-filename-regex the `ignore-filename-regex` input set, wherever a diff
-      #                           runs (a pull request, or thin mode with the line gate): 0.33.0
-      # The `if:` is the union of these needs and the script re-derives each one, so
-      # a new flag goes in both places or it is skipped here or checked for nothing.
-      # The last need implies one of the other two, so it adds nothing to the `if:`.
-      if: github.event_name == 'pull_request' || (inputs.run-coverage != 'true' && inputs.fail-under-lines != '')
-      shell: bash
-      env:
-        EVENT_NAME: ${{ github.event_name }}
-        RUN_COVERAGE: ${{ inputs.run-coverage }}
-        FAIL_UNDER_LINES: ${{ inputs.fail-under-lines }}
-        IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
-      run: |
-        found="$(omni-dev --version)"
-        # Ask omni-dev whether it accepts the flag instead of reading its `--help`: the help
-        # is a proxy, and a wrong one when omni-dev hides a deprecated flag it still accepts,
-        # or when a description line happens to begin with the flag's name. clap rejects an
-        # unknown argument before it reaches `--help`, and still recognises a hidden one, so
-        # `coverage diff <flag> x --help` answers. The value is a dummy: a flag that takes one
-        # rejects `x` ("invalid value", or exit 0 for a free-form one) and one that takes none
-        # names `x` as the unexpected argument, not the flag. So the step needs no valid value
-        # (`--output markdown`) and no knowledge of omni-dev's enum names. `--help` follows the
-        # value, and `--report` is required, so nothing here can run a diff.
-        #   missing: `error: unexpected argument '<flag>' found` (the same on every release
-        #            from 0.29.0), or `error: unrecognized subcommand 'coverage'` for an
-        #            omni-dev below 0.29.0, which has no `coverage`.
-        #   present: anything else. This fails open: if clap rewords the message the step
-        #            passes, and a later step gets clap's own error, as before this guard
-        #            existed. The legs that expect a stop run pinned releases, whose wording
-        #            cannot change, so they cannot see it; the `deprecation-control` job runs
-        #            on `latest` and does (its D3).
-        # `|| true`: clap exits 2 whether the flag is there or not, so its status says nothing.
-        # NO_COLOR: a caller that sets CLICOLOR_FORCE gets the flag wrapped in escape codes
-        # (`'\e[33m--output\e[0m'`), which would never match; NO_COLOR wins over it.
-        # The version step above already proved the binary runs. A flag the run does not need
-        # is not asked about. The line that decided is in the log either way, so a probe that
-        # failed some other way, and so counted as present, can be read there.
-        has_flag() {
-          local said line
-          said="$(NO_COLOR=1 omni-dev coverage diff "$1" x --help 2>&1 || true)"
-          if line="$(grep -F -m1 -e "error: unexpected argument '$1' found" \
-            -e "error: unrecognized subcommand 'coverage'" \
-            -e "error: unrecognized subcommand 'diff'" <<<"$said")"; then
-            echo "omni-dev said: $line [$1 counted as missing]"
-            return 1
-          fi
-          echo "omni-dev said: $(head -n1 <<<"$said") [$1 counted as present]"
-        }
-        status=0
-        if [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ] \
-          && ! has_flag --fail-under-lines; then
-          echo "::error::$found has no 'coverage diff --fail-under-lines', which thin mode uses for the line gate. Set 'version' to a release that includes it, or set 'fail-under-lines' to an empty string to run thin mode without a line gate."
-          status=1
-        fi
-        # No input turns this one off: the diff runs on every pull request, even
-        # with `comment: false`.
-        if [ "$EVENT_NAME" = 'pull_request' ] && ! has_flag --output; then
-          echo "::error::$found has no 'coverage diff --output', which the pull-request comment and the patch gate use. It needs omni-dev 0.32.0 or later: set 'version' to 0.32.0 or later, or to 'latest'."
-          status=1
-        fi
-        # Passed wherever a diff runs: the comment and the patch gate on a pull request,
-        # the line gate in thin mode on any event. Not on a fat-mode push, which runs no
-        # omni-dev diff, so an old pin keeps working there with the input set.
-        if [ -n "$IGNORE_FILENAME_REGEX" ] \
-          && { [ "$EVENT_NAME" = 'pull_request' ] || { [ "$RUN_COVERAGE" != 'true' ] && [ -n "$FAIL_UNDER_LINES" ]; }; } \
-          && ! has_flag --ignore-filename-regex; then
-          echo "::error::$found has no 'coverage diff --ignore-filename-regex', which the 'ignore-filename-regex' input passes. It needs omni-dev 0.33.0 or later: set 'version' to 0.33.0 or later, or to 'latest', or set 'ignore-filename-regex' to an empty string."
-          status=1
+          echo "::error::patchcov $PATCHCOV_VERSION cannot run on this runner ($OS $ARCH): it needs glibc $needed or newer, and the runner has $runner_has. Use a runner image with glibc $needed or newer$images, or set 'use-prebuilt-binary: false' to build patchcov from source."
         fi
         exit "$status"
 
@@ -731,7 +645,7 @@ runs:
     # merge and reads the merged profile (`target/<name>.profdata`) instead.
 
     - name: Generate head coverage report (lcov)
-      # Per-line lcov for the head commit: the input to `omni-dev coverage diff`.
+      # Per-line lcov for the head commit: the input to `patchcov diff`.
       # It is the first report because the first one pays for the merge, and this
       # is the one a pull request cannot do without. Keep it ahead of every other
       # `cargo llvm-cov report` step: one placed before it merges again.
@@ -945,7 +859,7 @@ runs:
             && cargo llvm-cov report --lcov --output-path "$REPORT_BASENAME" "${ignore[@]}" )
         mkdir -p baseline
         # Rewrite the worktree's absolute SF paths to the main workspace prefix so
-        # `omni-dev coverage diff` strips one prefix for both head and baseline.
+        # `patchcov diff` strips one prefix for both head and baseline.
         sed "s#$(cd ../base && pwd)/#$GITHUB_WORKSPACE/#g" \
           "../base/$REPORT_BASENAME" > "baseline/$REPORT_BASENAME"
         echo "recomputed=true" >> "$GITHUB_OUTPUT"
@@ -975,7 +889,7 @@ runs:
         BASELINE_RECOMPUTED: ${{ steps.recompute.outputs.recomputed }}
       run: |
         REPORT_BASENAME="$(basename "$REPORT")"
-        args=(coverage diff
+        args=(diff
           --report "$REPORT"
           --base-ref "$BASE_SHA"
           --artifact-url "$ARTIFACT_URL"
@@ -1004,8 +918,8 @@ runs:
         if [ -f "baseline/$REPORT_BASENAME" ]; then
           args+=(--baseline-report "baseline/$REPORT_BASENAME")
         fi
-        omni-dev "${args[@]}" -o markdown > coverage.md
-        # omni-dev still calls the comparison merge-base -> head and the deltas "vs main",
+        patchcov "${args[@]}" -o markdown > coverage.md
+        # patchcov still calls the comparison merge-base -> head and the deltas "vs main",
         # so when the baseline is an ancestor's (`baseline-ancestor-depth`) the comment
         # says which one, unless the file is the merge-base's own recompute, which is what the
         # lookup's distance does not describe. The patch is unaffected: it is merge-base..HEAD
@@ -1019,9 +933,9 @@ runs:
         echo "comment-path=coverage.md" >> "$GITHUB_OUTPUT"
 
         # Machine-readable percentages (best-effort; never fail the build). stderr
-        # stays on the log: it is where omni-dev prints a deprecation warning, and
+        # stays on the log: it is where patchcov prints a deprecation warning, and
         # the integration workflow reads those from the job logs (#23).
-        if omni-dev "${args[@]}" -o json > coverage.json; then
+        if patchcov "${args[@]}" -o json > coverage.json; then
           PATCH=$(jq -r '.patch_coverage.percent // empty' coverage.json 2>/dev/null || echo "")
           LINE=$(jq -r '.project_delta.total_after // empty' coverage.json 2>/dev/null || echo "")
           echo "patch-percent=$PATCH" >> "$GITHUB_OUTPUT"
@@ -1071,7 +985,7 @@ runs:
         IGNORE_FILENAME_REGEX: ${{ inputs.ignore-filename-regex }}
       run: |
         REPORT_BASENAME="$(basename "$REPORT")"
-        args=(coverage diff
+        args=(diff
           --report "$REPORT"
           --base-ref "$BASE_SHA"
           --fail-under-patch "$FAIL_UNDER_PATCH"
@@ -1092,7 +1006,7 @@ runs:
         if [ -f "baseline/$REPORT_BASENAME" ]; then
           args+=(--baseline-report "baseline/$REPORT_BASENAME")
         fi
-        omni-dev "${args[@]}" > /dev/null
+        patchcov "${args[@]}" > /dev/null
 
     - name: Enforce line-coverage gate
       if: inputs.run-coverage == 'true' && inputs.fail-under-lines != ''
@@ -1124,13 +1038,13 @@ runs:
       run: |
         # On a push there is no merge-base (the step is skipped): HEAD..HEAD is an
         # empty diff, which is all a head-only gate needs.
-        args=(coverage diff
+        args=(diff
           --report "$REPORT"
           --base-ref "${BASE_SHA:-HEAD}"
           --fail-under-lines "$FAIL_UNDER_LINES"
           -o json)
         # Mirror the parse-affecting flags from the comment diff so the gated
-        # percentage is the one the comment reported. omni-dev gates on the head
+        # percentage is the one the comment reported. patchcov gates on the head
         # report AFTER `--ignore-filename-regex`, so this one needs it too.
         if [ -n "$STRIP_PREFIX" ]; then
           args+=(--strip-prefix "$STRIP_PREFIX")
@@ -1141,4 +1055,4 @@ runs:
         if [ -n "$REPORT_FORMAT" ]; then
           args+=(--report-format "$REPORT_FORMAT")
         fi
-        omni-dev "${args[@]}" > /dev/null
+        patchcov "${args[@]}" > /dev/null

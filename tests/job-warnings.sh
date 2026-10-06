@@ -4,7 +4,7 @@
 # Usage: job-warnings.sh <job name>
 # Environment, retries and exit status: as job-log.sh, which reads the log.
 #
-# A scenario that exists for a warning (#61: the redirect fallback of "Resolve omni-dev
+# A scenario that exists for a warning (#61: the redirect fallback of "Resolve patchcov
 # version" logs one when the API refuses the token) cannot be asserted from its own job, and
 # a composite action exposes no output for it. A later job reads the finished job's log
 # through the API instead, as tests/job-errors.sh does for errors.

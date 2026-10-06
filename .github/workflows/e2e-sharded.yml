@@ -220,7 +220,7 @@ jobs:
           # the pull-request job asserts the head covers less than this.
           assert "delta: the published baseline covers delta, which pull requests skip" covers "$published" delta
 
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
   pull-request:
@@ -479,7 +479,7 @@ jobs:
 
           # The patch gate is not vacuous: the diff adds the crate's lines, they are
           # the ones the report instruments, and the figure is the report's own.
-          # The tolerance is 0.02 because 21/32 is exactly 65.625, which omni-dev
+          # The tolerance is 0.02 because 21/32 is exactly 65.625, which patchcov
           # and lcov-percent.sh round to different neighbours.
           assert "E1: the patch is the crate's file, so the shards' paths lined up with the diff" \
             jq -e '[.patch_coverage.files[].path] == ["sharded-crate/src/lib.rs"]' out/e1/coverage.json
@@ -571,7 +571,7 @@ jobs:
             assert "E1: the comment says there is no baseline" grep -q 'No baseline available' out/e1/coverage.md
           fi
 
-          bash tests/assert-omni-dev-version.sh "$VERSION" || status=1
+          bash tests/assert-patchcov-version.sh "$VERSION" || status=1
           exit "$status"
 
       # What only the Actions API knows. The token is the job's own, without

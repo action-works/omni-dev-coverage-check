@@ -119,7 +119,7 @@ if [[ "$DIFF_SCRIPT" == *'${{'* ]]; then
 fi
 BIN="$WORK/bin"
 mkdir "$BIN"
-cat >"$BIN/omni-dev" <<'EOF'
+cat >"$BIN/patchcov" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   *"-o markdown"*) printf '# Coverage\nTotal: **71.4%%**\n' ;;
@@ -127,7 +127,7 @@ case "$*" in
   *) exit 99 ;;
 esac
 EOF
-chmod +x "$BIN/omni-dev"
+chmod +x "$BIN/patchcov"
 
 # real_comment <distance> <sha>: the comment the diff step writes when the lookup found a
 # baseline for <sha>, <distance> commits back. Prints its path.

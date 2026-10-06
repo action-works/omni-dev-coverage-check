@@ -1,12 +1,32 @@
-# Omni-Dev Coverage Check Action
+# Patchcov Coverage Check Action
 
-A GitHub Action that runs code-coverage analysis and posts a diff/patch-coverage pull-request comment using [omni-dev](https://github.com/rust-works/omni-dev).
+A GitHub Action that runs code-coverage analysis and posts a diff/patch-coverage pull-request comment using [patchcov](https://github.com/rust-works/patchcov).
 
-It is the coverage counterpart to [omni-dev-commit-check](https://github.com/action-works/omni-dev-commit-check) and reuses that action's `omni-dev` install + cache pattern (resolve version → `actions/cache@v4` → pre-built binary download with `cargo install` fallback), so the two actions stay consistent and version-pinnable.
+The coverage analysis uses [patchcov](https://github.com/rust-works/patchcov); the Rust coverage run uses cargo-llvm-cov. The repository name remains `omni-dev-coverage-check`.
+
+## Migrating from v1 to v2
+
+v2 switches from `omni-dev coverage diff` to `patchcov diff`. Update the action reference
+to `action-works/omni-dev-coverage-check@v2`. The repository name stays the same.
+
+- Replace any omni-dev `version` pin with a patchcov version, such as `0.1.1`, or omit
+  it to use the pinned default. Explicit `latest` is still supported.
+- Rename output references from `omni-dev-cache-hit` to `patchcov-cache-hit`.
+  The existing `version` and `release-tag` outputs now describe patchcov.
+- Move `.omni-dev/coverage.yaml` to `.patchcov/config.yaml`, preserving the coverage
+  settings, and replace `OMNI_DEV_CONFIG_DIR` with `PATCHCOV_CONFIG_DIR` if set.
+- Replace source markers such as `omni-dev: coverage ignore` and
+  `omni-dev: coverage tolerate` with `patchcov: coverage ignore` and
+  `patchcov: coverage tolerate`. Run `patchcov lint-markers` to check them.
+
+Patchcov ignores the old configuration, environment variable and markers. Without
+migration, exclusions may disappear and measured coverage may change. The action warns
+when it detects these legacy settings or markers in tracked source files; it does not
+convert them. Keep `.omni-dev/` settings used by other omni-dev commands.
 
 ## Features
 
-- Cached, version-pinnable `omni-dev` binary (same key scheme as commit-check)
+- Cached, version-pinnable `patchcov` binary (same key scheme as commit-check)
 - **Fat mode (default)**: runs `cargo-llvm-cov` for you and produces the report
 - **Thin mode**: bring your own lcov; the action only diffs, comments, and gates
 - **Sharded runs**: split the instrumented run across concurrent jobs, then combine the
@@ -14,7 +34,7 @@ It is the coverage counterpart to [omni-dev-commit-check](https://github.com/act
 - Merge-base baseline, falling back to the nearest ancestor's baseline and then to a
   git-worktree recompute
 - Sticky pull-request comment with patch coverage, per-file deltas, and the
-  uncovered `file:line` list (via `omni-dev coverage diff`)
+  uncovered `file:line` list (via `patchcov diff`)
 - Full per-file summary appended to the run's Summary tab and uploaded as an artifact
 - Overall line-coverage and patch-coverage gates (run *after* the comment posts)
 - Optional codecov.io upload
@@ -42,10 +62,10 @@ jobs:
         with:
           fetch-depth: 0          # full history so `git merge-base` resolves the fork point
 
-      - uses: action-works/omni-dev-coverage-check@v1
+      - uses: action-works/omni-dev-coverage-check@v2
 ```
 
-That single step installs `omni-dev`, runs `cargo-llvm-cov`, posts the PR comment, publishes the baseline on `main`, and enforces `--fail-under-lines 30`.
+That single step installs `patchcov`, runs `cargo-llvm-cov`, posts the PR comment, publishes the baseline on `main`, and enforces `--fail-under-lines 30`.
 
 ## Modes
 
@@ -72,15 +92,15 @@ gone.
 
 `run-coverage: false` skips `cargo-llvm-cov` entirely. Produce the per-line lcov
 yourself (any tool, any language) and point `report` at it; the action runs
-`omni-dev coverage diff`, posts the comment, and applies `--fail-under-patch` and
+`patchcov diff`, posts the comment, and applies `--fail-under-patch` and
 `--fail-under-lines`. The worktree baseline fallback is `cargo-llvm-cov`-specific
 and is skipped in this mode, so a baseline-download miss means a comment without
 deltas.
 
-The thin-mode line gate reads the lcov itself (`omni-dev coverage diff
+The thin-mode line gate reads the lcov itself (`patchcov diff
 --fail-under-lines`) rather than `cargo llvm-cov report`, so its figure can differ
-slightly from llvm-cov's own summary: on omni-dev's own suite (about 97% covered)
-it ran 0.16 percentage points higher. It also needs an omni-dev release that has
+slightly from llvm-cov's own summary: on patchcov's own suite (about 97% covered)
+it ran 0.16 percentage points higher. It also needs an patchcov release that has
 the flag; the action stops with that message if the installed one does not. Set
 `fail-under-lines: ''` to run thin mode without a line gate.
 
@@ -89,7 +109,7 @@ the flag; the action stops with that message if the installed one does not. Set
     # produce coverage-head.lcov however you like
     cargo llvm-cov --all-features --workspace --lcov --output-path coverage-head.lcov
 
-- uses: action-works/omni-dev-coverage-check@v1
+- uses: action-works/omni-dev-coverage-check@v2
   with:
     run-coverage: false
     report: coverage-head.lcov
@@ -145,7 +165,7 @@ jobs:
           pattern: coverage-shard-*
           merge-multiple: true      # every shard file lands in one directory
           path: shards
-      - uses: action-works/omni-dev-coverage-check@v1
+      - uses: action-works/omni-dev-coverage-check@v2
         with:
           run-coverage: false
           shard-reports: shards/shard-*.lcov
@@ -192,7 +212,7 @@ Things to know:
 - **The shards are merged as lcov.** The merge is a union: a line any shard covered is
   covered. It does not sum hit counts, which nothing in the line output reads.
 - **A sharded total is not bit-identical to an unsharded one** when tests depend on
-  timing or process-global state; on omni-dev's suite 38 of 324,274 lines differed.
+  timing or process-global state; on patchcov's suite 38 of 324,274 lines differed.
 - **`strip-prefix`, `report-format`, and the baseline are as in thin mode.**
   `report-format`, if set, must be `lcov`. The baseline published on `main` is the
   combined file.
@@ -261,7 +281,7 @@ run, and their coverage lands in the head report and the line gate:
     path: ~/.cache/my-model            # model is cached across runs
     key: my-model-v1
 
-- uses: action-works/omni-dev-coverage-check@v1
+- uses: action-works/omni-dev-coverage-check@v2
   with:
     setup-commands: cargo run --bin my-tool -- install-model
     extra-test-commands: |
@@ -278,14 +298,14 @@ Both hooks are shell, evaluated in one `bash`: see
 
 ## Inputs
 
-### omni-dev install + cache
+### patchcov install + cache
 
 | Input                 | Description                                                                                             | Default               |
 |-----------------------|--------------------------------------------------------------------------------------------------------|-----------------------|
-| `version`             | omni-dev version to install (e.g. `0.45.0`, `v0.45.0`, `latest`); leading `v`/`V` is dropped; see below | `latest`              |
+| `version`             | patchcov version to install (e.g. `0.1.1`, `v0.1.1`, `latest`); leading `v`/`V` is dropped; see below | `0.1.1`               |
 | `github-token`        | Token authenticating the GitHub API call that resolves `version: latest` (1000/hr vs 60/hr unauthed)   | `${{ github.token }}` |
 | `use-prebuilt-binary` | Download a pre-built release binary instead of `cargo install` from source                             | `true`                |
-| `cache-prefix`        | Prefix prepended to the omni-dev binary cache key                                                       | `''`                  |
+| `cache-prefix`        | Prefix prepended to the patchcov binary cache key                                                       | `''`                  |
 
 `version: latest` makes one call to the GitHub API to find the newest release. It sends `github-token` and tries
 up to three times (waiting 3s, then 6s) when a retry can help (no answer, a timeout, a 5xx or another status that
@@ -293,45 +313,44 @@ is not a refusal, a body that is not a release), so a blip does not fail the
 job and the 60-requests-an-hour limit on unauthenticated calls from a shared runner address does not either. It needs no
 configuration: the token defaults to the workflow's. A refusal (401, 403 or 429: a bad token, a spent limit, which can
 last up to an hour) is not retried, since asking again cannot change it. When the API gives no release, the step reads
-the release from the redirect of `github.com/rust-works/omni-dev/releases/latest` instead, which draws on no API quota,
+the release from the redirect of `github.com/rust-works/patchcov/releases/latest` instead, which draws on no API quota,
 and logs a warning saying so, with the API's reason. It fails only if that fails too, and the error names both. (The step reads the API's answer with `jq`, which
 GitHub-hosted runners have. On a runner without it the API is not asked: the step goes straight to the redirect and
 logs a warning that names `jq`, and the error, if the redirect fails too, says the API was not asked. Install `jq`
 to use the API.)
-A pinned `version` makes no request, and may be written as a release tag is, with a leading `v`: `v0.45.0` and
-`0.45.0` give the same `version` (`0.45.0`) and `release-tag` (`v0.45.0`) outputs and share one cache entry. A
-capital `V` is accepted the same way (`V0.45.0`), and `release-tag` stays lowercase. Only one leading character is
-dropped, so `vv0.45.0` stays visibly wrong. A value with nothing left after that, an empty `version` or just
+A pinned `version` makes no request, and may be written as a release tag is, with a leading `v`: `v0.1.1` and
+`0.1.1` give the same `version` (`0.1.1`) and `release-tag` (`v0.1.1`) outputs and share one cache entry. A
+capital `V` is accepted the same way (`V0.1.1`), and `release-tag` stays lowercase. Only one leading character is
+dropped, so `vv0.1.1` stays visibly wrong. A value with nothing left after that, an empty `version` or just
 `v` or `V`, fails the step at once with a message naming the input, instead of failing later in a step that blames the
-release: give a release number, or leave `version` out to get `latest`.
+release: give a release number, or leave `version` out to get the default `0.1.1`.
 The value goes into the step's outputs, the cache key, the download URL and `cargo install --version`, so it may hold
-only letters, digits and `. + - * ^ ~ < > =` and spaces: what a release number, a pre-release (`0.46.0-rc.1`) and
-the version requirements `cargo install` takes (`^0.45`, `>= 0.45`, with `use-prebuilt-binary: 'false'`) are written
+only letters, digits and `. + - * ^ ~ < > =` and spaces: what a release number, a pre-release (`0.1.1-rc.1`) and
+the version requirements `cargo install` takes (`^0.1`, `>= 0.1`, with `use-prebuilt-binary: 'false'`) are written
 with. Anything else, a newline, a `/`, a quote or a comma (the cache key cannot hold one, so a range such as
-`>=0.45, <0.47` could not get past the next step anyway), fails the step at once with a message naming the input, rather than writing an extra
+`>=0.1, <0.2` could not get past the next step anyway), fails the step at once with a message naming the input, rather than writing an extra
 line into the step's outputs or steering the download to another path on github.com. Only a caller who passes a value
 they do not control (a `workflow_dispatch` input, say) could reach that.
-The `omni-dev-cache-hit` output says whether the binary came from the cache (`true`: the download and `cargo install`
+The `patchcov-cache-hit` output says whether the binary came from the cache (`true`: the download and `cargo install`
 steps were skipped) or was installed (`false`). The cache key holds the runner's OS and architecture, the version and
 the install method, never the action's own code; a caller that needs a fresh install on some runs can change
 `cache-prefix` on those runs.
 
-The pre-built binary is chosen from the runner's OS and architecture: Linux x64, Linux ARM64, macOS ARM64 and
-Windows. Linux ARM64 needs omni-dev 0.46.0 or later, the first release that publishes
-`omni-dev-linux-arm64.tar.gz` ([rust-works/omni-dev#2148](https://github.com/rust-works/omni-dev/pull/2148)): on an
-ARM64 Linux runner, `use-prebuilt-binary: 'true'` with `version` pinned to an earlier release fails at the install
-step. So does a platform with no pre-built binary (macOS x64, a 32-bit Linux runner). The message names the platform
-or the missing asset: set `use-prebuilt-binary: 'false'` to build omni-dev from source instead, or `version` to a
-release that has the asset. A workflow that set `use-prebuilt-binary: 'false'` only to get omni-dev onto an ARM64
-Linux runner can drop it, on `latest` or on `0.46.0` or later.
+The pre-built binary is chosen from the runner's OS and architecture: Linux x64/ARM64 and
+macOS x64/ARM64. Assets are named `patchcov-v<version>-<target>.tar.gz`; the binary is
+inside a directory of the same name without `.tar.gz`. There is no Windows asset.
+A platform with no asset, or a release with no binaries (including 0.1.0), fails with a
+message naming the platform or missing asset. Set `use-prebuilt-binary: 'false'` to build
+patchcov from source, or pin a release that has an asset.
 
-The pre-built Linux binaries (x64 and ARM64) need a recent glibc: 2.38 or 2.39, depending on the release (Ubuntu
-24.04 has 2.39). An `ubuntu-22.04` runner, `ubuntu-22.04-arm`, or a self-hosted Debian 12 or Amazon Linux host has an
-older one. On such a runner the binary is found and downloaded, and then cannot start; the step that prints the
-omni-dev version fails with a message that names the glibc the binary needs (the newest version its dynamic loader
-reports as missing), the glibc the runner has, and the two ways out: a newer runner image (`ubuntu-24.04`,
-`ubuntu-24.04-arm`), or `use-prebuilt-binary: 'false'` to build omni-dev from source. Any other reason the binary
-cannot start (a missing shared library, say) is shown as the loader reported it.
+The 0.1.1 Linux binaries need glibc 2.35 or newer (Ubuntu 22.04 and 24.04 work).
+If a binary cannot start because the runner's glibc is older, the version step reports
+the required and installed glibc versions and suggests a newer image or a source build.
+Other loader failures retain their original diagnostics.
+
+The default pin avoids the window between publishing a release and uploading its assets.
+Explicit `version: latest` still resolves the newest tag immediately: if its assets are
+not uploaded yet, rerun after the upstream release finishes or pin `0.1.1`.
 
 ### Coverage run (fat mode)
 
@@ -343,7 +362,7 @@ cannot start (a missing shared library, say) is shown as the loader reported it.
 | `test-args`           | Arguments passed to `cargo test` / `cargo llvm-cov` under instrumentation. Split on whitespace only: a quote, backslash, `$` or backtick fails the step | `--all-features --workspace` |
 | `setup-commands`      | Commands run under instrumentation BEFORE the test run, with profiling disabled (no coverage). Fetch fixtures the tests need (e.g. an ML model). One per line, evaluated as shell | `''` |
 | `extra-test-commands` | Extra instrumented `cargo test` invocations run AFTER the main run, contributing coverage. For `--ignored`/model-gated suites `test-args` can't reach. One per line, evaluated as shell | `''` |
-| `fail-under-lines`    | Overall line-coverage gate: `cargo llvm-cov report --fail-under-lines` in fat mode, `omni-dev coverage diff --fail-under-lines` in thin mode (needs an omni-dev release with the flag). Empty disables it | `30`                  |
+| `fail-under-lines`    | Overall line-coverage gate: `cargo llvm-cov report --fail-under-lines` in fat mode, `patchcov diff --fail-under-lines` in thin mode (needs an patchcov release with the flag). Empty disables it | `30`                  |
 | `llvm-cov-ignore-filename-regex` | Fat mode only. ONE regex passed as `--ignore-filename-regex` to every `cargo llvm-cov report` (the lcov, `codecov.json`, the summary, the line gate, the recompute): LLVM syntax, matched against the absolute path, so write an unanchored fragment. Set `ignore-filename-regex` too. [Details](#excluding-files-ci-cannot-measure) | `''` |
 
 ### Diff / patch-coverage comment
@@ -389,9 +408,9 @@ cannot start (a missing shared library, say) is shown as the loader reported it.
 
 | Output               | Description                                                                                             |
 |----------------------|---------------------------------------------------------------------------------------------------------|
-| `version`            | Resolved omni-dev version installed (no leading `v`)                                                    |
-| `release-tag`        | Resolved omni-dev release tag (v-prefixed)                                                              |
-| `omni-dev-cache-hit` | `true` if omni-dev was restored from the cache and the install was skipped, `false` if it was installed |
+| `version`            | Resolved patchcov version installed (no leading `v`)                                                    |
+| `release-tag`        | Resolved patchcov release tag (v-prefixed)                                                              |
+| `patchcov-cache-hit` | `true` if patchcov was restored from the cache and the install was skipped, `false` if it was installed |
 | `patch-percent`      | Patch (diff) coverage percentage for this PR                                                            |
 | `line-percent`       | Overall line coverage percentage (requires a baseline)                                                  |
 | `comment-path`       | Path to the rendered markdown comment                                                                   |
@@ -410,9 +429,9 @@ while the PR was open:
 2. **Download** it (`dawidd6/action-download-artifact`, by the run that was found).
 3. **Recompute fallback** (fat mode): when nothing is in reach, build coverage at the
    merge-base in a git worktree and rewrite its absolute `SF:` paths to the workspace
-   prefix so `omni-dev coverage diff` strips one prefix for both head and baseline.
+   prefix so `patchcov diff` strips one prefix for both head and baseline.
    Use `worktree-system-deps` if building that historical commit needs system
-   packages (omni-dev passes `libasound2-dev`). The worktree (`../base`, and the build in it)
+   packages (patchcov passes `libasound2-dev`). The worktree (`../base`, and the build in it)
    is removed when the step ends, so the action can run again in the same job. If your workflow
    removes `../base` itself between two runs of the action, delete that step (or add `|| true`):
    the worktree is already gone, and `git worktree remove` fails on one that is not there.
@@ -481,7 +500,7 @@ posts when a gate fails:
   this PR added fall below the threshold.
 - **Overall line coverage** — `fail-under-lines` (default `30`) fails the build.
   Fat mode uses `cargo llvm-cov report --fail-under-lines`; thin mode uses
-  `omni-dev coverage diff --fail-under-lines`, which counts from the lcov and can
+  `patchcov diff --fail-under-lines`, which counts from the lcov and can
   differ slightly from llvm-cov's figure. Thin mode gates on every event, a push
   included. **If you used thin mode before this input applied to it, the default
   now gates you at 30%;** set `fail-under-lines: ''` to keep the old behaviour.
@@ -538,14 +557,14 @@ because two programs compute coverage here and they do not read a pattern alike:
 
 | Input                            | Filters                                                                                                                                      | Pattern                                                  |
 |----------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------|
-| `ignore-filename-regex`          | `omni-dev coverage diff`: the comment, the `patch-percent` / `line-percent` outputs, the patch gate and the thin-mode line gate              | Rust regexes, comma-separated, on the repo-relative path |
+| `ignore-filename-regex`          | `patchcov diff`: the comment, the `patch-percent` / `line-percent` outputs, the patch gate and the thin-mode line gate              | Rust regexes, comma-separated, on the repo-relative path |
 | `llvm-cov-ignore-filename-regex` | `cargo llvm-cov report`, fat mode only: the head lcov, `codecov.json`, the summary, the `fail-under-lines` gate and the merge-base recompute | ONE LLVM (POSIX extended) regex, on the absolute path    |
 
 **Set both** in fat mode. For an unanchored path fragment, the usual case, the string is the
 same:
 
 ```yaml
-- uses: action-works/omni-dev-coverage-check@v1
+- uses: action-works/omni-dev-coverage-check@v2
   with:
     ignore-filename-regex: 'src/voice/backends/voxtral_mlx/'
     llvm-cov-ignore-filename-regex: 'src/voice/backends/voxtral_mlx/'
@@ -589,7 +608,7 @@ report you upload elsewhere.
 - It does not reach what `cargo-llvm-cov` computes: in fat mode the `fail-under-lines`
   gate, the coverage summary, `codecov.json` and the report a push to `main` publishes as
   the baseline still count every file unless `llvm-cov-ignore-filename-regex` is set too.
-- It needs omni-dev 0.33.0 or later; see [Requirements](#requirements).
+- All patchcov releases support this filter.
 
 ### `llvm-cov-ignore-filename-regex`: the summary and the fat-mode gate
 
@@ -625,7 +644,7 @@ parses the script, so a value that holds shell syntax runs as shell. To keep tha
 happening, no script in `action.yml` holds an expression: each input a script reads reaches
 it as an environment variable and is read as `"$VAR"`, so a value cannot add a command to
 the script. (It is still an argument to the tool that receives it: `base-ref`, `strip-prefix`
-and the thresholds go to `git` and `omni-dev` as one word each.)
+and the thresholds go to `git` and `patchcov` as one word each.)
 `tests/check-run-expressions.sh` fails the build of this repository if an expression appears.
 
 Four inputs are not a plain value:
@@ -651,32 +670,15 @@ Four inputs are not a plain value:
   the baseline lookup can walk its ancestors.
 - `permissions: pull-requests: write` on the job, so the comment can be posted.
 - Fat mode builds Rust under `cargo-llvm-cov`; thin mode needs only a per-line lcov.
-- Thin mode's line gate and `shard-reports` need an omni-dev release that has
-  `coverage diff --fail-under-lines` (the first after v0.44.0). With `version: latest`
-  that is automatic once it is released; if you pin `version`, pin one that has it.
-- The pull-request comment, the patch gate and the thin-mode line gate pass
-  `-o/--output` to `omni-dev coverage diff`, which needs omni-dev 0.32.0 or later (its
-  predecessor `--format` is deprecated and due to be removed in a future major). With
-  `version: latest` that is automatic; if you pin `version`, pin 0.32.0 or later. On a
-  pull request, in either mode, an older omni-dev stops the action before the coverage
-  run with a message that names the version it found and the 0.32.0 floor, rather than
-  clap's bare `unexpected argument '-o'` from the comment step. That includes an
-  omni-dev below 0.29.0, which has no `coverage` subcommand at all. Other events are
-  unaffected.
-- `ignore-filename-regex` needs omni-dev 0.33.0 or later, the first release with
-  `coverage diff --ignore-filename-regex`. With `version: latest` that is automatic; if
-  you pin `version`, pin 0.33.0 or later. With the input set, an older omni-dev stops the
-  action before the coverage run, with a message that names the version it found and the
-  0.33.0 floor, on a pull request and in thin mode with the line gate on: the two places
-  a diff runs. A fat-mode push runs none, so it is unaffected. The input empty asks
-  nothing of omni-dev.
+- All flags the action uses are supported by patchcov from 0.1.0; pre-built installs
+  require 0.1.1 or newer because 0.1.0 has no release assets.
 
 ## Example: pinned version, codecov upload, and a patch gate
 
 ```yaml
-- uses: action-works/omni-dev-coverage-check@v1
+- uses: action-works/omni-dev-coverage-check@v2
   with:
-    version: 0.45.0
+    version: 0.1.1
     fail-under-lines: 60
     fail-under-patch: 80
     worktree-system-deps: libasound2-dev

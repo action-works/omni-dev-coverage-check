@@ -4,7 +4,7 @@
 #   tests/platform-step.test.sh
 # Exits non-zero if any case fails.
 #
-# tests/omni-dev-asset.test.sh pins which asset each (OS, arch) pair gets. This
+# tests/patchcov-asset.test.sh pins which asset each (OS, arch) pair gets. This
 # pins the wiring around it: that the step asks for the asset the script chose,
 # that a pair with no asset never reaches the network, that only a 404 is reported
 # as a missing asset, and that every `binary-available=false` carries the `reason`
@@ -57,7 +57,7 @@ output_of() {
 # Sets STATUS (the step's exit status), OUT (its $GITHUB_OUTPUT file) and CURLS (the
 # curl calls it made, one per line).
 run_platform() {
-  local os=$1 arch=$2 http=$3 tag=${4:-v0.44.0} dir
+  local os=$1 arch=$2 http=$3 tag=${4:-v0.1.1} dir
   dir="$(mktemp -d "$WORK/case.XXXXXX")"
   OUT="$dir/output"
   : >"$OUT"
@@ -74,33 +74,33 @@ run_platform() {
 run_platform Linux X64 200
 eq "Linux X64: the step succeeds" 0 "$STATUS"
 eq "Linux X64: the binary is available" true "$(output_of "$OUT" binary-available)"
-eq "Linux X64: it takes the x86_64 build" omni-dev-linux.tar.gz "$(output_of "$OUT" binary-name)"
+eq "Linux X64: it takes the x86_64 build" patchcov-v0.1.1-x86_64-unknown-linux-gnu.tar.gz "$(output_of "$OUT" binary-name)"
 eq "Linux X64: the URL is the release's asset" \
-  "https://github.com/rust-works/omni-dev/releases/download/v0.44.0/omni-dev-linux.tar.gz" \
+  "https://github.com/rust-works/patchcov/releases/download/v0.1.1/patchcov-v0.1.1-x86_64-unknown-linux-gnu.tar.gz" \
   "$(output_of "$OUT" download-url)"
 
-# The bug: this asked for omni-dev-linux.tar.gz.
-run_platform Linux ARM64 200 v0.46.0
+# The bug: this asked for patchcov-v0.1.1-x86_64-unknown-linux-gnu.tar.gz.
+run_platform Linux ARM64 200 v0.1.1
 eq "Linux ARM64: the binary is available" true "$(output_of "$OUT" binary-available)"
-eq "Linux ARM64: it takes the ARM64 build" omni-dev-linux-arm64.tar.gz "$(output_of "$OUT" binary-name)"
-has "Linux ARM64: it looks for the ARM64 build" "$CURLS" "/v0.46.0/omni-dev-linux-arm64.tar.gz"
-lacks "Linux ARM64: it never asks for the x86_64 build" "$CURLS" "omni-dev-linux.tar.gz"
+eq "Linux ARM64: it takes the ARM64 build" patchcov-v0.1.1-aarch64-unknown-linux-gnu.tar.gz "$(output_of "$OUT" binary-name)"
+has "Linux ARM64: it looks for the ARM64 build" "$CURLS" "/v0.1.1/patchcov-v0.1.1-aarch64-unknown-linux-gnu.tar.gz"
+lacks "Linux ARM64: it never asks for the x86_64 build" "$CURLS" "patchcov-v0.1.1-x86_64-unknown-linux-gnu.tar.gz"
 
 run_platform macOS ARM64 302
 eq "macOS ARM64: a redirect counts as found" true "$(output_of "$OUT" binary-available)"
-eq "macOS ARM64: it takes the macOS build" omni-dev-macos-arm64.tar.gz "$(output_of "$OUT" binary-name)"
+eq "macOS ARM64: it takes the macOS build" patchcov-v0.1.1-aarch64-apple-darwin.tar.gz "$(output_of "$OUT" binary-name)"
 
-run_platform Windows X64 200
-eq "Windows X64: it takes the Windows build" omni-dev-windows.zip "$(output_of "$OUT" binary-name)"
+run_platform macOS X64 200
+eq "macOS X64: it takes the Intel build" patchcov-v0.1.1-x86_64-apple-darwin.tar.gz "$(output_of "$OUT" binary-name)"
 
 # --- a platform with no asset: nothing is asked of the network --------------
 
-for pair in "Linux ARM" "Linux X86" "macOS X64"; do
+for pair in "Linux ARM" "Linux X86" "Windows X64" "Windows ARM64"; do
   # shellcheck disable=SC2086 # the pair is two words on purpose
   run_platform $pair 200
   eq "$pair: the step still succeeds, so the failing step can report it" 0 "$STATUS"
   eq "$pair: the binary is not available" false "$(output_of "$OUT" binary-available)"
-  has "$pair: the reason names the platform" "$(output_of "$OUT" reason)" "No pre-built omni-dev binary is published for $pair"
+  has "$pair: the reason names the platform" "$(output_of "$OUT" reason)" "No pre-built patchcov binary is published for $pair"
   has "$pair: the reason says to build from source" "$(output_of "$OUT" reason)" "use-prebuilt-binary: false"
   eq "$pair: nothing was looked up" "" "$CURLS"
   eq "$pair: no download URL is offered" "" "$(output_of "$OUT" download-url)"
@@ -108,23 +108,23 @@ done
 
 # --- a platform with an asset the release lacks -----------------------------
 
-run_platform Linux ARM64 404 v0.44.0
+run_platform Linux ARM64 404 v0.1.1
 eq "404: the step succeeds" 0 "$STATUS"
 eq "404: the binary is not available" false "$(output_of "$OUT" binary-available)"
 reason="$(output_of "$OUT" reason)"
 has "404: the reason names the release and the asset" "$reason" \
-  "omni-dev v0.44.0 has no pre-built omni-dev-linux-arm64.tar.gz for Linux ARM64"
+  "patchcov v0.1.1 has no pre-built patchcov-v0.1.1-aarch64-unknown-linux-gnu.tar.gz for Linux ARM64"
 has "404: the reason says to set 'version'" "$reason" "Set 'version' to a release that has it"
 has "404: the reason says to build from source" "$reason" "set 'use-prebuilt-binary: false' to build from source"
 eq "404: no download URL is offered" "" "$(output_of "$OUT" download-url)"
 
 # Anything but a 404 says the lookup failed, not that the asset is missing.
 for http in 000 429 500 503; do
-  run_platform Linux ARM64 "$http" v0.45.0
+  run_platform Linux ARM64 "$http" v0.1.1
   eq "HTTP $http: the step still succeeds, so the failing step can report it" 0 "$STATUS"
   eq "HTTP $http: the binary is not available" false "$(output_of "$OUT" binary-available)"
   reason="$(output_of "$OUT" reason)"
-  has "HTTP $http: the reason says the lookup failed" "$reason" "Could not check whether omni-dev v0.45.0 has a pre-built omni-dev-linux-arm64.tar.gz (HTTP $http"
+  has "HTTP $http: the reason says the lookup failed" "$reason" "Could not check whether patchcov v0.1.1 has a pre-built patchcov-v0.1.1-aarch64-unknown-linux-gnu.tar.gz (HTTP $http"
   lacks "HTTP $http: the reason does not claim the asset is missing" "$reason" "has no pre-built"
   has "HTTP $http: the reason says to re-run" "$reason" "Re-run the job"
 done
@@ -140,10 +140,10 @@ run_fail() { # <reason, or -u to leave it unset>
   FAIL_STATUS=$?
 }
 
-run_fail "omni-dev v0.44.0 has no pre-built omni-dev-linux-arm64.tar.gz for Linux ARM64."
+run_fail "patchcov v0.1.1 has no pre-built patchcov-v0.1.1-aarch64-unknown-linux-gnu.tar.gz for Linux ARM64."
 eq "the failing step exits non-zero" 1 "$FAIL_STATUS"
 eq "the failing step prints the reason as the error" \
-  "::error::omni-dev v0.44.0 has no pre-built omni-dev-linux-arm64.tar.gz for Linux ARM64." "$FAIL_OUT"
+  "::error::patchcov v0.1.1 has no pre-built patchcov-v0.1.1-aarch64-unknown-linux-gnu.tar.gz for Linux ARM64." "$FAIL_OUT"
 
 run_fail -u
 eq "without a reason it still fails" 1 "$FAIL_STATUS"

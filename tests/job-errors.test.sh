@@ -189,7 +189,7 @@ run_warnings() {
 LOG_TWO_ERRORS="$(printf '\357\273\277%s\n' \
   "2026-10-03T15:44:19.7678995Z Current runner version: '2.329.0'")
 2026-10-03T15:44:33.4843361Z $(printf '\033[36;1m')if ! grep -q -- '--fail-under-lines' <<<\"\$help\"; then$(printf '\033[0m')
-2026-10-03T15:44:33.4843944Z $(printf '\033[36;1m')  echo \"::error::\$(omni-dev --version) has no 'coverage diff --fail-under-lines', which thin mode uses\"$(printf '\033[0m')
+2026-10-03T15:44:33.4843944Z $(printf '\033[36;1m')  echo \"::error::\$(patchcov --version) has no 'coverage diff --fail-under-lines', which thin mode uses\"$(printf '\033[0m')
 2026-10-03T15:44:33.4891094Z ##[endgroup]
 2026-10-03T15:44:33.5179483Z ##[error]shard-reports pattern 'shards/missing-*.lcov' matched no files; a shard that never uploaded would silently lower coverage
 2026-10-03T15:44:33.5180225Z ##[error]Process completed with exit code 1."
@@ -197,9 +197,9 @@ LOG_TWO_ERRORS="$(printf '\357\273\277%s\n' \
 # --- reading the messages -----------------------------------------------------
 
 d=$(fresh)
-add_job "$d" 101 'Thin mode (omni-dev latest)'
+add_job "$d" 101 'Thin mode (patchcov latest)'
 printf '%s\n' "$LOG_TWO_ERRORS" >"$d/logs/101"
-run_errors "$d" 'Thin mode (omni-dev latest)'
+run_errors "$d" 'Thin mode (patchcov latest)'
 pass "reads a job's log" test "$STATUS" -eq 0
 eq "prints each error message without its timestamp or marker" \
   "shard-reports pattern 'shards/missing-*.lcov' matched no files; a shard that never uploaded would silently lower coverage
@@ -211,7 +211,7 @@ pass "fixture: the log does echo the message text outside an error line" \
 
 # A gh that refuses escape sequences, like the one on a current runner, must be
 # given the flag; an older one has no such flag and must not be.
-run_errors "$d" 'Thin mode (omni-dev latest)' FAKE_GH_OLD=1
+run_errors "$d" 'Thin mode (patchcov latest)' FAKE_GH_OLD=1
 pass "reads the log with a gh that has no --allow-escape-sequences" test "$STATUS" -eq 0
 eq "and prints the same messages" \
   "shard-reports pattern 'shards/missing-*.lcov' matched no files; a shard that never uploaded would silently lower coverage
@@ -221,41 +221,41 @@ pass "fixture: a current gh does refuse this log without the flag" \
     gh api "repos/o/r/actions/jobs/101/logs" >/dev/null 2>&1' _ "$d"
 
 printf '%s\r\n' "2026-10-03T15:44:33.5179483Z ##[error]a message" >"$d/logs/101"
-run_errors "$d" 'Thin mode (omni-dev latest)'
+run_errors "$d" 'Thin mode (patchcov latest)'
 eq "strips carriage returns" "a message" "$OUT"
 
 printf '%s\n' "2026-10-03T15:44:33.5179483Z echo ##[error]not a runner marker" \
   "2026-10-03T15:44:33.5179483Z ##[group]Run something" >"$d/logs/101"
-run_errors "$d" 'Thin mode (omni-dev latest)'
+run_errors "$d" 'Thin mode (patchcov latest)'
 eq "a step's own output that merely contains the marker does not count" "" "$OUT"
 
 printf '%s\n' "2026-10-03T15:44:33.5179483Z ##[group]Run something" >"$d/logs/101"
-run_errors "$d" 'Thin mode (omni-dev latest)'
+run_errors "$d" 'Thin mode (patchcov latest)'
 pass "a log without errors is not a failure" test "$STATUS" -eq 0
 eq "a log without errors prints nothing" "" "$OUT"
 
 # --- finding the job ----------------------------------------------------------
 
 d=$(fresh)
-add_job "$d" 201 'Thin mode (omni-dev 0.45.0)'
-add_job "$d" 202 'Thin mode (omni-dev latest)'
-add_job "$d" 203 'Thin mode (omni-dev latest) and more'
+add_job "$d" 201 'Thin mode (patchcov 0.1.1)'
+add_job "$d" 202 'Thin mode (patchcov latest)'
+add_job "$d" 203 'Thin mode (patchcov latest) and more'
 printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]from 201" >"$d/logs/201"
 printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]from 202" >"$d/logs/202"
 printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]from 203" >"$d/logs/203"
-run_errors "$d" 'Thin mode (omni-dev latest)'
+run_errors "$d" 'Thin mode (patchcov latest)'
 eq "picks the job by its exact name" "from 202" "$OUT"
 
-run_errors "$d" 'Thin mode (omni-dev 0.4'
+run_errors "$d" 'Thin mode (patchcov 0.4'
 pass "a name that only prefixes another is not found" test "$STATUS" -ne 0
-pass "a missing job is named in the error" grep -q "0 jobs named 'Thin mode (omni-dev 0.4'" <<<"$ERR"
+pass "a missing job is named in the error" grep -q "0 jobs named 'Thin mode (patchcov 0.4'" <<<"$ERR"
 
-add_job "$d" 204 'Thin mode (omni-dev latest)'
-run_errors "$d" 'Thin mode (omni-dev latest)'
+add_job "$d" 204 'Thin mode (patchcov latest)'
+run_errors "$d" 'Thin mode (patchcov latest)'
 pass "two jobs with one name are ambiguous, not the first" test "$STATUS" -ne 0
 pass "an ambiguous name is reported" grep -q "2 jobs named" <<<"$ERR"
 
-run_errors "$d" 'Thin mode (omni-dev 0.45.0)' FAKE_JOBS_FAIL=1
+run_errors "$d" 'Thin mode (patchcov 0.1.1)' FAKE_JOBS_FAIL=1
 pass "a failed jobs call fails the script" test "$STATUS" -ne 0
 pass "and is not mistaken for a missing job or an unreadable log" \
   bash -c '! grep -q "jobs named\|could not read the log" <<<"$1"' _ "$ERR"
@@ -277,13 +277,13 @@ with_job() {
   printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]found it" >"$d/logs/$1"
 }
 
-with_job 601 'Thin mode (omni-dev 0.45.0)'
-run_errors "$d" 'Thin mode (omni-dev 0.45.0)' FAKE_JOBS_EMPTY_FIRST=2 JOB_LOG_ATTEMPTS=6
+with_job 601 'Thin mode (patchcov 0.1.1)'
+run_errors "$d" 'Thin mode (patchcov 0.1.1)' FAKE_JOBS_EMPTY_FIRST=2 JOB_LOG_ATTEMPTS=6
 pass "a list without the job is looked at again" test "$STATUS" -eq 0
 eq "and the job is read once it is listed" "found it" "$OUT"
 eq "the list was read three times" 3 "$(cat "$d/jobs-reads")"
 pass "each look that found nothing says so" \
-  grep -q "run 42 lists no job named 'Thin mode (omni-dev 0.45.0)' yet (attempt 2 of 6)" <<<"$ERR"
+  grep -q "run 42 lists no job named 'Thin mode (patchcov 0.1.1)' yet (attempt 2 of 6)" <<<"$ERR"
 
 with_job 602 'Job'
 run_errors "$d" 'Job' FAKE_JOBS_EMPTY_FIRST=99 JOB_LOG_ATTEMPTS=3
@@ -460,9 +460,9 @@ deprecation_log() {
 }
 
 d=$(fresh)
-add_job "$d" 401 'Thin mode (omni-dev latest)'
+add_job "$d" 401 'Thin mode (patchcov latest)'
 deprecation_log >"$d/logs/401"
-run_deprecations "$d" 'Thin mode (omni-dev latest)'
+run_deprecations "$d" 'Thin mode (patchcov latest)'
 pass "deprecations: reads a job's log" test "$STATUS" -eq 0
 eq "deprecations: prints the warnings a program logged, without their timestamp" \
   "$WARN_FLAG
@@ -482,11 +482,11 @@ pass "fixture: the log does hold the runner's and node's deprecation notices" \
   bash -c 'grep -qF "##[warning]Node.js 20 is deprecated" "$1" && grep -qF "DeprecationWarning" "$1"' _ "$d/logs/401"
 
 printf '%s\r\n' "2026-10-04T00:59:22.6Z $WARN_FLAG" >"$d/logs/401"
-run_deprecations "$d" 'Thin mode (omni-dev latest)'
+run_deprecations "$d" 'Thin mode (patchcov latest)'
 eq "deprecations: strips carriage returns" "$WARN_FLAG" "$OUT"
 
 printf '%s\n' "2026-10-04T00:59:22.6Z warning: unused variable: \`x\`" >"$d/logs/401"
-run_deprecations "$d" 'Thin mode (omni-dev latest)'
+run_deprecations "$d" 'Thin mode (patchcov latest)'
 pass "deprecations: a log without one is not a failure" test "$STATUS" -eq 0
 eq "deprecations: a log without one prints nothing" "" "$OUT"
 
@@ -528,10 +528,10 @@ eq "deprecations: the list was read three times" 3 "$(cat "$d/jobs-reads")"
 # a warning of that kind, worded "refused the request (HTTP 401) and was not asked again", and
 # no `Attempt n/3` lines, which would claim retries that did not happen; this log is the older
 # shape, which the reader reads just the same. The pairing below is with the current text.
-W_ATTEMPT1='Attempt 1/3: could not resolve latest omni-dev version (API: Bad credentials)'
-W_ATTEMPT2='Attempt 2/3: could not resolve latest omni-dev version (API: Bad credentials)'
-W_ATTEMPT3='Attempt 3/3: could not resolve latest omni-dev version (API: Bad credentials)'
-W_FALLBACK="The GitHub API gave no release after 3 attempts (API: Bad credentials), so latest omni-dev was resolved from the github.com releases/latest redirect instead: v0.45.0. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
+W_ATTEMPT1='Attempt 1/3: could not resolve latest patchcov version (API: Bad credentials)'
+W_ATTEMPT2='Attempt 2/3: could not resolve latest patchcov version (API: Bad credentials)'
+W_ATTEMPT3='Attempt 3/3: could not resolve latest patchcov version (API: Bad credentials)'
+W_FALLBACK="The GitHub API gave no release after 3 attempts (API: Bad credentials), so latest patchcov was resolved from the github.com releases/latest redirect instead: v0.1.1. Check that github-token holds a valid token (it defaults to the workflow token), or set 'version' to a release to skip the lookup."
 W_NODE='Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@v4'
 W_OTHER='No artifacts found for the given name'
 
@@ -541,7 +541,7 @@ W_OTHER='No artifacts found for the given name'
 warning_log() {
   printf '\357\273\277%s\n' "2026-10-04T04:12:20.1Z Current runner version: '2.329.0'"
   printf '%s\n' \
-    "2026-10-04T04:12:29.0Z ${ESC}[36;1m  echo \"::warning::Attempt \${attempt}/3: could not resolve latest omni-dev version (API: \${api_message})\"${ESC}[0m" \
+    "2026-10-04T04:12:29.0Z ${ESC}[36;1m  echo \"::warning::Attempt \${attempt}/3: could not resolve latest patchcov version (API: \${api_message})\"${ESC}[0m" \
     '2026-10-04T04:12:29.1Z ##[endgroup]' \
     "2026-10-04T04:12:29.3Z ##[warning]$W_ATTEMPT1" \
     "2026-10-04T04:12:32.4Z ##[warning]$W_ATTEMPT2" \
@@ -555,9 +555,9 @@ warning_log() {
 }
 
 d=$(fresh)
-add_job "$d" 601 'Latest omni-dev (API refuses the token)'
+add_job "$d" 601 'Latest patchcov (API refuses the token)'
 warning_log >"$d/logs/601"
-run_warnings "$d" 'Latest omni-dev (API refuses the token)'
+run_warnings "$d" 'Latest patchcov (API refuses the token)'
 pass "warnings: reads a job's log" test "$STATUS" -eq 0
 eq "warnings: prints each ##[warning] line without its timestamp or marker" \
   "$W_ATTEMPT1
@@ -585,17 +585,17 @@ pass "warnings: the fallback's warning is among them, whole" \
   grep -qxF "$W_FALLBACK" <<<"$OUT"
 
 printf '%s\r\n' "2026-10-04T04:12:38.8Z ##[warning]$W_FALLBACK" >"$d/logs/601"
-run_warnings "$d" 'Latest omni-dev (API refuses the token)'
+run_warnings "$d" 'Latest patchcov (API refuses the token)'
 eq "warnings: strips carriage returns" "$W_FALLBACK" "$OUT"
 
 printf '%s\n' "2026-10-04T04:12:42.0Z warning: --format is deprecated; use -o/--output instead" \
   "2026-10-04T04:12:42.1Z ##[error]Process completed with exit code 1." >"$d/logs/601"
-run_warnings "$d" 'Latest omni-dev (API refuses the token)'
+run_warnings "$d" 'Latest patchcov (API refuses the token)'
 pass "warnings: a log without one is not a failure" test "$STATUS" -eq 0
 eq "warnings: a log without one prints nothing" "" "$OUT"
 
 : >"$d/logs/601"
-run_warnings "$d" 'Latest omni-dev (API refuses the token)'
+run_warnings "$d" 'Latest patchcov (API refuses the token)'
 pass "warnings: an empty log is not a failure" test "$STATUS" -eq 0
 eq "warnings: an empty log prints nothing" "" "$OUT"
 
@@ -628,7 +628,7 @@ eq "warnings: and prints nothing" "" "$OUT"
 # with `v`.
 ACTION_TEXT="$(<"$ROOT/action.yml")"
 WORKFLOW_TEXT="$(<"$ROOT/.github/workflows/integration.yml")"
-FALLBACK_LINE="$(grep -F '::warning::${api_gave}, so latest omni-dev was resolved' <<<"$ACTION_TEXT")"
+FALLBACK_LINE="$(grep -F '::warning::${api_gave}, so latest patchcov was resolved' <<<"$ACTION_TEXT")"
 REFUSED_LINE="$(grep -F 'api_gave="The GitHub API refused the request (HTTP ${refused})' <<<"$ACTION_TEXT")"
 # The way out the warning ends in is `${fix}` since #63 (with no jq it names jq and not the token); scenario 10 has
 # jq and its token refused, so it is the first assignment of `fix`, the token's.
@@ -638,7 +638,7 @@ pass "action.yml: the text for a refusal is built, once" test "$(grep -c . <<<"$
 pass "action.yml: the way out for an API that answered is built, once" test "$(grep -c . <<<"$FIX_LINE")" -eq 1
 has "action.yml: the fallback's warning ends in that way out" "$FALLBACK_LINE" '. ${fix}"'
 has "workflow: failure-messages reads the warnings of scenario 10's job" "$WORKFLOW_TEXT" \
-  "bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)'"
+  "bash tests/job-warnings.sh 'Latest patchcov (API refuses the token)'"
 while IFS='|' read -r in_workflow in_action source; do
   case "$source" in
     refused) line="$REFUSED_LINE" ;;
@@ -649,7 +649,7 @@ while IFS='|' read -r in_workflow in_action source; do
   has "workflow: ... and the assertion asks for '$in_workflow'" "$WORKFLOW_TEXT" "\"$in_workflow\""
 done <<'EOF'
 (API: Bad credentials)|(API: ${api_message|refused
-so latest omni-dev was resolved from the github.com releases/latest redirect instead: v|so latest omni-dev was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}|warning
+so latest patchcov was resolved from the github.com releases/latest redirect instead: v|so latest patchcov was resolved from the github.com releases/latest redirect instead: ${RELEASE_TAG}|warning
 set 'version' to a release to skip the lookup|set 'version' to a release to skip the lookup|fix
 EOF
 # The three checks as written: each holds the fallback's own words, and each of the other two
@@ -664,7 +664,7 @@ has "workflow: check 2 asks for all three in one warning" "$WORKFLOW_TEXT" \
 # The structure round them: the reading is a condition (a failed read ends the step red, and a
 # failure under `bash -e` is not lost), and the else is what counts it.
 has "workflow: the warnings are read as a condition" "$WORKFLOW_TEXT" \
-  "          if warnings=\"\$(bash tests/job-warnings.sh 'Latest omni-dev (API refuses the token)')\"; then"
+  "          if warnings=\"\$(bash tests/job-warnings.sh 'Latest patchcov (API refuses the token)')\"; then"
 has "workflow: a failed read is counted" "$WORKFLOW_TEXT" \
   "set 'version' to a release to skip the lookup\"
           else
@@ -675,9 +675,9 @@ has "workflow: check 3 asks for the fallback and the way out, in one warning" "$
   "            expect \"10: the fallback's warning offers pinning 'version'\" \"\$warnings\" \\
               \"\$fallback\" \"set 'version' to a release to skip the lookup\""
 has "workflow: the fallback's words are defined once, as the action logs them" "$WORKFLOW_TEXT" \
-  '          fallback="so latest omni-dev was resolved from the github.com releases/latest redirect instead: v"'
+  '          fallback="so latest patchcov was resolved from the github.com releases/latest redirect instead: v"'
 # The job's name is the one the `latest-redirect` job sets, and failure-messages needs the job.
-has "workflow: the job name is scenario 10's" "$WORKFLOW_TEXT" "    name: Latest omni-dev (API refuses the token)"
+has "workflow: the job name is scenario 10's" "$WORKFLOW_TEXT" "    name: Latest patchcov (API refuses the token)"
 
 # --- the log itself -----------------------------------------------------------
 

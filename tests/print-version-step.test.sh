@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Tests for the "Print omni-dev version" step of action.yml. Plain bash, no framework:
+# Tests for the "Print patchcov version" step of action.yml. Plain bash, no framework:
 #   tests/print-version-step.test.sh
 # Exits non-zero if any case fails.
 #
-# The step runs the installed omni-dev once. A pre-built Linux binary that needs a newer
+# The step runs the installed patchcov once. A pre-built Linux binary that needs a newer
 # glibc than the runner has is stopped by the dynamic loader, which says only
 # "version `GLIBC_2.38' not found" (#67), so when that is what it said, the step names the
 # glibc the binary wants, the one the runner has and the two ways out. Anything else that
 # stops the binary is shown as before and keeps its exit status.
 #
-# The loader's wording is what the step matches, so it is replayed from what the loader
-# printed: tests/fixtures/omni-dev-loader/, one file per binary (`exit=<status>`, then the
-# output). `omni-dev` is a stub that replays a fixture and `getconf` a stub that names the
+# The loader's wording is replayed using synthetic diagnostic inputs adapted from
+# old omni-dev failures (not measurements of patchcov releases): tests/fixtures/patchcov-loader/, one file per binary (`exit=<status>`, then the
+# output). `patchcov` is a stub that replays a fixture and `getconf` a stub that names the
 # runner's glibc, so this runs anywhere and never runs a real binary.
 #
 # The cases that matter most are the ones that pick the version to ask for. The x86_64
@@ -25,7 +25,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ACTION="$ROOT/action.yml"
-FIXTURES="$ROOT/tests/fixtures/omni-dev-loader"
+FIXTURES="$ROOT/tests/fixtures/patchcov-loader"
 
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=test-lib.sh
@@ -35,18 +35,18 @@ work_dir
 # shellcheck source=step-lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/step-lib.sh"
 
-STEP='Print omni-dev version'
+STEP='Print patchcov version'
 SCRIPT="$(step_run "$STEP")" || exit 1
 BLOCK="$(step_block "$STEP")" || exit 1
 
-# The stubs. omni-dev replays $STUB_FIXTURE: the first line is `exit=<status>`, the rest is
+# The stubs. patchcov replays $STUB_FIXTURE: the first line is `exit=<status>`, the rest is
 # what it printed, on stdout for a success and on stderr for a failure, as the loader and a
 # failing program do, and logs each call's arguments to $STUB_CALLS. getconf answers
 # `GNU_LIBC_VERSION` with $STUB_GLIBC, and fails, with a message on stderr, when that is
 # empty, as it does on a system that has no glibc.
 BIN="$WORK/bin"
 mkdir "$BIN"
-cat >"$BIN/omni-dev" <<'EOF'
+cat >"$BIN/patchcov" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >>"$STUB_CALLS"
 code="$(head -n 1 "$STUB_FIXTURE")"
@@ -60,7 +60,7 @@ cat >"$BIN/getconf" <<'EOF'
 [ -n "${STUB_GLIBC:-}" ] || { echo "getconf: Unrecognized variable \`GNU_LIBC_VERSION'" >&2; exit 1; }
 echo "$STUB_GLIBC"
 EOF
-chmod +x "$BIN/omni-dev" "$BIN/getconf"
+chmod +x "$BIN/patchcov" "$BIN/getconf"
 
 # fixture <name> <exit status> <line>...: writes a fixture of this test's own.
 fixture() {
@@ -71,19 +71,19 @@ fixture() {
 
 # run_step <fixture file> [glibc]: runs the step as the runner would (bash -eo pipefail) with
 # the variables its env: block fills. Sets STATUS, LOG (stdout and stderr together), ERRORS
-# (how many `::error::` lines it printed) and RUNS (how many times it ran omni-dev).
+# (how many `::error::` lines it printed) and RUNS (how many times it ran patchcov).
 run_step() {
   local fixture=$1 glibc=${2-glibc 2.35}
   : >"$WORK/calls"
   LOG="$(PATH="$BIN:$PATH" STUB_FIXTURE="$fixture" STUB_GLIBC="$glibc" STUB_CALLS="$WORK/calls" \
-    OMNI_DEV_VERSION=0.45.0 OS=Linux ARCH=X64 bash --noprofile --norc -eo pipefail -c "$SCRIPT" 2>&1)"
+    PATCHCOV_VERSION=0.1.1 OS=Linux ARCH=X64 bash --noprofile --norc -eo pipefail -c "$SCRIPT" 2>&1)"
   STATUS=$?
   ERRORS="$(grep -c '^::error::' <<<"$LOG" || true)"
   RUNS="$(grep -c . "$WORK/calls" || true)"
 }
 
-X86="$FIXTURES/0.45.0-x86_64-glibc-2.35.txt"
-ARM="$FIXTURES/0.46.0-aarch64-glibc-2.35.txt"
+X86="$FIXTURES/synthetic-x86_64-glibc-2.35.txt"
+ARM="$FIXTURES/synthetic-aarch64-glibc-2.35.txt"
 
 # --- what the loader printed ----------------------------------------------------------------
 
@@ -102,15 +102,15 @@ eq "x86_64: the step fails, with the binary's own status" 1 "$STATUS"
 has "x86_64: what the loader said is still in the log" "$LOG" "version \`GLIBC_2.38' not found"
 eq "x86_64: it logs one error" 1 "$ERRORS"
 has "x86_64: the error names the release and the platform" "$LOG" \
-  "::error::omni-dev 0.45.0 cannot run on this runner (Linux X64)"
+  "::error::patchcov 0.1.1 cannot run on this runner (Linux X64)"
 has "x86_64: it names the glibc the binary needs, the non-weak one" "$LOG" "it needs glibc 2.38 or newer"
 lacks "x86_64: and not the weak 2.39 the loader also listed" "$LOG" "needs glibc 2.39"
 has "x86_64: it says what the runner has" "$LOG" "and the runner has glibc 2.35."
 has "x86_64: the first way out is a newer runner image" "$LOG" \
   "Use a runner image with glibc 2.38 or newer (ubuntu-24.04, or ubuntu-24.04-arm)"
 has "x86_64: the second way out is to build from source" "$LOG" \
-  "set 'use-prebuilt-binary: false' to build omni-dev from source."
-eq "x86_64: omni-dev was run once, and asked for its version" "1:--version" "$RUNS:$(cat "$WORK/calls")"
+  "set 'use-prebuilt-binary: false' to build patchcov from source."
+eq "x86_64: patchcov was run once, and asked for its version" "1:--version" "$RUNS:$(cat "$WORK/calls")"
 
 # The ARM64 binary names 2.39 first and 2.38 second: the newest is the answer, and not the
 # first line or the last.
@@ -122,57 +122,57 @@ lacks "ARM64: and not the older one it listed second" "$LOG" "needs glibc 2.38"
 
 # The order of the lines does not decide it: the same two lines the other way round.
 fixture reversed 1 \
-  "omni-dev: /lib/aarch64-linux-gnu/libc.so.6: version \`GLIBC_2.38' not found (required by omni-dev)" \
-  "omni-dev: /lib/aarch64-linux-gnu/libc.so.6: version \`GLIBC_2.39' not found (required by omni-dev)"
+  "patchcov: /lib/aarch64-linux-gnu/libc.so.6: version \`GLIBC_2.38' not found (required by patchcov)" \
+  "patchcov: /lib/aarch64-linux-gnu/libc.so.6: version \`GLIBC_2.39' not found (required by patchcov)"
 run_step "$WORK/reversed.txt"
 has "the order of the lines does not decide it: 2.39 either way" "$LOG" "it needs glibc 2.39 or newer"
 
 # The versions are compared as numbers, not as text: 2.9 sorts after 2.38 as a string.
 fixture numeric 1 \
-  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.9' not found (required by omni-dev)" \
-  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.38' not found (required by omni-dev)" \
-  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.4' not found (required by omni-dev)"
+  "patchcov: /lib/libc.so.6: version \`GLIBC_2.9' not found (required by patchcov)" \
+  "patchcov: /lib/libc.so.6: version \`GLIBC_2.38' not found (required by patchcov)" \
+  "patchcov: /lib/libc.so.6: version \`GLIBC_2.4' not found (required by patchcov)"
 run_step "$WORK/numeric.txt"
 has "versions are compared as numbers: 2.38 beats 2.9 and 2.4" "$LOG" "it needs glibc 2.38 or newer"
 
 fixture three 1 \
-  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.38.1' not found (required by omni-dev)" \
-  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.38' not found (required by omni-dev)"
+  "patchcov: /lib/libc.so.6: version \`GLIBC_2.38.1' not found (required by patchcov)" \
+  "patchcov: /lib/libc.so.6: version \`GLIBC_2.38' not found (required by patchcov)"
 run_step "$WORK/three.txt"
 has "a three-part version is read whole" "$LOG" "it needs glibc 2.38.1 or newer"
 fixture third 1 \
-  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.38.9' not found (required by omni-dev)" \
-  "omni-dev: /lib/libc.so.6: version \`GLIBC_2.38.10' not found (required by omni-dev)"
+  "patchcov: /lib/libc.so.6: version \`GLIBC_2.38.9' not found (required by patchcov)" \
+  "patchcov: /lib/libc.so.6: version \`GLIBC_2.38.10' not found (required by patchcov)"
 run_step "$WORK/third.txt"
 has "the third part is compared as a number: .10 beats .9" "$LOG" "it needs glibc 2.38.10 or newer"
 
 # ubuntu-24.04 has glibc 2.39. It is named as a way out only for a binary that needs no more
 # than that, so the advice does not send the caller to another failure.
 for need in 2.38 2.39; do
-  fixture "need-$need" 1 "omni-dev: /lib/libc.so.6: version \`GLIBC_$need' not found (required by omni-dev)"
+  fixture "need-$need" 1 "patchcov: /lib/libc.so.6: version \`GLIBC_$need' not found (required by patchcov)"
   run_step "$WORK/need-$need.txt"
   has "needing $need: the newer images are named" "$LOG" "Use a runner image with glibc $need or newer (ubuntu-24.04, or ubuntu-24.04-arm), or set"
 done
 for need in 2.40 2.100 3.0 3; do
-  fixture "need-$need" 1 "omni-dev: /lib/libc.so.6: version \`GLIBC_$need' not found (required by omni-dev)"
+  fixture "need-$need" 1 "patchcov: /lib/libc.so.6: version \`GLIBC_$need' not found (required by patchcov)"
   run_step "$WORK/need-$need.txt"
   has "needing $need: the glibc is asked for" "$LOG" "it needs glibc $need or newer"
   has "needing $need: a newer runner image is still a way out" "$LOG" "Use a runner image with glibc $need or newer, or set 'use-prebuilt-binary: false'"
   lacks "needing $need: but ubuntu-24.04, whose glibc is 2.39, is not named" "$LOG" "ubuntu-24.04"
 done
-fixture need-old 1 "omni-dev: /lib/libc.so.6: version \`GLIBC_1.9' not found (required by omni-dev)"
+fixture need-old 1 "patchcov: /lib/libc.so.6: version \`GLIBC_1.9' not found (required by patchcov)"
 run_step "$WORK/need-old.txt"
 has "needing 1.9: the newer images are named" "$LOG" "Use a runner image with glibc 1.9 or newer (ubuntu-24.04, or ubuntu-24.04-arm)"
 
 # Plain quotes, as other glibc versions print the same line.
-fixture plain-quotes 1 "omni-dev: /lib/x86_64-linux-gnu/libc.so.6: version 'GLIBC_2.38' not found (required by omni-dev)"
+fixture plain-quotes 1 "patchcov: /lib/x86_64-linux-gnu/libc.so.6: version 'GLIBC_2.38' not found (required by patchcov)"
 run_step "$WORK/plain-quotes.txt"
 has "a loader that quotes with plain quotes is read too" "$LOG" "it needs glibc 2.38 or newer"
 
 # A weak version alone is not what stopped it: with nothing else to name, the step has no
 # glibc to ask for and says nothing of one.
 fixture weak-only 1 \
-  "omni-dev: /lib/x86_64-linux-gnu/libc.so.6: weak version \`GLIBC_2.39' not found (required by omni-dev)"
+  "patchcov: /lib/x86_64-linux-gnu/libc.so.6: weak version \`GLIBC_2.39' not found (required by patchcov)"
 run_step "$WORK/weak-only.txt"
 eq "only a weak version: the status is kept" 1 "$STATUS"
 eq "only a weak version: no glibc error is made up" 0 "$ERRORS"
@@ -192,26 +192,26 @@ has "another runner glibc is the one named" "$LOG" "and the runner has glibc 2.3
 
 # --- a binary that stops for another reason, and one that runs ----------------------------------
 
-fixture other 3 "omni-dev: error while loading shared libraries: libasound.so.2: cannot open shared object file"
+fixture other 3 "patchcov: error while loading shared libraries: libasound.so.2: cannot open shared object file"
 run_step "$WORK/other.txt"
 eq "another loader failure: the binary's own status is kept" 3 "$STATUS"
 has "another loader failure: what it said is shown" "$LOG" "libasound.so.2: cannot open shared object file"
 eq "another loader failure: no glibc error is made up" 0 "$ERRORS"
 
 # A libstdc++ that is too old says GLIBCXX, which is not a glibc problem.
-fixture cxx 1 "omni-dev: /lib/x86_64-linux-gnu/libstdc++.so.6: version \`GLIBCXX_3.4.30' not found (required by omni-dev)"
+fixture cxx 1 "patchcov: /lib/x86_64-linux-gnu/libstdc++.so.6: version \`GLIBCXX_3.4.30' not found (required by patchcov)"
 run_step "$WORK/cxx.txt"
 eq "a GLIBCXX failure: the status is kept" 1 "$STATUS"
 eq "a GLIBCXX failure: it is not reported as a glibc one" 0 "$ERRORS"
 
-fixture ok 0 "omni-dev 0.46.0 (b5445b9 2026-10-03)"
+fixture ok 0 "patchcov 0.1.1 (b5445b9 2026-10-03)"
 run_step "$WORK/ok.txt"
 eq "a binary that runs: the step succeeds" 0 "$STATUS"
-eq "a binary that runs: it prints the version, as the step always did" "omni-dev 0.46.0 (b5445b9 2026-10-03)" "$LOG"
-eq "a binary that runs: omni-dev was run once" 1 "$RUNS"
+eq "a binary that runs: it prints the version, as the step always did" "patchcov 0.1.1 (b5445b9 2026-10-03)" "$LOG"
+eq "a binary that runs: patchcov was run once" 1 "$RUNS"
 
 # Even when it runs and prints a loader-like word, nothing is made of a success.
-fixture ok-noisy 0 "omni-dev 0.46.0 (b5445b9 2026-10-03)" "note: version \`GLIBC_2.99' not found is only text here"
+fixture ok-noisy 0 "patchcov 0.1.1 (b5445b9 2026-10-03)" "note: version \`GLIBC_2.99' not found is only text here"
 run_step "$WORK/ok-noisy.txt"
 eq "a binary that runs: the output is not searched" 0 "$ERRORS"
 
@@ -219,27 +219,27 @@ eq "a binary that runs: the output is not searched" 0 "$ERRORS"
 
 # This step is the one that says why a binary cannot start. A step before it that ran the
 # binary would stop first, with the loader's bare message, and this one would never run: the
-# download step ended on `omni-dev --version` and did exactly that on a cold cache, where the
+# download step ended on `patchcov --version` and did exactly that on a cold cache, where the
 # install runs (a cache hit skips it, which is why a first run on a runner passed). So no line
-# of any step from the version to this one starts with the omni-dev command, bare or by path.
-# `mv`, `chmod` and `cargo install omni-dev` name the binary without running it and begin with
+# of any step from the version to this one starts with the patchcov command, bare or by path.
+# `mv`, `chmod` and `cargo install patchcov` name the binary without running it and begin with
 # something else.
 INSTALL_STEPS="$(awk '
-  /^    - name: Resolve omni-dev version$/ { printing = 1 }
-  /^    - name: Print omni-dev version$/ { printing = 0 }
+  /^    - name: Resolve patchcov version$/ { printing = 1 }
+  /^    - name: Print patchcov version$/ { printing = 0 }
   printing { print }
 ' "$ACTION")"
 pass "the install steps were found, from the version up to this step" test -n "$INSTALL_STEPS"
 has "the install steps take in the download" "$INSTALL_STEPS" "    - name: Download pre-built binary"
 lacks "the install steps do not take in this step" "$INSTALL_STEPS" "    - name: $STEP"
-RUNS_BINARY="$(grep -nE '^[[:space:]]*(~/\.cargo/bin/|\$HOME/\.cargo/bin/)?omni-dev([[:space:]]|$)' <<<"$INSTALL_STEPS" || true)"
-eq "no step before this one runs omni-dev" "" "$RUNS_BINARY"
+RUNS_BINARY="$(grep -nE '^[[:space:]]*(~/\.cargo/bin/|\$HOME/\.cargo/bin/)?patchcov([[:space:]]|$)' <<<"$INSTALL_STEPS" || true)"
+eq "no step before this one runs patchcov" "" "$RUNS_BINARY"
 
 # --- the wiring around the script -----------------------------------------------------------
 
 has "shell: the step runs under bash, as these cases do" "$BLOCK" "      shell: bash"
 has "env: the release comes from the resolved version" "$BLOCK" \
-  '        OMNI_DEV_VERSION: ${{ steps.resolve-version.outputs.version }}'
+  '        PATCHCOV_VERSION: ${{ steps.resolve-version.outputs.version }}'
 has "env: the OS is the runner's" "$BLOCK" '        OS: ${{ runner.os }}'
 has "env: the architecture is the runner's" "$BLOCK" '        ARCH: ${{ runner.arch }}'
 # Values reach the script through env:, never as an expression in it (#39).

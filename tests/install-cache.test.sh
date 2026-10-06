@@ -3,7 +3,7 @@
 #   tests/install-cache.test.sh
 # Exits non-zero if any case fails.
 #
-# The script decides which events install the omni-dev binary for real (the cache
+# The script decides which events install the patchcov binary for real (the cache
 # prefix) and what a job that restored it from the cache must do (the check), so the
 # cases that matter most are the ones where a wrong answer is silent: a prefix that does
 # not change when the install code or the run does (the cache hits and nothing says so),
@@ -100,17 +100,17 @@ eq "schedule: the install code does not matter, only the run does" "$base" "$(pr
 eq "schedule: no hash is needed" "$base" "$(prefix_of schedule 100 1 "")"
 pass "the two kinds of prefix cannot be the same key" test "$base" != "$unchanged"
 
-# The legs of one job can resolve to the same key (a pinned 0.46.0 and latest, when latest
-# is 0.46.0), so each leg needs its own prefix, on every event. Shared, whichever leg
+# The legs of one job can resolve to the same key (a pinned 0.1.1 and latest, when latest
+# is 0.1.1), so each leg needs its own prefix, on every event. Shared, whichever leg
 # finishes first saves the entry the other restores, and the other never runs the install
 # (it happened on this change's own pull request); on a run-id event `check` would also
 # fail a leg that did nothing wrong.
 eq "schedule: a leg is part of the prefix" "run-100-1-latest-" "$(LEG=latest prefix_of schedule 100 1 "$HASH_A")"
-eq "workflow_dispatch: ... and so is a pinned leg's" "run-100-1-0.46.0-" "$(LEG=0.46.0 prefix_of workflow_dispatch 100 1 "$HASH_A")"
-pass "schedule: two legs of one run cannot share a prefix" test "$(LEG=latest prefix_of schedule 100 1 "$HASH_A")" != "$(LEG=0.46.0 prefix_of schedule 100 1 "$HASH_A")"
+eq "workflow_dispatch: ... and so is a pinned leg's" "run-100-1-0.1.1-" "$(LEG=0.1.1 prefix_of workflow_dispatch 100 1 "$HASH_A")"
+pass "schedule: two legs of one run cannot share a prefix" test "$(LEG=latest prefix_of schedule 100 1 "$HASH_A")" != "$(LEG=0.1.1 prefix_of schedule 100 1 "$HASH_A")"
 eq "pull_request: a leg is part of the hash prefix" "install-0123456789abcdef-latest-" "$(LEG=latest prefix_of pull_request 100 1 "$HASH_A")"
-eq "push: ... and so is a pinned leg's" "install-0123456789abcdef-0.46.0-" "$(LEG=0.46.0 prefix_of push 100 1 "$HASH_A")"
-pass "pull_request: two legs of one run cannot share a prefix" test "$(LEG=latest prefix_of pull_request 100 1 "$HASH_A")" != "$(LEG=0.46.0 prefix_of pull_request 100 1 "$HASH_A")"
+eq "push: ... and so is a pinned leg's" "install-0123456789abcdef-0.1.1-" "$(LEG=0.1.1 prefix_of push 100 1 "$HASH_A")"
+pass "pull_request: two legs of one run cannot share a prefix" test "$(LEG=latest prefix_of pull_request 100 1 "$HASH_A")" != "$(LEG=0.1.1 prefix_of pull_request 100 1 "$HASH_A")"
 eq "pull_request: a leg does not change which code the prefix follows" "install-fedcba9876543210-latest-" "$(LEG=latest prefix_of pull_request 100 1 "$HASH_B")"
 
 LEG="a b" run schedule 100 1 "$HASH_A" prefix
@@ -164,7 +164,7 @@ has "  and says the event is unknown" "$ERR" "GITHUB_EVENT_NAME is not set"
 for event in pull_request push schedule workflow_dispatch; do
   run "$event" 100 1 "$HASH_A" check false
   eq "$event, no cache hit: exits 0" 0 "$STATUS"
-  has "  and says the install ran" "$OUT" "omni-dev was installed in this job"
+  has "  and says the install ran" "$OUT" "patchcov was installed in this job"
   eq "  and says nothing on stderr" "" "$ERR"
 done
 
@@ -175,9 +175,9 @@ done
 for event in pull_request push; do
   run "$event" 100 1 "$HASH_A" check true
   eq "$event, cache hit: exits 0" 0 "$STATUS"
-  has "  and says it came from the cache" "$OUT" "omni-dev came from the cache, not from an install"
+  has "  and says it came from the cache" "$OUT" "patchcov came from the cache, not from an install"
   has "  and says the install did not run" "$OUT" "did not run in this job"
-  lacks "  and does not say it was installed" "$OUT" "omni-dev was installed in this job"
+  lacks "  and does not say it was installed" "$OUT" "patchcov was installed in this job"
 done
 
 # Their prefix is unique to the run, so there was nothing to restore: the prefix did not
@@ -201,7 +201,7 @@ has "  and says the event is unknown" "$ERR" "GITHUB_EVENT_NAME is not set"
 # a hit or as an install would pass whatever the action did.
 run pull_request 100 1 "$HASH_A" check ""
 eq "no value: exits 2, as a usage error" 2 "$STATUS"
-has "  and says what it needed" "$ERR" "omni-dev-cache-hit output"
+has "  and says what it needed" "$ERR" "patchcov-cache-hit output"
 has "  and names its own mode" "$ERR" "::error::install-cache.sh: check needs"
 eq "  and prints nothing on stdout" "" "$OUT"
 
@@ -223,7 +223,7 @@ eq "True is not true: exits 1" 1 "$STATUS"
 for event in pull_request push schedule workflow_dispatch; do
   run "$event" 100 1 "$HASH_A" check-fresh false
   eq "check-fresh, $event, no cache hit: exits 0" 0 "$STATUS"
-  has "  and says the install ran" "$OUT" "omni-dev was installed in this job"
+  has "  and says the install ran" "$OUT" "patchcov was installed in this job"
   eq "  and says nothing on stderr" "" "$ERR"
 
   run "$event" 100 1 "$HASH_A" check-fresh true
@@ -247,7 +247,7 @@ eq "the same hit on a pull request: check accepts it" 0 "$STATUS"
 
 run pull_request 100 1 "$HASH_A" check-fresh ""
 eq "check-fresh, no value: exits 2, as a usage error" 2 "$STATUS"
-has "  and says what it needed" "$ERR" "omni-dev-cache-hit output"
+has "  and says what it needed" "$ERR" "patchcov-cache-hit output"
 has "  and names its own mode" "$ERR" "check-fresh needs"
 eq "  and prints nothing on stdout" "" "$OUT"
 run pull_request 100 1 "$HASH_A" check-fresh
@@ -273,23 +273,23 @@ eq "check with two arguments: exits 2" 2 "$STATUS"
 
 # --- wiring: the action exposes what the check reads --------------------------------
 
-CACHE_STEP="$(step_block 'Cache omni-dev binary')" || exit 1
-has "action.yml: the cache step has the id the output reads" "$CACHE_STEP" "id: cache-omni-dev"
+CACHE_STEP="$(step_block 'Cache patchcov binary')" || exit 1
+has "action.yml: the cache step has the id the output reads" "$CACHE_STEP" "id: cache-patchcov"
 # The whole mechanism: a prefix that never reaches the key changes nothing, and on a pull
 # request and a push `check` accepts a hit, so nothing else would notice.
 has "action.yml: the cache key starts with the cache-prefix input" "$CACHE_STEP" \
-  "key: \${{ inputs.cache-prefix }}omni-dev-"
+  "key: \${{ inputs.cache-prefix }}patchcov-"
 
 OUTPUT_BLOCK="$(awk '
   /^outputs:/ { in_outputs = 1; next }
-  in_outputs && /^  omni-dev-cache-hit:/ { printing = 1; print; next }
+  in_outputs && /^  patchcov-cache-hit:/ { printing = 1; print; next }
   printing && /^  [A-Za-z]/ { exit }
   printing { print }
 ' "$ACTION")"
-has "action.yml: it exposes omni-dev-cache-hit" "$OUTPUT_BLOCK" "omni-dev-cache-hit:"
+has "action.yml: it exposes patchcov-cache-hit" "$OUTPUT_BLOCK" "patchcov-cache-hit:"
 # `actions/cache` can leave its own output empty on a miss; the comparison reads that as false.
 has "action.yml: ... as the cache step's hit, true only for 'true'" "$OUTPUT_BLOCK" \
-  "value: \${{ steps.cache-omni-dev.outputs.cache-hit == 'true' }}"
+  "value: \${{ steps.cache-patchcov.outputs.cache-hit == 'true' }}"
 
 # --- wiring: the hash covers the install code ----------------------------------------
 
@@ -310,22 +310,22 @@ eq "thin-mode hashes action.yml and scripts/*.sh, and nothing else" \
 # check replaces.)
 # The two ends are read through step-lib, which refuses a step that is missing or doubled,
 # so renaming one fails here by name. The span between them takes in a step added later.
-step_block 'Resolve omni-dev version' >/dev/null || exit 1
-step_block 'Print omni-dev version' >/dev/null || exit 1
+step_block 'Resolve patchcov version' >/dev/null || exit 1
+step_block 'Print patchcov version' >/dev/null || exit 1
 INSTALL_STEPS="$(awk '
-  /^    - name: Resolve omni-dev version$/ { printing = 1 }
-  /^    - name: Print omni-dev version$/ { printing = 0 }
+  /^    - name: Resolve patchcov version$/ { printing = 1 }
+  /^    - name: Print patchcov version$/ { printing = 0 }
   printing { print }
 ' "$ACTION")"
 pass "action.yml: found the install steps" test -n "$INSTALL_STEPS"
-for name in 'Cache omni-dev binary' 'Determine platform and download URL' 'Download pre-built binary'; do
+for name in 'Cache patchcov binary' 'Determine platform and download URL' 'Download pre-built binary'; do
   has "the install steps run from the version to the printed version, and take in '$name'" \
     "$INSTALL_STEPS" "    - name: $name"
 done
 
 # $ACTION_PATH/x and ${ACTION_PATH}/x both name a file in the action's directory.
 RUN_FROM_ACTION="$(grep -oE '[$]\{?ACTION_PATH\}?/[^" ]*' <<<"$INSTALL_STEPS" | sed -E 's/^[$]\{?ACTION_PATH\}?\///' | sort -u)"
-has "the install steps run the asset script from the action's directory" "$RUN_FROM_ACTION" "scripts/omni-dev-asset.sh"
+has "the install steps run the asset script from the action's directory" "$RUN_FROM_ACTION" "scripts/patchcov-asset.sh"
 while IFS= read -r file; do
   [ -n "$file" ] || continue
   case "$file" in
@@ -355,11 +355,11 @@ pass "the prefix step runs before the first scenario" test "${PREFIX_AT:-999999}
 has "the prefix step takes the hash through env" "$THIN" \
   "INSTALL_CODE_HASH: \${{ hashFiles('action.yml', 'scripts/*.sh') }}"
 has "the prefix step names the leg, so the legs of a run cannot share a prefix" "$THIN" \
-  "INSTALL_CACHE_LEG: \${{ matrix.omni-dev }}"
+  "INSTALL_CACHE_LEG: \${{ matrix.patchcov }}"
 has "the prefix is taken as an assignment, so a failure ends the step" "$THIN" \
   'prefix="$(bash tests/install-cache.sh prefix)"'
 has "the checking step reads the output of the first scenario" "$THIN" \
-  "CACHE_HIT: \${{ steps.s1.outputs.omni-dev-cache-hit }}"
+  "CACHE_HIT: \${{ steps.s1.outputs.patchcov-cache-hit }}"
 has "the checking step calls check, and a failure is counted" "$THIN" \
   'bash tests/install-cache.sh check "$CACHE_HIT" || status=1'
 
@@ -379,8 +379,8 @@ PIN_ASSERT="$(awk '
   printing { print }
 ' <<<"$PIN_JOB")"
 pass "integration.yml: found the version-pin checking step" test -n "$PIN_ASSERT"
-has "version-pin: the checking step reads the install's omni-dev-cache-hit output" "$PIN_ASSERT" \
-  "          CACHE_HIT: \${{ steps.pin.outputs.omni-dev-cache-hit }}"
+has "version-pin: the checking step reads the install's patchcov-cache-hit output" "$PIN_ASSERT" \
+  "          CACHE_HIT: \${{ steps.pin.outputs.patchcov-cache-hit }}"
 CALL='          bash tests/install-cache.sh check-fresh "$CACHE_HIT" || status=1'
 eq "version-pin: the checking step calls check-fresh once, as a command, and a failure is counted" 1 \
   "$(grep -cxF -- "$CALL" <<<"$PIN_ASSERT")"
@@ -394,6 +394,6 @@ has "version-pin: its cache key holds the run and the attempt" "$PIN_JOB" \
   "cache-prefix: version-pin-\${{ matrix.pin }}-\${{ github.run_id }}-\${{ github.run_attempt }}-"
 # The archive in /tmp was a side effect of the download step, and the output says the same.
 lacks "version-pin: it no longer looks for the archive in /tmp" "$PIN_JOB" 'test -f "/tmp/'
-lacks "version-pin: it no longer asks the asset script for the archive's name" "$PIN_JOB" "scripts/omni-dev-asset.sh"
+lacks "version-pin: it no longer asks the asset script for the archive's name" "$PIN_JOB" "scripts/patchcov-asset.sh"
 
 summary

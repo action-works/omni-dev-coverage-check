@@ -9,7 +9,7 @@
 # the shell parsed them, so a value that held shell syntax ran as shell (#39). Each step now
 # reads its values from environment variables its `env:` block fills. This runs every such
 # step as the runner would, with the variables set by the case, against stub `cargo`, `git`,
-# `omni-dev` and `sudo` that log their arguments, and asserts what the tools were asked to
+# `patchcov` and `sudo` that log their arguments, and asserts what the tools were asked to
 # do. The scripts are read out of action.yml itself, so renaming a step or moving its
 # `run:` block fails here, by name, rather than leaving a test of a copy. The steps with
 # their own tests (platform, guard, resolve-version) are not repeated here.
@@ -66,7 +66,7 @@ case "$name" in
       worktree) mkdir -p "$3" ;;
     esac
     ;;
-  omni-dev)
+  patchcov)
     out=""
     prev=""
     for a in "$@"; do
@@ -84,7 +84,7 @@ esac
 exit 0
 EOF
 chmod +x "$BIN/stub"
-for tool in cargo git omni-dev sudo; do ln -s stub "$BIN/$tool"; done
+for tool in cargo git patchcov sudo; do ln -s stub "$BIN/$tool"; done
 
 CANARIES=0
 # canary: prints a path under $WORK that a hostile value tries to create, a fresh one each time.
@@ -133,7 +133,7 @@ absent() {
 # input. Each line is `step | variable | expression`.
 # shellcheck disable=SC2016
 WIRING='Check the ignore-filename-regex value|IGNORE_FILENAME_REGEX|inputs.ignore-filename-regex
-Install omni-dev from source|VERSION|steps.resolve-version.outputs.version
+Install patchcov from source|VERSION|steps.resolve-version.outputs.version
 Download pre-built binary|DOWNLOAD_URL|steps.platform.outputs.download-url
 Download pre-built binary|BINARY_NAME|steps.platform.outputs.binary-name
 Combine shard reports|ACTION_PATH|github.action_path
@@ -241,7 +241,7 @@ has "ignore-filename-regex: a long value is cut at 60 characters" "$OUT" "(got '
 expect_accepted "one pattern" 'patch-fixture'
 expect_accepted "bare commas" 'nomatch,patch-fixture'
 expect_accepted "three patterns, one starting with a dash" '-sys/,src/gpu/,generated/'
-expect_accepted "an empty piece (a doubled or trailing comma), which omni-dev ignores" 'a,,b,'
+expect_accepted "an empty piece (a doubled or trailing comma), which patchcov ignores" 'a,,b,'
 expect_accepted "a space inside a pattern, which is a character of it" 'src/my dir/'
 expect_accepted "a space inside a pattern beside a comma-free neighbour" 'src/my dir/,src/other dir/x'
 expect_accepted "a space written as [ ] beside a comma" 'a[ ],[ ]b'
@@ -259,18 +259,18 @@ run_step "$IGNORE_STEP" "IGNORE_FILENAME_REGEX=a, \$(touch $c)"
 eq "ignore-filename-regex: a command substitution after a space beside a comma is refused" 1 "$STATUS"
 absent "ignore-filename-regex: ... and ran nothing" "$c"
 
-# --- Install omni-dev from source ------------------------------------------------------
+# --- Install patchcov from source ------------------------------------------------------
 
-run_step "Install omni-dev from source" VERSION=0.45.0
+run_step "Install patchcov from source" VERSION=0.1.1
 eq "source install: the step succeeds" 0 "$STATUS"
 eq "source install: it asks cargo for exactly that version" \
-  'cargo [install] [omni-dev] [--version] [0.45.0]' "$CALLS"
+  'cargo [install] [patchcov] [--version] [0.1.1]' "$CALLS"
 eq "source install: the build scripts do not see VERSION" "" "$LEAKS"
 
 c="$(canary)"
-run_step "Install omni-dev from source" VERSION="1.0\"; touch $c; \""
+run_step "Install patchcov from source" VERSION="1.0\"; touch $c; \""
 eq "source install, hostile version: it is one argument, as written" \
-  "cargo [install] [omni-dev] [--version] [1.0\"; touch $c; \"]" "$CALLS"
+  "cargo [install] [patchcov] [--version] [1.0\"; touch $c; \"]" "$CALLS"
 absent "source install, hostile version: nothing ran" "$c"
 
 # --- the two command inputs: shell, in one shell ----------------------------------------
@@ -487,12 +487,12 @@ DIFF_COMMON='[--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] 
 run_step "$DIFF" "${diff_env[@]}"
 eq "diff: the step succeeds" 0 "$STATUS"
 eq "diff: defaults: the comment and the percentages are two calls with the same flags" \
-  "omni-dev [coverage] [diff] $DIFF_COMMON [--collapse-ranges] [-o] [markdown]
-omni-dev [coverage] [diff] $DIFF_COMMON [--collapse-ranges] [-o] [json]" "$CALLS"
+  "patchcov [diff] $DIFF_COMMON [--collapse-ranges] [-o] [markdown]
+patchcov [diff] $DIFF_COMMON [--collapse-ranges] [-o] [json]" "$CALLS"
 eq "diff: it writes the comment path and the percentages" "comment-path=coverage.md
 patch-percent=50
 line-percent=60" "$GH_OUTPUT"
-eq "diff: the comment is omni-dev's markdown" "md" "$(cat "$REPO/coverage.md")"
+eq "diff: the comment is patchcov's markdown" "md" "$(cat "$REPO/coverage.md")"
 
 run_step "$DIFF" "${diff_env[@]}" COLLAPSE_RANGES=false ALL_FILES=true STRIP_PREFIX=/home/runner/work/r/r REPORT_FORMAT=lcov
 has "diff: every option set: collapse off, all-files, strip-prefix and report-format" "$CALLS" \
@@ -506,7 +506,7 @@ lacks "diff: all-files is exactly 'true'" "$CALLS" "--all-files"
 PRE='mkdir baseline && echo x > baseline/coverage-head.lcov'
 run_step "$DIFF" "${diff_env[@]}"
 unset PRE
-has "diff: a baseline for the report's basename is passed to omni-dev" "$CALLS" "[--baseline-report] [baseline/coverage-head.lcov]"
+has "diff: a baseline for the report's basename is passed to patchcov" "$CALLS" "[--baseline-report] [baseline/coverage-head.lcov]"
 
 run_step "$DIFF" "${diff_env[@]}" REPORT="out dir/h.lcov" STRIP_PREFIX="a b"
 has "diff: a report path with a space is one argument" "$CALLS" "[--report] [out dir/h.lcov]"
@@ -516,10 +516,10 @@ c="$(canary)"
 # shellcheck disable=SC2016
 run_step "$DIFF" "${diff_env[@]}" STRIP_PREFIX="/a/\$b/\`touch $c\`/\"d\"; touch $c" REPORT_FORMAT="\$(touch $c)"
 # shellcheck disable=SC2016
-has "diff, hostile values: strip-prefix reaches omni-dev as one argument, as written" "$CALLS" \
+has "diff, hostile values: strip-prefix reaches patchcov as one argument, as written" "$CALLS" \
   "[--strip-prefix] [/a/\$b/\`touch $c\`/\"d\"; touch $c]"
 # shellcheck disable=SC2016
-has "diff, hostile values: report-format reaches omni-dev as one argument, as written" "$CALLS" \
+has "diff, hostile values: report-format reaches patchcov as one argument, as written" "$CALLS" \
   "[--report-format] [\$(touch $c)]"
 absent "diff, hostile values: nothing ran" "$c"
 
@@ -551,14 +551,14 @@ PATCH="Enforce patch-coverage gate"
 patch_env=(REPORT=coverage-head.lcov BASE_SHA=mergebase0123456789 FAIL_UNDER_PATCH=80 STRIP_PREFIX="" REPORT_FORMAT="" IGNORE_FILENAME_REGEX="")
 run_step "$PATCH" "${patch_env[@]}"
 eq "patch gate: the step succeeds" 0 "$STATUS"
-eq "patch gate: the threshold and the merge-base reach omni-dev" \
-  'omni-dev [coverage] [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-patch] [80] [-o] [json]' "$CALLS"
+eq "patch gate: the threshold and the merge-base reach patchcov" \
+  'patchcov [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-patch] [80] [-o] [json]' "$CALLS"
 
 PRE='mkdir baseline && echo x > baseline/coverage-head.lcov'
 run_step "$PATCH" "${patch_env[@]}" STRIP_PREFIX=/p REPORT_FORMAT=llvm-cov-json
 unset PRE
 eq "patch gate: the parse-affecting flags and the baseline mirror the comment diff" \
-  'omni-dev [coverage] [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-patch] [80] [-o] [json] [--strip-prefix] [/p] [--report-format] [llvm-cov-json] [--baseline-report] [baseline/coverage-head.lcov]' "$CALLS"
+  'patchcov [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-patch] [80] [-o] [json] [--strip-prefix] [/p] [--report-format] [llvm-cov-json] [--baseline-report] [baseline/coverage-head.lcov]' "$CALLS"
 
 c="$(canary)"
 run_step "$PATCH" "${patch_env[@]}" FAIL_UNDER_PATCH="80; touch $c" STRIP_PREFIX="\$(touch $c)"
@@ -569,7 +569,7 @@ run_step "$PATCH" "${patch_env[@]}" IGNORE_FILENAME_REGEX="$REGEX"
 has "patch gate: the regex mirrors the comment diff, as one argument" "$CALLS" "[--ignore-filename-regex=$REGEX]"
 
 run_step "$PATCH" "${patch_env[@]}" OMNI_EXIT=1
-eq "patch gate: omni-dev failing the gate fails the step" 1 "$STATUS"
+eq "patch gate: patchcov failing the gate fails the step" 1 "$STATUS"
 
 # --- Enforce line-coverage gate (fat mode) --------------------------------------------------
 
@@ -589,14 +589,14 @@ THIN="Enforce line-coverage gate (thin mode)"
 thin_env=(REPORT=coverage-head.lcov BASE_SHA=mergebase0123456789 FAIL_UNDER_LINES=55 STRIP_PREFIX="" REPORT_FORMAT="" IGNORE_FILENAME_REGEX="")
 run_step "$THIN" "${thin_env[@]}"
 eq "thin gate: a pull request diffs against the merge-base" \
-  'omni-dev [coverage] [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-lines] [55] [-o] [json]' "$CALLS"
+  'patchcov [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-lines] [55] [-o] [json]' "$CALLS"
 
 run_step "$THIN" "${thin_env[@]}" BASE_SHA=""
 has "thin gate: a push has no merge-base, so it diffs HEAD against itself" "$CALLS" "[--base-ref] [HEAD]"
 
 run_step "$THIN" "${thin_env[@]}" STRIP_PREFIX=/p REPORT_FORMAT=lcov
 eq "thin gate: the parse-affecting flags mirror the comment diff" \
-  'omni-dev [coverage] [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-lines] [55] [-o] [json] [--strip-prefix] [/p] [--report-format] [lcov]' "$CALLS"
+  'patchcov [diff] [--report] [coverage-head.lcov] [--base-ref] [mergebase0123456789] [--fail-under-lines] [55] [-o] [json] [--strip-prefix] [/p] [--report-format] [lcov]' "$CALLS"
 
 c="$(canary)"
 run_step "$THIN" "${thin_env[@]}" FAIL_UNDER_LINES="55; touch $c" REPORT="r.lcov; touch $c"
@@ -608,6 +608,6 @@ run_step "$THIN" "${thin_env[@]}" IGNORE_FILENAME_REGEX="$REGEX"
 has "thin gate: the regex mirrors the comment diff, as one argument" "$CALLS" "[--ignore-filename-regex=$REGEX]"
 
 run_step "$THIN" "${thin_env[@]}" OMNI_EXIT=1
-eq "thin gate: omni-dev failing the gate fails the step" 1 "$STATUS"
+eq "thin gate: patchcov failing the gate fails the step" 1 "$STATUS"
 
 summary
