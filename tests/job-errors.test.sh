@@ -246,9 +246,9 @@ printf '%s\n' "2026-10-03T15:44:33.5Z ##[error]from 203" >"$d/logs/203"
 run_errors "$d" 'Thin mode (patchcov latest)'
 eq "picks the job by its exact name" "from 202" "$OUT"
 
-run_errors "$d" 'Thin mode (patchcov 0.4'
+run_errors "$d" 'Thin mode (patchcov 0.1'
 pass "a name that only prefixes another is not found" test "$STATUS" -ne 0
-pass "a missing job is named in the error" grep -q "0 jobs named 'Thin mode (patchcov 0.4'" <<<"$ERR"
+pass "a missing job is named in the error" grep -q "0 jobs named 'Thin mode (patchcov 0.1'" <<<"$ERR"
 
 add_job "$d" 204 'Thin mode (patchcov latest)'
 run_errors "$d" 'Thin mode (patchcov latest)'

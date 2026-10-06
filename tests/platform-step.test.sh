@@ -93,6 +93,10 @@ eq "macOS ARM64: it takes the macOS build" patchcov-v0.1.1-aarch64-apple-darwin.
 run_platform macOS X64 200
 eq "macOS X64: it takes the Intel build" patchcov-v0.1.1-x86_64-apple-darwin.tar.gz "$(output_of "$OUT" binary-name)"
 
+run_platform Linux X64 200 v0.2.0
+eq "another release: the asset embeds its resolved tag" patchcov-v0.2.0-x86_64-unknown-linux-gnu.tar.gz "$(output_of "$OUT" binary-name)"
+has "another release: URL and archive tag agree" "$(output_of "$OUT" download-url)" '/v0.2.0/patchcov-v0.2.0-'
+
 # --- a platform with no asset: nothing is asked of the network --------------
 
 for pair in "Linux ARM" "Linux X86" "Windows X64" "Windows ARM64"; do

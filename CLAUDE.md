@@ -35,7 +35,7 @@ cargo-llvm-cov. Repository/action references remain `omni-dev-coverage-check`.
   Ubuntu 22.04/24.04 compatibility and deprecated-flag control. No old flag-floor jobs.
 - `pr-paths.yml` and `e2e-sharded.yml`: real PR comments, baseline publication/download,
   ancestor fallback, merge-base recompute, filters, gates and sharded coverage.
-- Required check names stay `Shell scripts`, `Integration gate` and
+- Required check names stay `Shell scripts`, `ci-gate` and
   `Validate Commit Messages`. `ci-gate` needs every Integration job and uses `always()`;
   `failure-messages` needs every job except itself and the gate.
 

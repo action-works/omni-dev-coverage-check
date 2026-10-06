@@ -2,25 +2,10 @@ name: Integration
 
 # Runs the action itself (`uses: ./`) on a real runner on every change: in thin
 # mode against fixture lcov files (the thin-mode line gate and `shard-reports`,
-# `ignore-filename-regex`, the `--output` and `--ignore-filename-regex` floors a
-# pull request needs, and the `version` input's empty, `v` and `V` spellings),
-# and in fat mode against a
-# fixture crate (the instrumented test run, the three report outputs and the one
-# profile merge they share, the fat-mode line gate,
-# `setup-commands`/`extra-test-commands`, `llvm-cov-ignore-filename-regex`). Each
-# scenario's outcome is asserted
-# at the end of its job; the scenarios are `continue-on-error` so one regression
-# does not hide the rest. What the six scenarios that exist for their message
-# said is asserted by `failure-messages`, which reads the finished jobs' logs through
-# the API. On a pull request it also asserts that none of the jobs that ran the
-# pull-request steps logged an patchcov deprecation warning, and a control job
-# that logs one on purpose shows that reading can find it. To show that the pre-built
-# binary is chosen by architecture, the ARM64 legs of `thin-mode` run on an ARM64 Linux
-# runner against a release that has the ARM64 asset, and `arm64-release-without-asset`
-# against one that does not. One job resolves `version: latest` with a token the API
-# refuses, so that the fallback to the releases/latest redirect has to answer, and
-# compares it with the API's answer. One pins `version: v0.1.1`, to show that the
-# whole install takes a release tag as written.
+# filename filtering, version spelling, latest redirect resolution and Ubuntu
+# 22.04/24.04 binary compatibility. The missing-assets control pins 0.1.0; normal
+# legs pin 0.1.1 or request latest. A real deprecated-flag control confirms the
+# warning reader can see a warning. Required check names remain unchanged.
 #
 # Rules that keep these tests honest:
 #   - One patchcov version per job. `actions/cache` saves in a post step, after
@@ -135,7 +120,7 @@ jobs:
       matrix:
         include:
           # Pinned release and latest both exercise the thin-mode line gate.
-          # floor the README documents. `latest` catches a bad future release.
+          # `latest` catches a bad future release.
           - { patchcov: '0.1.1', runner: ubuntu-latest, arch: X64 }
           - { patchcov: 'latest', runner: ubuntu-latest, arch: X64 }
           # ARM64 assets are available in 0.1.1, with a glibc 2.35 floor.
@@ -410,7 +395,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 0.1.1 is the floor of the thin-mode line gate this uses; `latest` catches a
+        # Pinned release and latest exercise filtering; latest catches a
         # bad future release.
         patchcov: ['0.1.1', 'latest']
     steps:

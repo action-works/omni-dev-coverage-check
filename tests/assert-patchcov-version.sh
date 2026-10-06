@@ -12,19 +12,10 @@
 # || status=1`; a bare call would end the step under Actions' `bash -e` before the
 # step's other checks had reported.
 #
-# The version line is `patchcov 0.1.1 (b5445b9 2026-10-03)` (a `, dirty` can follow
-# the date in a local build; 0.28.0 to 0.32.0, clap's `#[command(version)]`, print just
-# `patchcov 0.28.0`): a commit and date may follow the number, so it cannot be
-# compared whole. It must start with `patchcov <version>`, and the number must
-# then end, at a space or at the end of the line. A substring match (`grep -F`)
-# lets a pin that is a prefix or a suffix of another release's number pass for
-# it: `0.4.1` for `0.4.10`, `1.2.3` for `11.2.3`. Every character of the pin is
-# literal here, so a dot is a dot and a `+` is a plus; a regex would need each
-# one escaped.
-#
-# `patchcov --version` is captured before it is matched, as the guard in
-# action.yml does, so a binary that fails reports itself instead of a grep on an
-# empty pipe. Its stderr is left alone for the same reason.
+# Released patchcov prints `patchcov 0.1.1`. Also accept optional build metadata
+# after a space for development binaries. Match the whole version literally:
+# a substring or regex would accept the wrong version. Capture status before
+# matching so a binary that fails to start cannot pass.
 #
 # Only builtins are used, so the tests can run it with a PATH that holds nothing
 # but a stub `patchcov`.
